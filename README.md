@@ -34,9 +34,13 @@
 |----------|----------|
 | ![任务结果分析](docs/screenshots/05-task-result.png) | ![规则管理](docs/screenshots/06-rules.png) |
 
-| 性能图表 | 智能巡检 |
+| 性能分析 · 性能图表 | 性能分析 · 网络抓包分析 |
 |----------|----------|
-| ![性能图表](docs/screenshots/07-metrics.png) | ![智能巡检](docs/screenshots/08-inspection.png) |
+| ![性能分析-性能图表](docs/screenshots/07-perf-charts.png) | ![性能分析-网络抓包分析](docs/screenshots/08-perf-netcap.png) |
+
+| 性能分析 · blktrace 分析 | 智能巡检 |
+|----------|----------|
+| ![性能分析-blktrace分析](docs/screenshots/09-perf-blktrace.png) | ![智能巡检](docs/screenshots/10-inspection.png) |
 
 ## 整体架构
 
