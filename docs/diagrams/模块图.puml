@@ -1,0 +1,48 @@
+@startuml 模块图
+' 鲲鹏运维平台 模块图 (组件视图)
+left to right direction
+skinparam defaultTextAlignment center
+skinparam shadowing false
+skinparam roundCorner 8
+skinparam ArrowColor #1D2433
+skinparam ArrowThickness 1.2
+skinparam rectangle {
+  BackgroundColor #F8FAFD
+  BorderColor #94A7C4
+}
+skinparam packageBackgroundColor #FDFEFF
+skinparam packageBorderColor #C7D4E8
+
+actor "运维用户" as user #FFFFFF
+
+rectangle "前端 SPA (Vue3)\n登录 / 工作台 / 任务 / 报告\n图表 / 规则 / 巡检" as web #EAF1FB
+rectangle "API 服务 (FastAPI)\nauth 认证+双级RBAC · tasks 上传\nanalysis 报告 · events SSE\nteams · metrics · rules · audit" as api #E3EDF9
+
+package "异步处理层" {
+  rectangle "任务队列\nRedis Stream" as queue #FFF4E3
+  rectangle "事件总线\nRedis Pub/Sub" as bus #FFF4E3
+  rectangle "Worker 消费进程\n诊断 / 巡检 / 分析 / LLM报告" as worker #FDEDE3
+  rectangle "诊断管线\n解压安全校验 → 解析器插件(6种)\n规则引擎 → LLM总结(按需)" as pipeline #FDEDE3
+}
+
+rectangle "规则引擎\n关键词 / 正则 / 阈值\n健康评分" as rules #EAF7EE
+rectangle "LLM 客户端\nOpenAI 兼容 · 流式\n未配置时降级纯规则" as llmc #EAF7EE
+
+database "PostgreSQL\n元数据 / 报告 / 审计\n指标时序(按月分区)" as db #F0EAF9
+cloud "LLM 服务 (可选)\nOpenAI 兼容 API" as llm #F2F3F5
+
+user --> web : HTTPS
+web --> api : REST (JWT) + SSE
+api --> db : 读写任务/报告
+api --> queue : XADD 入队(入队即返回)
+api ..> bus : 订阅转 SSE
+worker --> queue : XREADGROUP 消费/ACK
+worker --> pipeline : 执行
+worker --> bus : 发布进度/命中/token
+pipeline --> rules : 加载启用规则+匹配
+pipeline --> llmc : 规则命中结果
+worker --> db : 报告/指标入库
+llmc --> llm : 流式摘要(按需)
+llmc ..> pipeline : 纯规则降级
+bus ..> web : progress/finding/llm_token
+@enduml

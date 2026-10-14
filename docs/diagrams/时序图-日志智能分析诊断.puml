@@ -1,0 +1,78 @@
+@startuml 时序图-日志智能分析诊断
+' 日志智能分析诊断流程: 上传 → 入队即返回 → 后台解析 → 规则匹配 → AI 二次总结 → 报告
+autonumber
+skinparam shadowing false
+skinparam SequenceMessageAlignment center
+skinparam ArrowColor #1D2433
+skinparam LifeLineBorderColor #94A7C4
+skinparam ParticipantBackgroundColor #EAF1FB
+skinparam ParticipantBorderColor #2F5CAC
+skinparam ActorBackgroundColor #FFFFFF
+skinparam ActorBorderColor #1D2433
+
+actor "用户" as user
+participant "前端\n(Vue3)" as web
+participant "API 服务\n(FastAPI)" as api
+participant "任务队列\n(Redis Stream)" as mq
+participant "事件总线\n(Redis Pub/Sub → SSE)" as bus
+participant "Worker\n(后台)" as wk
+participant "LLM 服务\n(OpenAI 兼容, 可选)" as llm
+database "PostgreSQL" as db
+
+== 上传阶段 (入队即返回) ==
+user -> web : 选择日志文件上传
+activate web
+web -> api : POST /api/tasks/upload\n(JWT, multipart)
+activate api
+api -> api : 权限校验 + 流式落盘
+api -> db : 创建任务记录 (pending)
+api -> mq : XADD 任务消息入队
+api --> web : 返回 task_id (立即)
+deactivate api
+web -> api : SSE 订阅任务事件流
+activate api
+
+== 后台解析阶段 ==
+mq -> wk : XREADGROUP 消费消息
+activate wk
+wk -> db : status = running
+wk -> wk : 解压与安全校验\n(防路径穿越 / 防超大包)
+loop 每个日志文件
+  wk -> wk : 解析器插件识别 (6种)\n输出结构化事件
+  wk -->> web : progress 进度事件
+end
+
+== 规则匹配阶段 ==
+wk -> db : 加载启用规则 (天然热加载)
+wk -> wk : 关键词 / 正则匹配事件\n+ 阈值匹配性能指标
+wk -->> web : finding 命中事件 (实时滚动)
+wk -> db : 性能指标入库 (时序分区表)
+
+== AI 二次辅助总结阶段 ==
+alt LLM 已配置 (LLM_API_BASE + KEY)
+  wk -> llm : 流式摘要请求\n(规则命中结果 + 关键日志片段)
+  activate llm
+  loop token 流
+    llm --> wk : 总结 token
+    wk -->> web : llm_token (打字机效果)
+  end
+  deactivate llm
+else LLM 未配置
+  wk -> wk : 降级: 纯规则模板总结\n(命中统计 + Top 明细)
+end
+
+== 报告输出阶段 ==
+wk -> db : 写入报告\n(健康评分 + AI总结 + 命中明细)
+wk -> db : status = done, progress = 100
+wk -> mq : XACK 确认
+deactivate wk
+wk ->> bus : 发布 done 事件
+bus --> web : SSE 推送任务完成
+deactivate api
+web -> api : GET 报告详情
+activate api
+api --> web : 完整诊断报告
+deactivate api
+web --> user : 展示报告\n(健康分 / 规则命中 / AI 总结)
+deactivate web
+@enduml
