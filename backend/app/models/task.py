@@ -41,7 +41,7 @@ class Task(Base):
     # 解析任务扩展 (witty 接入; 诊断/巡检任务这些列为空)
     name: Mapped[str] = mapped_column(String(128), default="")          # 任务名称
     parser_type: Mapped[str] = mapped_column(String(32), default="")    # sel/redfish/syslog/dmesg/windows/regex
-    asset_id: Mapped[int | None] = mapped_column(ForeignKey("asset_libraries.id"), index=True, nullable=True)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), index=True, nullable=True)  # 归属团队 (决定作用域团队与规则集)
     log_size: Mapped[int] = mapped_column(BigInteger, default=0)        # 上传日志字节数
     event_count: Mapped[int] = mapped_column(Integer, default=0)        # 解析事件数 (冗余计数, 避免 COUNT)
 

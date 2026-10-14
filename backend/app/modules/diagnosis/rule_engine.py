@@ -17,7 +17,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.asset import AssetLibrary
 from app.models.rule import MatchType, Rule, Severity
 from app.modules.diagnosis.parsers import LogEntry, ParseResult
 
@@ -120,15 +119,8 @@ class RuleEngine:
 
     @staticmethod
     async def resolve_team_id(db: AsyncSession, task) -> int | None:
-        """任务作用域团队: 显式参数 team_id 优先, 否则沿资产库反查; 均无则 None(仅通用规则)."""
-        tid = (task.params or {}).get("team_id")
-        if tid is not None:
-            return int(tid)
-        if task.asset_id is None:
-            return None
-        return (await db.execute(
-            select(AssetLibrary.team_id).where(AssetLibrary.id == task.asset_id)
-        )).scalar_one_or_none()
+        """任务作用域团队: 直接取任务归属团队; 无团队任务返回 None(仅通用规则)."""
+        return task.team_id
 
     @staticmethod
     async def load_rules(db: AsyncSession, team_id: int | None = None) -> list[Rule]:

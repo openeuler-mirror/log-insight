@@ -14,9 +14,8 @@ from app.core.database import AsyncSessionLocal, Base, engine
 from app.core.deps import init_redis
 from app.core.schema_guard import run_schema_guard
 from app.core.security import hash_password
-from app.core.team_rbac import PERMISSIONS_17
+from app.core.team_rbac import PERMISSIONS
 from app.models import Permission, Role, User  # noqa: 确保建表
-from app.models.asset import AssetLibrary  # noqa
 from app.models.audit import AuditLog  # noqa
 from app.models.rule import Rule  # noqa
 from app.models.task import Task, Report, TaskStatus, TaskType  # noqa
@@ -32,11 +31,11 @@ settings = get_settings()
 # 演示账号 (密码统一 demo123, 仅演示用; 生产环境 SEED_DEMO_DATA=False 关闭)
 DEMO_USERS = [
     # (username, display_name, email, title, dept, avatar_hue)
-    ("guchuang", "顾创建", "guchuang@kunpeng.local", "运维主管", "基础设施部", 212),
-    ("jiangguanli", "蒋管理", "jiangguanli@kunpeng.local", "高级运维", "基础设施部", 268),
-    ("sunputong", "孙普通", "sunputong@kunpeng.local", "运维工程师", "监控组", 20),
-    ("zhangshenpi", "张审批", "zhangshenpi@kunpeng.local", "系统管理员", "系统部", 155),
-    ("liyiban", "李一般", "liyiban@kunpeng.local", "运维工程师", "系统部", 330),
+    ("guchuang", "顾创建", "guchuang@loginsight.local", "运维主管", "基础设施部", 212),
+    ("jiangguanli", "蒋管理", "jiangguanli@loginsight.local", "高级运维", "基础设施部", 268),
+    ("sunputong", "孙普通", "sunputong@loginsight.local", "运维工程师", "监控组", 20),
+    ("zhangshenpi", "张审批", "zhangshenpi@loginsight.local", "系统管理员", "系统部", 155),
+    ("liyiban", "李一般", "liyiban@loginsight.local", "运维工程师", "系统部", 330),
 ]
 
 
@@ -48,7 +47,7 @@ async def seed_initial_data() -> None:
             "admin": "管理员", "task:upload": "上传日志", "task:view": "查看任务",
             "rule:manage": "规则管理", "report:view": "查看报告",
         }
-        for code, group, label in PERMISSIONS_17:
+        for code, group, label in PERMISSIONS:
             perms.setdefault(code, label)
         perm_objs = {}
         for code, desc in perms.items():
@@ -74,7 +73,7 @@ async def seed_initial_data() -> None:
 
         admin = (await db.execute(select(User).where(User.username == "admin"))).scalar_one_or_none()
         if admin is None:
-            admin = User(username="admin", email="admin@kunpeng.local",
+            admin = User(username="admin", email="admin@loginsight.local",
                          hashed_password=hash_password("admin123"),
                          display_name="管理员", roles=[admin_role])
             db.add(admin)
@@ -188,10 +187,8 @@ async def seed_demo_tasks() -> None:
             if (await db.execute(select(Task).where(Task.name == task_name))).scalar_one_or_none():
                 continue  # 幂等
             team = (await db.execute(select(Team).where(Team.name == team_name))).scalar_one_or_none()
-            asset = (await db.execute(select(AssetLibrary).where(
-                AssetLibrary.team_id == team.id))).scalars().first() if team else None
             creator = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
-            if asset is None or creator is None:
+            if team is None or creator is None:
                 continue
 
             text = DEMO_LOG_GENS[parser_type]({"count": count, "seed": seed, "ipPool": ips})
@@ -204,7 +201,7 @@ async def seed_demo_tasks() -> None:
                 user_id=creator.id,
                 filename=parser.def_.file_hint.replace("*", str(seed)),
                 storage_path="", params={},
-                name=task_name, parser_type=parser_type, asset_id=asset.id,
+                name=task_name, parser_type=parser_type, team_id=team.id,
                 log_size=len(text.encode("utf-8")), event_count=len(events),
                 progress=100,
                 created_at=now_dt - timedelta(hours=2 + seed % 40),
@@ -227,13 +224,13 @@ async def seed_demo_tasks() -> None:
                 user_id=creator.id,
                 user_name=creator.display_name or creator.username,
                 action="执行解析任务", team_id=team.id,
-                target=f"{asset.name} / {task_name}（{len(events)} 条事件）",
+                target=f"{team.name} / {task_name}（{len(events)} 条事件）",
             ))
         await db.commit()
 
 
 async def seed_teams() -> None:
-    """演示团队/资产库/成员/通知 (幂等)."""
+    """演示团队/成员/通知 (幂等)."""
     async with AsyncSessionLocal() as db:
         admin_role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one()
 
@@ -261,8 +258,6 @@ async def seed_teams() -> None:
                 TeamMember(team_id=team.id, user_id=demo_user_objs["jiangguanli"].id, role="team_admin"),
                 TeamMember(team_id=team.id, user_id=demo_user_objs["sunputong"].id, role="member"),
             ])
-            db.add(AssetLibrary(team_id=team.id, name="北京A",
-                                desc="北京机房 A 区通用服务器资产", ip_range="10.1.3.0/24"))
             # 待处理邀请: 蒋管理邀请孙普通 (孙普通登录后通知中心可见)
             db.add(TeamNotice(type="invite", team_id=team.id,
                               from_user_id=demo_user_objs["jiangguanli"].id,
@@ -278,8 +273,6 @@ async def seed_teams() -> None:
                 TeamMember(team_id=team.id, user_id=demo_user_objs["jiangguanli"].id, role="owner"),
                 TeamMember(team_id=team.id, user_id=demo_user_objs["zhangshenpi"].id, role="team_admin"),
             ])
-            db.add(AssetLibrary(team_id=team.id, name="上海B",
-                                desc="上海机房 B 区通用服务器资产", ip_range="10.2.8.0/24"))
             # 待审批申请: 李一般申请加入 (张审批登录后通知中心可见)
             db.add(TeamNotice(type="apply", team_id=team.id,
                               from_user_id=demo_user_objs["liyiban"].id,

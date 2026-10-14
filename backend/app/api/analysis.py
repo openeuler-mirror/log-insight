@@ -21,7 +21,6 @@ from app.core.deps import (ensure_team_perm, get_current_user, get_current_user_
                            get_redis, is_platform_admin)
 from app.events.event_bus import EventBus
 from app.models.analyze import ParsedEventRecord
-from app.models.asset import AssetLibrary
 from app.models.task import Report, Task
 from app.models.user import User
 from app.modules.analyze import ANALYZE_PARSERS
@@ -43,27 +42,22 @@ async def _load_visible_task(db: AsyncSession, user: User, task_id: uuid.UUID) -
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     if task.user_id == user.id or is_platform_admin(user):
         return task
-    if task.asset_id is not None:
-        asset = (await db.execute(select(AssetLibrary)
-                                  .where(AssetLibrary.id == task.asset_id))).scalar_one_or_none()
-        if asset is not None:
-            try:
-                await ensure_team_perm(db, user, asset.team_id, "task:view")
-                return task
-            except HTTPException:
-                pass
+    if task.team_id is not None:
+        try:
+            await ensure_team_perm(db, user, task.team_id, "task:view")
+            return task
+        except HTTPException:
+            pass
     raise HTTPException(status.HTTP_403_FORBIDDEN, "无权访问该任务")
 
 
 async def _ensure_task_perm(db: AsyncSession, user: User, task: Task, perm: str) -> None:
-    """任务级权限: 创建者/管理员直通, 否则走资产所属团队的团队角色判定."""
+    """任务级权限: 创建者/管理员直通, 否则走任务归属团队的团队角色判定."""
     if task.user_id == user.id or is_platform_admin(user):
         return
-    if task.asset_id is None:
+    if task.team_id is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "无权操作该任务")
-    asset = (await db.execute(select(AssetLibrary)
-                              .where(AssetLibrary.id == task.asset_id))).scalar_one()
-    await ensure_team_perm(db, user, asset.team_id, perm)
+    await ensure_team_perm(db, user, task.team_id, perm)
 
 
 # ---------- 原始日志分页筛选 ----------
@@ -191,16 +185,14 @@ async def start_llm(
     queue = TaskQueue(redis)
     await queue.enqueue(str(task_id), "llm", {"run_id": run_id})
     log_audit(db, user, "使用 LLM 分析", task.name or task.filename,
-              team_id=(await _team_id_of_task(db, task)), detail={"run_id": run_id})
+              team_id=_task_team_id(task), detail={"run_id": run_id})
     await db.commit()
     return LlmStartResponse(run_id=run_id)
 
 
-async def _team_id_of_task(db: AsyncSession, task: Task) -> int | None:
-    if task.asset_id is None:
-        return None
-    return (await db.execute(select(AssetLibrary.team_id)
-                             .where(AssetLibrary.id == task.asset_id))).scalar_one_or_none()
+def _task_team_id(task: Task) -> int | None:
+    """任务归属团队 (无团队任务返回 None)."""
+    return task.team_id
 
 
 @router.get("/{task_id}/llm/events")

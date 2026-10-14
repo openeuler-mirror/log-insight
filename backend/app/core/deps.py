@@ -113,8 +113,8 @@ async def ensure_team_perm(db: AsyncSession, user: User, team_id: int, perm: str
 def require_team_perm(perm: str):
     """工厂依赖: 路由路径含 {team_id} 时使用, 返回 (user, team, role).
 
-    用法: trio: Annotated[tuple[User, Team, str], Depends(require_team_perm("asset:create"))]
-    非路径场景 (如经 asset_id 反查团队) 请改用 ensure_team_perm().
+    用法: trio: Annotated[tuple[User, Team, str], Depends(require_team_perm("team:role"))]
+    非路径场景 (如按任务反查团队) 请改用 ensure_team_perm().
     """
 
     async def checker(

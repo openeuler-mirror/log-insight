@@ -1,11 +1,11 @@
-"""团队级 RBAC 常量: 17 原子权限点 + 团队内三角色权限映射.
+"""团队级 RBAC 常量: 13 原子权限点 + 团队内三角色权限映射.
 
 与前端 src/rbac/permissions.ts 保持镜像 (witty-log-analyzer),
 修改任一侧必须同步另一侧.
 """
 
-# 17 个原子权限点 (key, 分组, 中文标签)
-PERMISSIONS_17: list[tuple[str, str, str]] = [
+# 13 个原子权限点 (key, 分组, 中文标签)
+PERMISSIONS: list[tuple[str, str, str]] = [
     ("dashboard:view", "工作台", "查看工作台"),
     ("team:view", "团队", "查看团队"),
     ("team:create", "团队", "创建团队"),
@@ -13,10 +13,6 @@ PERMISSIONS_17: list[tuple[str, str, str]] = [
     ("team:remove", "团队", "移除成员"),
     ("team:role", "团队", "调整成员角色"),
     ("team:approve", "团队", "审批申请"),
-    ("asset:view", "资产库", "查看资产库"),
-    ("asset:create", "资产库", "创建资产库"),
-    ("asset:edit", "资产库", "编辑资产库"),
-    ("asset:delete", "资产库", "删除资产库"),
     ("task:view", "解析任务", "查看解析任务"),
     ("task:create", "解析任务", "创建解析任务"),
     ("task:execute", "解析任务", "执行解析"),
@@ -25,13 +21,13 @@ PERMISSIONS_17: list[tuple[str, str, str]] = [
     ("audit:view", "审计日志", "查看团队审计"),
 ]
 
-PERM_GROUPS = ["工作台", "团队", "资产库", "解析任务", "审计日志"]
+PERM_GROUPS = ["工作台", "团队", "解析任务", "审计日志"]
 
 # 团队内三角色 -> 权限映射 ('*' 表示全部)
 TEAM_ROLE_PERMS: dict[str, list[str]] = {
     "owner": ["*"],
-    "team_admin": [p[0] for p in PERMISSIONS_17],
-    "member": ["dashboard:view", "team:view", "asset:view",
+    "team_admin": [p[0] for p in PERMISSIONS],
+    "member": ["dashboard:view", "team:view",
                "task:view", "task:create", "task:execute", "task:llm"],
 }
 

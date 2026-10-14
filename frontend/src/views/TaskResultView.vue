@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { useAssetsStore, type AnalyzeTask } from '@/stores/assets'
+import { useTasksStore, type AnalyzeTask } from '@/stores/tasks'
 import { useTeamsStore } from '@/stores/teams'
 import { PARSER_DEFS } from '@/parser/parsers'
 import type { TaskStats } from '@/parser/aggregate'
@@ -11,7 +11,7 @@ import type { EChartsOption } from 'echarts'
 import ChartBase from '@/components/ChartBase.vue'
 
 const route = useRoute()
-const assetsStore = useAssetsStore()
+const tasksStore = useTasksStore()
 const teamsStore = useTeamsStore()
 
 const taskId = computed(() => route.params.taskId as string)
@@ -25,11 +25,9 @@ let pollTimer: number | undefined
 async function loadTask() {
   loadErr.value = ''
   try {
-    task.value = await assetsStore.fetchTask(taskId.value)
+    task.value = await tasksStore.fetchTask(taskId.value)
     noAccess.value = false
     notFound.value = false
-    /* 关联资产 → 团队 (面包屑/权限用) */
-    if (task.value.assetId) assetsStore.fetchAsset(task.value.assetId).catch(() => {})
   } catch (e: any) {
     if (e?.response?.status === 403) noAccess.value = true
     else if (e?.response?.status === 404) notFound.value = true
@@ -75,10 +73,8 @@ onBeforeUnmount(() => {
 
 /* ---------- 权限 ---------- */
 const teamOfTask = computed(() => {
-  const assetId = task.value?.assetId
-  if (!assetId) return undefined
-  const asset = assetsStore.assetById(assetId)
-  return asset ? teamsStore.teamById(asset.teamId) : undefined
+  const tid = task.value?.teamId
+  return tid ? teamsStore.teamById(tid) : undefined
 })
 const teamId = computed(() => teamOfTask.value?.id ? String(teamOfTask.value.id) : '')
 const canLlm = computed(() => !!teamId.value && teamsStore.can(teamId.value, 'task:llm'))
@@ -360,14 +356,14 @@ async function startLlm() {
     <div class="o-banner">
       <div class="banner-left">
         <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`" class="back-btn">
-          ← 返回{{ task.assetName || '团队' }}
+          ← 返回{{ task.teamName || '团队' }}
         </router-link>
         <h2>
           {{ task.name || task.filename }}
           <span class="o-badge o-badge--outline">{{ parserName }}</span>
         </h2>
         <div class="meta">
-          <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`">{{ task.assetName || '—' }}</router-link>
+          <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`">{{ task.teamName || '—' }}</router-link>
           <span class="o-mono o-text-3">{{ task.filename }}（{{ (task.logSize / 1024).toFixed(1) }} KB）</span>
           <span class="o-text-3">{{ task.creatorName }} · {{ fmtTime(task.createdAt) }}</span>
         </div>

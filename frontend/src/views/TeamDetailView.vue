@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTeamsStore, type TeamDetail } from '@/stores/teams'
-import { useAssetsStore, type AnalyzeTask } from '@/stores/assets'
+import { useTasksStore, type AnalyzeTask } from '@/stores/tasks'
 import { useRbacStore } from '@/stores/rbac'
 import { PARSER_DEFS, parserList } from '@/parser/parsers'
 import { get } from '@/api/http'
@@ -18,7 +18,7 @@ import TeamAuditPanel from '@/components/TeamAuditPanel.vue'
 const route = useRoute()
 const rr = useRouter()
 const teamsStore = useTeamsStore()
-const assetsStore = useAssetsStore()
+const tasksStore = useTasksStore()
 const rbac = useRbacStore()
 
 const teamId = computed(() => route.params.id as string)
@@ -51,17 +51,7 @@ const TAB_KEYS = ['tasks', 'members', 'roles', 'audit'] as const
 type TabKey = (typeof TAB_KEYS)[number]
 const tab = ref<TabKey>((TAB_KEYS as readonly string[]).includes(route.query.tab as string) ? (route.query.tab as TabKey) : 'tasks')
 
-/* ---------- 任务 Tab：资产库选择 + 服务端分页 ---------- */
-const assetId = ref<number | ''>('')
-watch(
-  () => team.value?.assets,
-  (list) => {
-    if (list?.length && !list.some((a) => a.id === assetId.value)) assetId.value = list[0].id
-  },
-  { immediate: true },
-)
-const asset = computed(() => team.value?.assets.find((a) => a.id === assetId.value))
-
+/* ---------- 任务 Tab：团队任务（服务端分页） ---------- */
 const typeFilter = ref('')
 const statusFilter = ref('')
 const taskSearch = ref('')
@@ -71,11 +61,10 @@ const tasksErr = ref('')
 const tasksLoading = ref(false)
 
 async function loadTasks() {
-  if (!asset.value) return
   tasksLoading.value = true
   tasksErr.value = ''
   try {
-    await assetsStore.fetchAssetTasks(asset.value.id, {
+    await tasksStore.fetchTeamTasks(teamId.value, {
       statusFilter: statusFilter.value || undefined,
       parserType: typeFilter.value || undefined,
       kw: taskSearch.value.trim() || undefined,
@@ -88,7 +77,7 @@ async function loadTasks() {
     tasksLoading.value = false
   }
 }
-watch([typeFilter, statusFilter, taskSearch, assetId], () => {
+watch([typeFilter, statusFilter, taskSearch], () => {
   page.value = 1
   loadTasks()
 })
@@ -99,12 +88,12 @@ onMounted(() => {
   if (tab.value === 'tasks') loadTasks()
 })
 
-const taskTotal = computed(() => assetsStore.lastPage?.total ?? 0)
-const pagedTasks = computed<AnalyzeTask[]>(() => assetsStore.lastPage?.items ?? [])
+const taskTotal = computed(() => tasksStore.lastPage?.total ?? 0)
+const pagedTasks = computed<AnalyzeTask[]>(() => tasksStore.lastPage?.items ?? [])
 const totalPages = computed(() => Math.max(1, Math.ceil(taskTotal.value / PAGE_SIZE)))
 
 function sparkOf(taskId: string): Record<string, any>[] {
-  return assetsStore.lastPage?.sparks?.[taskId] ?? []
+  return tasksStore.lastPage?.sparks?.[taskId] ?? []
 }
 function criticalOf(t: AnalyzeTask): number {
   return sparkOf(t.id).reduce((s, b) => s + (b.critical ?? 0), 0)
@@ -177,7 +166,7 @@ async function removeTask(taskId: string, taskName: string) {
   if (!window.confirm(`确认删除任务「${taskName}」？删除后不可恢复`)) return
   taskErr.value = ''
   try {
-    await assetsStore.removeTask(taskId)
+    await tasksStore.removeTask(taskId)
     await loadTasks()
   } catch (e) {
     taskErr.value = apiError(e)
@@ -277,7 +266,6 @@ async function revoke(userId: number, name: string) {
           {{ team.name }}
           <span v-if="myRole" class="o-badge o-badge--brand">我 · {{ teamRoleById(myRole)?.name }}</span>
           <span class="o-badge o-badge--outline">{{ team.memberCount }} 成员</span>
-          <span class="o-badge o-badge--outline">{{ team.assets.length }} 资产库</span>
         </h2>
         <div class="sub">{{ team.desc }} · 建于 {{ (team.createdAt || '').slice(0, 10) }}</div>
       </div>
@@ -301,139 +289,115 @@ async function revoke(userId: number, name: string) {
 
     <!-- ====== 任务 Tab ====== -->
     <section v-if="tab === 'tasks'">
-      <div class="asset-bar o-card">
-        <div class="asset-bar-left">
-          <span class="lbl">资产库</span>
-          <select v-if="team.assets.length > 1" v-model="assetId" class="o-select" style="width: 220px">
-            <option v-for="a in team.assets" :key="a.id" :value="a.id">{{ a.name }}</option>
-          </select>
-          <template v-else-if="asset">
-            <b>{{ asset.name }}</b>
-            <span class="o-mono o-text-3">{{ asset.ipRange || '—' }}</span>
-          </template>
-          <span v-if="!team.assets.length" class="o-text-3">团队暂无资产库</span>
+      <div v-if="taskErr || memberErr" class="o-badge o-badge--danger" style="margin-bottom: 12px">{{ taskErr || memberErr }}</div>
+
+      <div class="o-operate-bar">
+        <div class="o-operate-left">
+          <span v-if="tasksLoading" class="o-mono o-text-3" style="font-size: 12.5px">加载中…</span>
+          <span v-else class="o-mono o-text-3" style="font-size: 12.5px">共 {{ taskTotal }} 个任务</span>
         </div>
-        <div class="o-row">
-          <button v-if="asset && can('task:create')" class="o-btn o-btn--primary" @click="rr.push(`/teams/${team.id}/new-task?assetId=${asset.id}`)">
+        <div class="o-operate-right">
+          <select v-model="typeFilter" class="o-select">
+            <option value="">全部类型</option>
+            <option v-for="p in parserList()" :key="p.type" :value="p.type">{{ p.name }}</option>
+          </select>
+          <select v-model="statusFilter" class="o-select">
+            <option value="">全部状态</option>
+            <option value="done">已完成</option>
+            <option value="running">解析中</option>
+            <option value="pending">排队中</option>
+            <option value="failed">失败</option>
+            <option value="cancelled">已取消</option>
+          </select>
+          <input v-model="taskSearch" class="o-input" placeholder="搜索任务名称 / 文件" />
+          <button v-if="can('task:create')" class="o-btn o-btn--primary" @click="rr.push(`/teams/${team.id}/new-task`)">
             + 创建解析任务
           </button>
         </div>
       </div>
 
-      <div v-if="taskErr || memberErr" class="o-badge o-badge--danger" style="margin-bottom: 12px">{{ taskErr || memberErr }}</div>
-
-      <div v-if="!team.assets.length" class="o-empty">
+      <div v-if="!pagedTasks.length && !tasksLoading" class="o-empty">
         <div class="icon">📭</div>
-        <div>该团队还没有资产库</div>
-        <div class="hint">创建团队时会自动生成同名默认资产库</div>
+        <div>暂无任务</div>
+        <div class="hint">点击右上角按钮创建第一个解析任务</div>
       </div>
 
-      <template v-else-if="asset">
-        <div class="o-operate-bar">
-          <div class="o-operate-left">
-            <span v-if="tasksLoading" class="o-mono o-text-3" style="font-size: 12.5px">加载中…</span>
-            <span v-else class="o-mono o-text-3" style="font-size: 12.5px">共 {{ taskTotal }} 个任务</span>
-          </div>
-          <div class="o-operate-right">
-            <select v-model="typeFilter" class="o-select">
-              <option value="">全部类型</option>
-              <option v-for="p in parserList()" :key="p.type" :value="p.type">{{ p.name }}</option>
-            </select>
-            <select v-model="statusFilter" class="o-select">
-              <option value="">全部状态</option>
-              <option value="done">已完成</option>
-              <option value="running">解析中</option>
-              <option value="pending">排队中</option>
-              <option value="failed">失败</option>
-              <option value="cancelled">已取消</option>
-            </select>
-            <input v-model="taskSearch" class="o-input" placeholder="搜索任务名称 / 文件" />
-          </div>
-        </div>
-
-        <div v-if="!pagedTasks.length && !tasksLoading" class="o-empty">
-          <div class="icon">📭</div>
-          <div>暂无任务</div>
-          <div class="hint">点击右上角按钮创建第一个解析任务</div>
-        </div>
-
-        <div v-else class="o-table-wrap">
-          <table class="o-table o-table--sticky-action">
-            <thead>
+      <div v-else class="o-table-wrap">
+        <table class="o-table o-table--sticky-action">
+          <thead>
+            <tr>
+              <th style="width: 30px"></th>
+              <th>名称 / 文件</th><th>类型</th><th>事件数</th><th>致命 / 错误</th><th>创建人</th><th>创建时间</th><th>状态</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="t in pagedTasks" :key="t.id">
               <tr>
-                <th style="width: 30px"></th>
-                <th>名称 / 文件</th><th>类型</th><th>事件数</th><th>致命 / 错误</th><th>创建人</th><th>创建时间</th><th>状态</th><th>操作</th>
+                <td>
+                  <button class="o-expand-btn" :title="expanded.includes(t.id) ? '收起明细' : '展开明细'" @click="toggleExpand(t.id)">
+                    {{ expanded.includes(t.id) ? '▾' : '▸' }}
+                  </button>
+                </td>
+                <td>
+                  <div class="task-name" :title="t.name || t.filename">{{ t.name || t.filename }}</div>
+                  <div class="task-path o-mono" :title="t.filename">{{ t.filename }}</div>
+                </td>
+                <td><span class="o-badge o-badge--outline">{{ parserName(t.parserType) }}</span></td>
+                <td class="o-mono num">{{ t.eventCount }}</td>
+                <td class="o-mono num">
+                  <span style="color: var(--danger)">{{ criticalOf(t) }}</span>
+                  /
+                  <span style="color: var(--warning)">{{ errorOf(t) }}</span>
+                </td>
+                <td>{{ t.creatorName || '—' }}</td>
+                <td class="o-mono o-text-3">{{ fmtTime(t.createdAt) }}</td>
+                <td>
+                  <span class="o-badge" :class="statusBadge(t.status).cls">
+                    {{ t.status === 'running' ? `解析中 ${t.progress}%` : statusBadge(t.status).label }}
+                  </span>
+                </td>
+                <td>
+                  <div class="o-row" style="gap: 2px">
+                    <router-link class="o-btn o-btn--sm o-btn--text" :to="`/tasks/${t.id}`">查看结果</router-link>
+                    <button v-if="can('task:delete')" class="o-btn o-btn--sm o-btn--text o-btn--danger" @click="removeTask(t.id, t.name || t.filename)">删除</button>
+                  </div>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              <template v-for="t in pagedTasks" :key="t.id">
-                <tr>
-                  <td>
-                    <button class="o-expand-btn" :title="expanded.includes(t.id) ? '收起明细' : '展开明细'" @click="toggleExpand(t.id)">
-                      {{ expanded.includes(t.id) ? '▾' : '▸' }}
-                    </button>
-                  </td>
-                  <td>
-                    <div class="task-name" :title="t.name || t.filename">{{ t.name || t.filename }}</div>
-                    <div class="task-path o-mono" :title="t.filename">{{ t.filename }}</div>
-                  </td>
-                  <td><span class="o-badge o-badge--outline">{{ parserName(t.parserType) }}</span></td>
-                  <td class="o-mono num">{{ t.eventCount }}</td>
-                  <td class="o-mono num">
-                    <span style="color: var(--danger)">{{ criticalOf(t) }}</span>
-                    /
-                    <span style="color: var(--warning)">{{ errorOf(t) }}</span>
-                  </td>
-                  <td>{{ t.creatorName || '—' }}</td>
-                  <td class="o-mono o-text-3">{{ fmtTime(t.createdAt) }}</td>
-                  <td>
-                    <span class="o-badge" :class="statusBadge(t.status).cls">
-                      {{ t.status === 'running' ? `解析中 ${t.progress}%` : statusBadge(t.status).label }}
-                    </span>
-                  </td>
-                  <td>
-                    <div class="o-row" style="gap: 2px">
-                      <router-link class="o-btn o-btn--sm o-btn--text" :to="`/tasks/${t.id}`">查看结果</router-link>
-                      <button v-if="can('task:delete')" class="o-btn o-btn--sm o-btn--text o-btn--danger" @click="removeTask(t.id, t.name || t.filename)">删除</button>
+              <tr v-if="expanded.includes(t.id)" class="o-expand-tr">
+                <td></td>
+                <td colspan="8">
+                  <div class="expand-body">
+                    <div class="expand-chart">
+                      <div class="expand-title">事件时序（按级别堆叠）</div>
+                      <ChartBase :option="sparkOption(t.id)" height="150px" />
                     </div>
-                  </td>
-                </tr>
-                <tr v-if="expanded.includes(t.id)" class="o-expand-tr">
-                  <td></td>
-                  <td colspan="8">
-                    <div class="expand-body">
-                      <div class="expand-chart">
-                        <div class="expand-title">事件时序（按级别堆叠）</div>
-                        <ChartBase :option="sparkOption(t.id)" height="150px" />
-                      </div>
-                      <div class="expand-side">
-                        <div class="expand-title">Top 错误码</div>
-                        <div v-if="statsLoading[t.id]" class="o-mono o-text-3">统计加载中…</div>
-                        <template v-else-if="(topCodeCache[t.id] ?? []).length">
-                          <div v-for="c in topCodeCache[t.id]" :key="c.name" class="code-chip">
-                            <span class="o-badge" :class="sevBadgeClass(c.severity as Severity)">{{ c.name }}</span>
-                            <span class="o-mono o-text-3">{{ c.category }} · {{ c.value }} 次</span>
-                          </div>
-                        </template>
-                        <div v-else class="o-mono o-text-3">暂无错误码统计</div>
-                        <router-link class="o-btn o-btn--sm" :to="`/tasks/${t.id}`" style="margin-top: 10px; width: fit-content">
-                          查看完整分析 →
-                        </router-link>
-                      </div>
+                    <div class="expand-side">
+                      <div class="expand-title">Top 错误码</div>
+                      <div v-if="statsLoading[t.id]" class="o-mono o-text-3">统计加载中…</div>
+                      <template v-else-if="(topCodeCache[t.id] ?? []).length">
+                        <div v-for="c in topCodeCache[t.id]" :key="c.name" class="code-chip">
+                          <span class="o-badge" :class="sevBadgeClass(c.severity as Severity)">{{ c.name }}</span>
+                          <span class="o-mono o-text-3">{{ c.category }} · {{ c.value }} 次</span>
+                        </div>
+                      </template>
+                      <div v-else class="o-mono o-text-3">暂无错误码统计</div>
+                      <router-link class="o-btn o-btn--sm" :to="`/tasks/${t.id}`" style="margin-top: 10px; width: fit-content">
+                        查看完整分析 →
+                      </router-link>
                     </div>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
 
-        <div class="o-pagination" v-if="totalPages > 1">
-          <button :disabled="page <= 1" @click="page--; loadTasks()">‹</button>
-          <button v-for="p in totalPages" :key="p" :class="{ active: page === p }" @click="page = p; loadTasks()">{{ p }}</button>
-          <button :disabled="page >= totalPages" @click="page++; loadTasks()">›</button>
-        </div>
-      </template>
+      <div class="o-pagination" v-if="totalPages > 1">
+        <button :disabled="page <= 1" @click="page--; loadTasks()">‹</button>
+        <button v-for="p in totalPages" :key="p" :class="{ active: page === p }" @click="page = p; loadTasks()">{{ p }}</button>
+        <button :disabled="page >= totalPages" @click="page++; loadTasks()">›</button>
+      </div>
     </section>
 
     <!-- ====== 团队 Tab ====== -->
@@ -595,25 +559,6 @@ async function revoke(userId: number, name: string) {
   font-size: 13px;
   color: var(--text-2);
   margin-top: 4px;
-}
-.asset-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-.asset-bar-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.asset-bar .lbl {
-  font-size: 13px;
-  color: var(--text-2);
 }
 .task-name {
   font-weight: 600;

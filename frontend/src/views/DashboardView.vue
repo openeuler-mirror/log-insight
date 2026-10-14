@@ -5,7 +5,7 @@ import { get } from '@/api/http'
 import { useRbacStore } from '@/stores/rbac'
 import { PARSER_DEFS } from '@/parser/parsers'
 import { fmtTime } from '@/parser/types'
-import type { AnalyzeTask } from '@/stores/assets'
+import type { AnalyzeTask } from '@/stores/tasks'
 import type { EChartsOption } from 'echarts'
 import ChartBase from '@/components/ChartBase.vue'
 
@@ -16,7 +16,6 @@ const denied = computed(() => (route.query.denied as string) || '')
 
 interface DashboardData {
   teams: number
-  assets: number
   tasks: number
   kpi: { total: number; critical: number; error: number; warning: number }
   recentTasks: AnalyzeTask[]
@@ -85,7 +84,6 @@ function parserName(type: string) {
   <template v-else-if="data">
     <div class="o-kpis" style="margin-bottom: 20px">
       <div class="o-kpi"><b>{{ data.teams }}</b><span>团队</span></div>
-      <div class="o-kpi"><b>{{ data.assets }}</b><span>资产库</span></div>
       <div class="o-kpi"><b>{{ data.tasks }}</b><span>解析任务</span></div>
       <div class="o-kpi"><b>{{ data.kpi.total }}</b><span>日志事件总量</span></div>
       <div class="o-kpi"><b style="color: var(--danger)">{{ data.kpi.critical }}</b><span>致命事件</span></div>
@@ -115,7 +113,7 @@ function parserName(type: string) {
             <tr v-for="t in data.recentTasks" :key="t.id">
               <td>
                 <router-link :to="`/tasks/${t.id}`">{{ t.name || t.filename }}</router-link>
-                <div class="o-mono o-text-3">{{ t.assetName || '—' }} · {{ t.creatorName }}</div>
+                <div class="o-mono o-text-3">{{ t.teamName || '—' }} · {{ t.creatorName }}</div>
               </td>
               <td><span class="o-badge o-badge--outline">{{ parserName(t.parserType) }}</span></td>
               <td class="o-mono">{{ t.eventCount }}</td>

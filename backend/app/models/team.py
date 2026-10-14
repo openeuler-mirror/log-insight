@@ -11,7 +11,7 @@ from app.core.database import Base
 
 
 class Team(Base):
-    """团队: 资产库与任务的归属主体."""
+    """团队: 解析任务与规则的作用域归属主体."""
     __tablename__ = "teams"
 
     id: Mapped[int] = mapped_column(primary_key=True)

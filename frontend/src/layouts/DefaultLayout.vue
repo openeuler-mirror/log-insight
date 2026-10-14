@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { router } from '@/router'
 import { useRbacStore } from '@/stores/rbac'
 import { useTeamsStore } from '@/stores/teams'
-import { useAssetsStore } from '@/stores/assets'
+import { useTasksStore } from '@/stores/tasks'
 import { teamRoleById } from '@/rbac/permissions'
 import { fmtTime } from '@/parser/types'
 import { apiError } from '@/api/http'
@@ -13,19 +13,16 @@ const route = useRoute()
 const rr = useRouter()
 const rbac = useRbacStore()
 const teamsStore = useTeamsStore()
-const assetsStore = useAssetsStore()
+const tasksStore = useTasksStore()
 
 /* 动态面包屑：首页 / 团队 / 团队名 / 当前页，中间层级可点击返回 */
 interface Crumb {
   label: string
   to?: string
 }
-const cachedTask = computed(() => assetsStore.taskCached(route.params.taskId as string))
-const cachedAsset = computed(() =>
-  cachedTask.value?.assetId ? assetsStore.assetById(cachedTask.value.assetId) : undefined,
-)
+const cachedTask = computed(() => tasksStore.taskCached(route.params.taskId as string))
 const cachedTeam = computed(() =>
-  cachedAsset.value ? teamsStore.teamById(cachedAsset.value.teamId) : undefined,
+  cachedTask.value?.teamId ? teamsStore.teamById(cachedTask.value.teamId) : undefined,
 )
 
 const crumbs = computed<Crumb[]>(() => {
@@ -43,7 +40,7 @@ const crumbs = computed<Crumb[]>(() => {
   if (route.name === 'task-result') {
     items.push({ label: '团队', to: '/teams' })
     items.push({
-      label: cachedTeam.value?.name ?? cachedTask.value?.assetName ?? '团队',
+      label: cachedTeam.value?.name ?? cachedTask.value?.teamName ?? '团队',
       to: cachedTeam.value ? `/teams/${cachedTeam.value.id}?tab=tasks` : '/teams',
     })
   }
@@ -104,7 +101,7 @@ async function logout() {
   <div class="shell" @click="menuOpen = false; noticeOpen = false">
     <header class="topbar" @click.stop>
       <div class="left">
-        <span class="logo" @click="rr.push('/dashboard')">鲲鹏运维平台</span>
+        <span class="logo" @click="rr.push('/dashboard')">log-insight</span>
         <nav class="nav">
           <router-link
             v-for="m in menus"

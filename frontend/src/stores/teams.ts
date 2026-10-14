@@ -1,4 +1,4 @@
-/* 团队 store: 团队(三角色) → 资产库 → 任务 + 申请/邀请通知, 全量走后端 API */
+/* 团队 store: 团队(三角色) → 任务 + 申请/邀请通知, 全量走后端 API */
 import { defineStore } from 'pinia'
 import { get, post, put, del } from '@/api/http'
 import { teamRoleHasPerm } from '@/rbac/permissions'
@@ -12,7 +12,6 @@ export interface TeamInfo {
   createdAt: string
   myRole?: string | null
   memberCount: number
-  assetCount: number
   taskCount: number
 }
 
@@ -24,16 +23,6 @@ export interface MemberInfo {
   dept: string
   avatarHue: number
   role: string
-}
-
-export interface AssetInfo {
-  id: number
-  teamId: number
-  name: string
-  desc: string
-  ipRange: string
-  createdAt: string
-  taskCount: number
 }
 
 export type NoticeType = 'invite' | 'apply'
@@ -54,7 +43,6 @@ export interface TeamNotice {
 
 export interface TeamDetail extends TeamInfo {
   members: MemberInfo[]
-  assets: AssetInfo[]
   pendingApplies: TeamNotice[]
 }
 

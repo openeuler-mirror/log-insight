@@ -1,7 +1,7 @@
 """任务: 日志上传(入队即返回) / 文本直传 / 预检 / 任务列表 / 详情 / 取消 / 删除.
 
-上传类型: diagnosis (通用诊断) / analyze (witty 解析任务, 指定解析器+资产库) /
-inspection (智能巡检); analyze 走团队级 RBAC (task:create).
+上传类型: diagnosis (通用诊断) / analyze (witty 解析任务, 指定解析器+团队) /
+inspection (智能巡检); 指定团队的任务走团队级 RBAC (task:create).
 """
 import shutil
 import uuid
@@ -12,15 +12,15 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.analysis import _ensure_task_perm, _load_visible_task, _team_id_of_task
+from app.api.analysis import _ensure_task_perm, _load_visible_task, _task_team_id
 from app.api.schemas import (PrecheckRequest, PrecheckResponse, TaskInfo, TextUploadRequest,
                              UploadResponse)
 from app.core.audit import log_audit
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.deps import ensure_team_perm, get_current_user, get_redis
-from app.models.asset import AssetLibrary
 from app.models.task import Task, TaskStatus, TaskType
+from app.models.team import Team
 from app.models.user import User
 from app.modules.analyze import ANALYZE_PARSERS
 from app.queue.task_queue import TaskQueue
@@ -48,19 +48,16 @@ async def _save_upload(file: UploadFile, dest_dir: Path, limit: int) -> tuple[Pa
     return storage_path, size
 
 
-async def _check_analyze_target(db: AsyncSession, user: User, parser_type: str, asset_id: int):
-    """analyze 任务入参校验: 解析器存在 + 资产库存在; 返回 (parser, asset)."""
-    from app.core.deps import ensure_team_perm
-
+async def _check_analyze_target(db: AsyncSession, user: User, parser_type: str, team_id: int):
+    """analyze 任务入参校验: 解析器存在 + 团队存在且具备 task:create; 返回 (parser, team)."""
     parser = ANALYZE_PARSERS.get(parser_type or "")
     if parser is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知解析器类型: {parser_type}")
-    asset = (await db.execute(select(AssetLibrary)
-                              .where(AssetLibrary.id == asset_id))).scalar_one_or_none()
-    if asset is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "资产库不存在")
-    await ensure_team_perm(db, user, asset.team_id, "task:create")
-    return parser, asset
+    team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
+    if team is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
+    await ensure_team_perm(db, user, team_id, "task:create")
+    return parser, team
 
 
 @router.post("/precheck", response_model=PrecheckResponse)
@@ -86,7 +83,7 @@ async def upload_text(
     redis: Annotated[object, Depends(get_redis)],
 ):
     """向导粘贴文本直传 (≤10MB): 落临时文件 → analyze 任务 → 入队."""
-    parser, asset = await _check_analyze_target(db, user, body.parser_type, body.asset_id)
+    parser, team = await _check_analyze_target(db, user, body.parser_type, body.team_id)
 
     task_id = uuid.uuid4()
     upload_dir = Path(settings.DATA_DIR) / "uploads" / str(task_id)
@@ -98,12 +95,12 @@ async def upload_text(
         id=task_id, type=TaskType.analyze, status=TaskStatus.pending,
         user_id=user.id, filename=body.filename or "pasted.log",
         storage_path=str(storage_path), params={},
-        name=body.name, parser_type=body.parser_type, asset_id=asset.id,
+        name=body.name, parser_type=body.parser_type, team_id=team.id,
         log_size=len(body.text.encode("utf-8")),
     )
     db.add(task)
-    log_audit(db, user, "创建解析任务", f"{asset.name} / {body.name}",
-              team_id=asset.team_id)
+    log_audit(db, user, "创建解析任务", f"{team.name} / {body.name}",
+              team_id=team.id)
     await db.commit()
 
     queue = TaskQueue(redis)
@@ -122,7 +119,6 @@ async def upload(
     task_type: Annotated[str, Form()] = "diagnosis",   # diagnosis / analyze / inspection
     parser_type: Annotated[str, Form()] = "",
     task_name: Annotated[str, Form()] = "",
-    asset_id: Annotated[int | None, Form()] = None,
     team_id: Annotated[int | None, Form()] = None,
 ):
     """上传日志: 保存文件 → 创建任务 → 入队 → 立即返回 task_id (分析异步进行).
@@ -153,19 +149,16 @@ async def upload(
         if suffix and suffix not in ALLOWED_SUFFIXES and not (uf.filename or "").endswith(".tar.gz"):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不支持的文件类型: {suffix}")
 
-    asset = None
+    team = None
     if task_type == "analyze":
-        if asset_id is None:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "解析任务必须指定资产库")
-        _, asset = await _check_analyze_target(db, user, parser_type, asset_id)
-
-    # 巡检/诊断任务可选指定团队作用域 (决定生效的团队规则集); 需具备该团队 task:create
-    if team_id is not None and asset is None:
+        if team_id is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "解析任务必须指定团队")
+        _, team = await _check_analyze_target(db, user, parser_type, team_id)
+    elif team_id is not None:
+        # 巡检/诊断任务可选指定团队作用域 (决定生效的团队规则集); 需具备该团队 task:create
         await ensure_team_perm(db, user, team_id, "task:create")
 
     params: dict = {"server_type": server_type}
-    if team_id is not None and asset is None:
-        params["team_id"] = team_id  # 规则作用域团队 (无资产库时记录于任务参数)
 
     task_id = uuid.uuid4()
     upload_dir = Path(settings.DATA_DIR) / "uploads" / str(task_id)
@@ -191,12 +184,12 @@ async def upload(
         user_id=user.id, filename=display_name,
         storage_path=storage_path, params=params,
         name=task_name, parser_type=parser_type,
-        asset_id=(asset.id if asset else None), log_size=total,
+        team_id=team_id, log_size=total,
     )
     db.add(task)
-    if asset is not None:
+    if team is not None:
         log_audit(db, user, "创建解析任务",
-                  f"{asset.name} / {task_name or display_name}", team_id=asset.team_id)
+                  f"{team.name} / {task_name or display_name}", team_id=team.id)
     await db.commit()
 
     queue = TaskQueue(redis)
@@ -224,16 +217,16 @@ async def list_tasks(
     creators = {u.id: (u.display_name or u.username) for u in
                 (await db.execute(select(User).where(
                     User.id.in_({t.user_id for t in tasks})))).scalars()}
-    assets = {a.id: a.name for a in
-              (await db.execute(select(AssetLibrary).where(
-                  AssetLibrary.id.in_({t.asset_id for t in tasks if t.asset_id} or [0])))).scalars()}
+    teams = {t.id: t.name for t in
+             (await db.execute(select(Team).where(
+                 Team.id.in_({t.team_id for t in tasks if t.team_id} or [0])))).scalars()}
     return [TaskInfo(
         id=t.id, type=t.type, status=t.status, filename=t.filename,
         progress=t.progress, error=t.error, created_at=t.created_at,
         finished_at=t.finished_at, name=t.name, parser_type=t.parser_type,
-        asset_id=t.asset_id, log_size=t.log_size, event_count=t.event_count,
+        team_id=t.team_id, log_size=t.log_size, event_count=t.event_count,
         creator_name=creators.get(t.user_id, ""),
-        asset_name=assets.get(t.asset_id, "") if t.asset_id else "") for t in tasks]
+        team_name=teams.get(t.team_id, "") if t.team_id else "") for t in tasks]
 
 
 @router.get("/{task_id}", response_model=TaskInfo)
@@ -244,17 +237,17 @@ async def get_task(
 ):
     task = await _load_visible_task(db, user, task_id)
     creator = (await db.execute(select(User).where(User.id == task.user_id))).first()
-    asset_name = ""
-    if task.asset_id:
-        asset_name = (await db.execute(select(AssetLibrary.name)
-                                       .where(AssetLibrary.id == task.asset_id))).scalar_one_or_none() or ""
+    team_name = ""
+    if task.team_id:
+        team_name = (await db.execute(select(Team.name)
+                                     .where(Team.id == task.team_id))).scalar_one_or_none() or ""
     return TaskInfo(
         id=task.id, type=task.type, status=task.status, filename=task.filename,
         progress=task.progress, error=task.error, created_at=task.created_at,
         finished_at=task.finished_at, name=task.name, parser_type=task.parser_type,
-        asset_id=task.asset_id, log_size=task.log_size, event_count=task.event_count,
+        team_id=task.team_id, log_size=task.log_size, event_count=task.event_count,
         creator_name=creator[0].display_name if creator else "",
-        asset_name=asset_name)
+        team_name=team_name)
 
 
 @router.delete("/{task_id}")
@@ -269,7 +262,7 @@ async def delete_task(
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     await _ensure_task_perm(db, user, task, "task:delete")
-    team_id = await _team_id_of_task(db, task)
+    team_id = _task_team_id(task)
     log_audit(db, user, "删除解析任务", task.name or task.filename, team_id=team_id)
     # 排队/运行中: 写入取消标记, 让 Worker 尽快停止 (随后任务行即被删除)
     if task.status in (TaskStatus.pending, TaskStatus.running):

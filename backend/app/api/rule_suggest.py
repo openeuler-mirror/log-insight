@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.analysis import (_ensure_task_perm, _load_visible_task,
-                              _team_id_of_task)
+                              _task_team_id)
 from app.api.schemas import RuleSuggestionInfo, RuleSuggestStartResponse
 from app.core.audit import log_audit
 from app.core.database import get_db
@@ -52,7 +52,7 @@ async def start_rule_suggest(
     queue = TaskQueue(redis)
     await queue.enqueue(str(task_id), "rule_suggest", {"run_id": run_id})
     log_audit(db, user, "生成规则推荐", task.name or task.filename,
-              team_id=(await _team_id_of_task(db, task)), detail={"run_id": run_id})
+              team_id=_task_team_id(task), detail={"run_id": run_id})
     await db.commit()
     return RuleSuggestStartResponse(run_id=run_id)
 

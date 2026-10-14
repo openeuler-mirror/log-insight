@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # 基础
-    APP_NAME: str = "KunpengRobot"
+    APP_NAME: str = "log-insight"
     DEBUG: bool = False
     API_PREFIX: str = "/api"
 
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # 数据库 / 缓存
-    DATABASE_URL: str = "postgresql+asyncpg://kunpeng:kunpeng@localhost:5432/kunpeng"
+    DATABASE_URL: str = "postgresql+asyncpg://loginsight:loginsight@localhost:5432/loginsight"
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # 存储
@@ -26,13 +26,13 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 2048
 
     # Redis Stream 任务队列
-    QUEUE_STREAM: str = "kunpeng:tasks"
+    QUEUE_STREAM: str = "loginsight:tasks"
     QUEUE_GROUP: str = "workers"
     QUEUE_MAX_LEN: int = 100000
 
     # 事件通道 (SSE 断线补发)
-    EVENT_STREAM_PREFIX: str = "kunpeng:events"
-    EVENT_CHANNEL_PREFIX: str = "kunpeng:ch"
+    EVENT_STREAM_PREFIX: str = "loginsight:events"
+    EVENT_CHANNEL_PREFIX: str = "loginsight:ch"
     EVENT_TTL_SECONDS: int = 3600
 
     # Worker
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     # 上传限流 (按用户, Redis 计数)
     UPLOAD_RATE_LIMIT_PER_MIN: int = 30
 
-    # 演示数据种子 (5 个演示账号 demo123 + 示例团队/资产库/任务); 生产环境置 False
+    # 演示数据种子 (5 个演示账号 demo123 + 示例团队/任务); 生产环境置 False
     SEED_DEMO_DATA: bool = True
 
 

@@ -1,6 +1,6 @@
-@startuml 鲲鹏运维平台-用例图
+@startuml log-insight-用例图
 ' ============================================================
-'  鲲鹏运维平台 (KunpengRobot) · UML 用例图
+'  log-insight · UML 用例图
 '  依据: backend/app/api/*.py + frontend/src/rbac/permissions.ts
 '        + frontend/src/router/index.ts (v0.2 已实现)
 '  说明: 双级权限模型 —— 平台级(admin/普通) × 团队级(创建者/管理员/成员)
@@ -17,7 +17,7 @@ skinparam usecase {
 skinparam actor {
     BorderColor #2F6FB0
 }
-title 鲲鹏运维平台 (KunpengRobot) · 用例图
+title log-insight · 用例图
 ' ---------- 参与者 (Actors) ----------
 actor "普通用户\n(团队·成员)"     as MEMBER
 actor "团队管理员"              as TADMIN
@@ -28,7 +28,7 @@ TADMIN <|-- MEMBER
 OWNER  <|-- TADMIN
 PADMIN <|-- MEMBER
 ' ---------- 系统边界 ----------
-rectangle "鲲鹏运维平台 (KunpengRobot)" as SYS {
+rectangle "log-insight" as SYS {
     ' 认证与用户
     rectangle "认证与用户" {
         usecase "登录"                 as UC_LOGIN
@@ -48,11 +48,6 @@ rectangle "鲲鹏运维平台 (KunpengRobot)" as SYS {
         usecase "调整成员角色"          as UC_ROLE
         usecase "移除成员"             as UC_REMOVE
         usecase "处理通知"             as UC_NOTICE
-    }
-    ' 资产库
-    rectangle "资产库" {
-        usecase "查看资产库"            as UC_VASSET
-        usecase "管理资产库\n(增/改/删)" as UC_MASSET
     }
     ' 故障诊断 · 日志分析
     rectangle "故障诊断 · 日志分析" {
@@ -110,7 +105,6 @@ MEMBER --> UC_DASH
 MEMBER --> UC_VTEAM
 MEMBER --> UC_APPLY
 MEMBER --> UC_NOTICE
-MEMBER --> UC_VASSET
 MEMBER --> UC_SUBMIT
 MEMBER --> UC_LISTTASK
 MEMBER --> UC_RESULT
@@ -126,7 +120,6 @@ TADMIN --> UC_INVITE
 TADMIN --> UC_APPROVE
 TADMIN --> UC_ROLE
 TADMIN --> UC_REMOVE
-TADMIN --> UC_MASSET
 TADMIN --> UC_DELTASK
 TADMIN --> UC_AUDIT
 ' 平台管理员: 在普通用户之上

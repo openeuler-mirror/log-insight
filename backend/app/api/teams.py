@@ -1,20 +1,20 @@
-"""团队 API: 列表/创建/详情/编辑 + 邀请/申请 + 成员角色管理 (团队级 RBAC).
+"""团队 API: 列表/创建/详情/编辑 + 邀请/申请 + 成员角色管理 + 团队任务列表 (团队级 RBAC).
 
-对齐 witty-log-analyzer 团队体系: 三角色 (owner/team_admin/member)、
-邀请与申请审批流、创建团队自动建同名资产库.
+对齐 witty-log-analyzer 团队体系: 三角色 (owner/team_admin/member)、邀请与申请审批流.
 """
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (InviteRequest, MemberInfo, MemberRoleUpdate, NoticeInfo,
-                             TeamCreate, TeamDetail, TeamInfo, TeamUpdate)
+                             TaskInfo, TaskListPage, TeamCreate, TeamDetail, TeamInfo,
+                             TeamUpdate)
 from app.core.audit import log_audit
 from app.core.database import get_db
-from app.core.deps import get_current_user, load_team_role, require_team_perm
-from app.models.asset import AssetLibrary
+from app.core.deps import (ensure_team_perm, get_current_user, load_team_role,
+                           require_team_perm)
 from app.models.task import Task
 from app.models.team import Team, TeamMember, TeamNotice
 from app.models.user import User
@@ -22,11 +22,12 @@ from app.models.user import User
 router = APIRouter(prefix="/teams", tags=["teams"])
 
 VALID_ROLES = {"member", "team_admin"}  # owner 仅经创建/转让产生, 不走邀请与角色调整
+SPARK_BUCKETS = 16
 
 
 async def _team_aggregates(db: AsyncSession, team_ids: list[int]) -> dict[int, dict]:
-    """每团队聚合: 成员数/资产数/任务数."""
-    out = {tid: {"members": 0, "assets": 0, "tasks": 0} for tid in team_ids}
+    """每团队聚合: 成员数/任务数."""
+    out = {tid: {"members": 0, "tasks": 0} for tid in team_ids}
     if not team_ids:
         return out
     for row in (await db.execute(
@@ -34,17 +35,9 @@ async def _team_aggregates(db: AsyncSession, team_ids: list[int]) -> dict[int, d
         .where(TeamMember.team_id.in_(team_ids)).group_by(TeamMember.team_id))).all():
         out[row[0]]["members"] = row[1]
     for row in (await db.execute(
-        select(AssetLibrary.team_id, func.count())
-        .where(AssetLibrary.team_id.in_(team_ids)).group_by(AssetLibrary.team_id))).all():
-        out[row[0]]["assets"] = row[1]
-    for row in (await db.execute(
-        select(Task.asset_id, func.count()).join(AssetLibrary, Task.asset_id == AssetLibrary.id)
-        .where(AssetLibrary.team_id.in_(team_ids)).group_by(Task.asset_id))).all():
-        # 任务数挂在资产维度, 汇总回团队
-        asset = (await db.execute(select(AssetLibrary.team_id)
-                                  .where(AssetLibrary.id == row[0]))).scalar_one_or_none()
-        if asset is not None:
-            out[asset]["tasks"] += row[1]
+        select(Task.team_id, func.count())
+        .where(Task.team_id.in_(team_ids)).group_by(Task.team_id))).all():
+        out[row[0]]["tasks"] = row[1]
     return out
 
 
@@ -52,8 +45,7 @@ def _team_info(team: Team, agg: dict, my_role: str | None) -> TeamInfo:
     return TeamInfo(
         id=team.id, name=team.name, desc=team.desc,
         owner_user_id=team.owner_user_id, created_at=team.created_at,
-        my_role=my_role, member_count=agg["members"],
-        asset_count=agg["assets"], task_count=agg["tasks"])
+        my_role=my_role, member_count=agg["members"], task_count=agg["tasks"])
 
 
 @router.get("", response_model=list[TeamInfo])
@@ -66,7 +58,7 @@ async def list_teams(
     my_roles = {m.team_id: m.role for m in (await db.execute(
         select(TeamMember).where(TeamMember.user_id == user.id))).scalars()}
     aggs = await _team_aggregates(db, [t.id for t in teams])
-    return [_team_info(t, aggs.get(t.id, {"members": 0, "assets": 0, "tasks": 0}),
+    return [_team_info(t, aggs.get(t.id, {"members": 0, "tasks": 0}),
                        my_roles.get(t.id)) for t in teams]
 
 
@@ -76,20 +68,18 @@ async def create_team(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """创建团队: 同事务建 Team + owner 成员 + 同名资产库 (对齐 witty 联动)."""
+    """创建团队: 同事务建 Team + owner 成员 (对齐 witty 联动)."""
     if (await db.execute(select(Team).where(Team.name == body.name))).scalar_one_or_none():
         raise HTTPException(status.HTTP_409_CONFLICT, "团队名已存在")
     team = Team(name=body.name, desc=body.desc, owner_user_id=user.id)
     db.add(team)
     await db.flush()
     db.add(TeamMember(team_id=team.id, user_id=user.id, role="owner"))
-    db.add(AssetLibrary(team_id=team.id, name=body.name,
-                        desc=f"{body.name} 默认资产库", ip_range=""))
     log_audit(db, user, "创建团队", f"{body.name}（你自动成为创建者）", team_id=team.id)
     await db.commit()
     return TeamInfo(id=team.id, name=team.name, desc=team.desc,
                     owner_user_id=team.owner_user_id, created_at=team.created_at,
-                    my_role="owner", member_count=1, asset_count=1, task_count=0)
+                    my_role="owner", member_count=1, task_count=0)
 
 
 @router.get("/{team_id}", response_model=TeamDetail)
@@ -98,7 +88,7 @@ async def team_detail(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """团队详情: 成员/资产库/待审批申请 (申请仅 owner/team_admin 可见)."""
+    """团队详情: 成员/待审批申请 (申请仅 owner/team_admin 可见)."""
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if team is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
@@ -112,30 +102,92 @@ async def team_detail(
             .where(TeamMember.team_id == team_id)
             .order_by(TeamMember.created_at))).all()]
 
-    assets = (await db.execute(
-        select(AssetLibrary).where(AssetLibrary.team_id == team_id)
-        .order_by(AssetLibrary.created_at))).scalars().all()
-    asset_task_counts = dict((await db.execute(
-        select(Task.asset_id, func.count()).where(Task.asset_id.in_([a.id for a in assets] or [0]))
-        .group_by(Task.asset_id))).all())
-    from app.api.schemas import AssetInfo
-    asset_infos = [AssetInfo(id=a.id, team_id=a.team_id, name=a.name, desc=a.desc,
-                             ip_range=a.ip_range, created_at=a.created_at,
-                             task_count=asset_task_counts.get(a.id, 0)) for a in assets]
-
     pending_applies: list[NoticeInfo] = []
     if my_role in ("owner", "team_admin"):
         pending_applies = await _notice_infos(db, select(TeamNotice).where(
             TeamNotice.team_id == team_id, TeamNotice.type == "apply",
             TeamNotice.status == "pending"))
 
-    agg = (await _team_aggregates(db, [team_id])).get(team_id,
-                                                      {"members": 0, "assets": 0, "tasks": 0})
+    agg = (await _team_aggregates(db, [team_id])).get(team_id, {"members": 0, "tasks": 0})
     return TeamDetail(
         id=team.id, name=team.name, desc=team.desc, owner_user_id=team.owner_user_id,
         created_at=team.created_at, my_role=my_role,
-        member_count=agg["members"], asset_count=agg["assets"], task_count=agg["tasks"],
-        members=members, assets=asset_infos, pending_applies=pending_applies)
+        member_count=agg["members"], task_count=agg["tasks"],
+        members=members, pending_applies=pending_applies)
+
+
+async def _spark_of(db: AsyncSession, task_id) -> list[dict]:
+    """单任务 16 桶时序概览 (SQL width_bucket, 免全量加载)."""
+    rows = (await db.execute(text("""
+        WITH t AS (SELECT min(ts) mn, max(ts) mx FROM parsed_events WHERE task_id = :tid)
+        SELECT width_bucket(pe.ts, t.mn, t.mx + 1, :n) AS b,
+               count(*) AS total,
+               count(*) FILTER (WHERE pe.severity = 'critical') AS critical,
+               count(*) FILTER (WHERE pe.severity = 'error') AS error
+        FROM parsed_events pe, t
+        WHERE pe.task_id = :tid
+        GROUP BY 1 ORDER BY 1
+    """), {"tid": str(task_id), "n": SPARK_BUCKETS})).all()
+    if not rows:
+        return []
+    bounds = (await db.execute(text(
+        "SELECT min(ts) mn, max(ts) mx FROM parsed_events WHERE task_id = :tid"),
+        {"tid": str(task_id)})).one()
+    mn, mx = int(bounds.mn), int(bounds.mx)
+    step = max(mx - mn, 60_000) / SPARK_BUCKETS
+    by_idx = {int(r[0]): (int(r[1]), int(r[2]), int(r[3])) for r in rows}
+    from datetime import datetime
+    out = []
+    for i in range(SPARK_BUCKETS):
+        t = int(mn + i * step)
+        lt = datetime.fromtimestamp(t / 1000)
+        total, crit, err = by_idx.get(i + 1, (0, 0, 0))  # width_bucket 从 1 起
+        out.append({"t": t,
+                    "label": f"{lt.hour:02d}:{lt.minute:02d}",
+                    "total": total, "critical": crit, "error": err})
+    return out
+
+
+@router.get("/{team_id}/tasks", response_model=TaskListPage)
+async def list_team_tasks(
+    team_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+    status_filter: str | None = None,
+    parser_type: str | None = None,
+    kw: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """团队任务 (服务端分页/筛选 + 每任务 spark)."""
+    await ensure_team_perm(db, user, team_id, "task:view")
+    team_name = (await db.execute(select(Team.name)
+                                 .where(Team.id == team_id))).scalar_one_or_none() or ""
+
+    query = select(Task).where(Task.team_id == team_id)
+    if status_filter:
+        query = query.where(Task.status == status_filter)
+    if parser_type:
+        query = query.where(Task.parser_type == parser_type)
+    if kw:
+        query = query.where(Task.name.ilike(f"%{kw}%"))
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    tasks = (await db.execute(query.order_by(Task.created_at.desc())
+                              .offset((page - 1) * page_size).limit(page_size))).scalars().all()
+
+    items, sparks = [], {}
+    for t in tasks:
+        creator = (await db.execute(select(User.display_name, User.username)
+                                    .where(User.id == t.user_id))).first()
+        items.append(TaskInfo(
+            id=t.id, type=t.type, status=t.status, filename=t.filename,
+            progress=t.progress, error=t.error, created_at=t.created_at,
+            finished_at=t.finished_at, name=t.name, parser_type=t.parser_type,
+            team_id=t.team_id, log_size=t.log_size, event_count=t.event_count,
+            creator_name=(creator[0] or creator[1]) if creator else "",
+            team_name=team_name))
+        sparks[str(t.id)] = await _spark_of(db, t.id)
+    return TaskListPage(total=total, items=items, sparks=sparks)
 
 
 @router.put("/{team_id}", response_model=TeamInfo)
@@ -153,8 +205,7 @@ async def update_team(
     team.name, team.desc = body.name, body.desc
     log_audit(db, user, "编辑团队", body.name, team_id=team_id)
     await db.commit()
-    agg = (await _team_aggregates(db, [team_id])).get(team_id,
-                                                      {"members": 0, "assets": 0, "tasks": 0})
+    agg = (await _team_aggregates(db, [team_id])).get(team_id, {"members": 0, "tasks": 0})
     _, my_role = await load_team_role(db, user, team_id)
     return _team_info(team, agg, my_role)
 

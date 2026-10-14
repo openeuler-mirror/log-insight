@@ -1,5 +1,5 @@
 @startuml 模块图
-' 鲲鹏运维平台 模块图 (组件视图)
+' log-insight 模块图 (组件视图)
 left to right direction
 skinparam defaultTextAlignment center
 skinparam shadowing false

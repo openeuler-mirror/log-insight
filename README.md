@@ -11,14 +11,14 @@
 ## 功能特性
 
 - **用户权限控制**：JWT + 平台级 RBAC，叠加团队级三角色（创建者 / 管理员 / 普通成员）；令牌刷新与黑名单登出
-- **团队协作**：团队创建 / 申请加入 / 邀请审批 / 成员角色调整 / 通知中心；按团队隔离的资产库
+- **团队协作**：团队创建 / 申请加入 / 邀请审批 / 成员角色调整 / 通知中心；按团队隔离的任务与规则作用域
 - **日志解析**：6 种解析器插件（Linux syslog / Nginx / Windows 事件 / Redfish / Java 应用 / 通用兜底），上传前 512KB 切片预检，支持文件上传与粘贴两种模式
 - **故障诊断日志分析**：日志包入队即返回，Redis Stream 队列并发分析，SSE 实时流式输出，原始日志服务端分页筛选
 - **智能巡检**：规则引擎优先匹配 + 按需 LLM 智能总结（SSE 流式生成，未配置 LLM 自动降级为纯规则）
 - **智能巡检规则推荐**：对已完成巡检任务评估规则覆盖度并推荐可新增规则项，用户可编辑并一键接纳
 - **规则管理**：关键字 / 正则 / 阈值 / 脚本四类规则的增删改查；正则灾难性回溯防护、版本化热加载、变更审计
-- **性能分析**：ECharts 时序图表，支持 blktrace 块设备 IO / netcap 网络抓包解析；服务端降采样查询，视图配置服务端持久化（刷新 / 切页签 / 换设备不丢失）
-- **审计日志**：团队级操作审计（任务 / 资产 / 成员 / 规则变更），支持按动作与关键字检索
+- **性能分析**：上传文件即解析的 ECharts 时序图表，支持 sar 系统性能（CPU / 内存 / 磁盘）/ blktrace 块设备 IO / netcap 网络抓包；解析在请求内完成，结果不落库仅本次展示
+- **审计日志**：团队级操作审计（任务 / 成员 / 规则变更），支持按动作与关键字检索
 
 ## 界面预览
 
@@ -34,9 +34,9 @@
 |----------|----------|
 | ![任务结果分析](docs/screenshots/05-task-result.png) | ![规则管理](docs/screenshots/06-rules.png) |
 
-| 性能分析 · 性能图表 | 性能分析 · 网络抓包分析 |
+| 性能分析 · sar 性能分析 | 性能分析 · 网络抓包分析 |
 |----------|----------|
-| ![性能分析-性能图表](docs/screenshots/07-perf-charts.png) | ![性能分析-网络抓包分析](docs/screenshots/08-perf-netcap.png) |
+| ![性能分析-sar性能分析](docs/screenshots/07-perf-charts.png) | ![性能分析-网络抓包分析](docs/screenshots/08-perf-netcap.png) |
 
 | 性能分析 · blktrace 分析 | 智能巡检 |
 |----------|----------|
@@ -144,16 +144,16 @@ docker compose up -d       # 拉起 postgres / redis / api / worker / web
 log-insight/
 ├── backend/
 │   ├── app/
-│   │   ├── api/            # auth / users / teams / notices / audit / dashboard / assets /
+│   │   ├── api/            # auth / users / teams / notices / audit / dashboard /
 │   │   │                   # tasks / analysis(聚合+LLM+SSE) / rules / metrics / perf / rule_suggest
 │   │   ├── core/           # 配置 / 安全(JWT) / 数据库 / 双级 RBAC 依赖注入 / 审计 / 表结构守卫
-│   │   ├── models/         # 用户-角色-权限 / 团队-成员-通知-资产库 / 任务 / 解析事件 /
+│   │   ├── models/         # 用户-角色-权限 / 团队-成员-通知 / 任务 / 解析事件 /
 │   │   │                   # 规则 / 指标 / 用户偏好 / 审计 / 规则推荐
 │   │   ├── modules/
 │   │   │   ├── analyze/    # 6 解析器插件 / 聚合 / 五段报告 / 演示日志
 │   │   │   ├── diagnosis/  # 诊断流水线 / 规则引擎 / 脚本执行器 / LLM 接入
 │   │   │   ├── inspection/ # 巡检流水线 / 检查项插件 / 规则推荐
-│   │   │   └── perf/       # 性能采集解析（blktrace / netcap）
+│   │   │   └── perf/       # 性能采集解析（sar / blktrace / netcap）
 │   │   ├── queue/          # Redis Stream 任务队列
 │   │   ├── events/         # 事件总线（Pub/Sub + Stream 留存）
 │   │   ├── worker/         # Worker 消费循环 + 定时调度
@@ -168,9 +168,9 @@ log-insight/
 ├── frontend/               # Vue3 + TS + Pinia（o-design 风格，基于 witty-log-analyzer）
 │   └── src/
 │       ├── api/http.ts     # axios 封装：Bearer + 驼峰化 + 401 刷新重放
-│       ├── stores/         # rbac / teams / assets / audit
+│       ├── stores/         # rbac / teams / tasks / audit
 │       ├── views/          # 登录 / 工作台 / 团队×2 / 任务向导 / 解析结果 / 规则 / 性能 / 巡检×2
-│       ├── components/     # ChartBase / 团队面板 / 性能图表组件
+│       ├── components/     # ChartBase / 团队面板 / 性能分析面板（sar / netcap / blktrace）
 │       ├── rbac/           # 权限常量（与后端权限点镜像）
 │       └── parser/         # 解析器元数据 + 聚合类型 + 演示日志生成器
 ├── deploy/                 # docker-compose / Dockerfile / Nginx / 裸机脚本

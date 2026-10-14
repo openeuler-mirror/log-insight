@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTeamsStore } from '@/stores/teams'
-import { useAssetsStore } from '@/stores/assets'
 import { useRbacStore } from '@/stores/rbac'
 import { PARSER_DEFS, parserList } from '@/parser/parsers'
 import { genAppLog, genDmesg, genRedfish, genSel, genSyslog, genWindows } from '@/parser/mock-logs'
@@ -11,19 +10,16 @@ import http, { post, apiError } from '@/api/http'
 const route = useRoute()
 const rr = useRouter()
 const teamsStore = useTeamsStore()
-const assetsStore = useAssetsStore()
 const rbac = useRbacStore()
 
 const teamId = computed(() => route.params.id as string)
 const team = computed(() => teamsStore.teamById(teamId.value))
-const asset = computed(() => assetsStore.assetById(route.query.assetId as string))
 const myRole = computed(() => teamsStore.myRoleOf(teamId.value))
 const canView = computed(() => teamsStore.can(teamId.value, 'task:view'))
 const canExecute = computed(() => teamsStore.can(teamId.value, 'task:execute'))
 
 onMounted(() => {
-  teamsStore.fetchTeam(teamId.value).then(() =>
-    assetsStore.fetchTeamAssets(teamId.value)).catch(() => {})
+  teamsStore.fetchTeam(teamId.value).catch(() => {})
 })
 
 const step = ref(1)
@@ -137,7 +133,7 @@ function toStep2() {
 }
 
 async function execute() {
-  if (!asset.value || running.value) return
+  if (!teamId.value || running.value) return
   running.value = true
   err.value = ''
   try {
@@ -148,14 +144,14 @@ async function execute() {
       form.append('task_type', 'analyze')
       form.append('parser_type', parserType.value)
       form.append('task_name', taskName.value.trim())
-      form.append('asset_id', String(asset.value.id))
+      form.append('team_id', teamId.value)
       const res = await http.post('/api/tasks/upload', form)
       taskId = res.data.taskId
     } else {
       const data = await post<{ taskId: string }>('/tasks/upload-text', {
         name: taskName.value.trim(),
         parser_type: parserType.value,
-        asset_id: asset.value.id,
+        team_id: Number(teamId.value),
         text: logText.value,
         filename: fileName.value || 'pasted_input.log',
       })
@@ -175,13 +171,12 @@ async function execute() {
     <div>无权创建解析任务</div>
     <div class="hint">你不属于该团队成员，或团队角色无「创建解析任务」权限（task:view / task:create）</div>
   </div>
-  <template v-else-if="asset">
+  <template v-else-if="team">
     <div class="o-page-head">
       <div>
         <h2>创建解析任务</h2>
         <div class="sub">
           <router-link :to="`/teams/${teamId}?tab=tasks`">{{ team?.name ?? '' }}</router-link>
-          · {{ asset.name }} · <span class="o-mono o-text-3">{{ asset.ipRange || '—' }}</span>
         </div>
       </div>
       <span class="o-badge o-badge--outline">三步完成：准备日志 → 确认执行 → 查看结果</span>
@@ -305,8 +300,8 @@ async function execute() {
           <span class="v o-mono">{{ fileName || 'pasted_input.log' }}</span>
         </div>
         <div class="confirm-item">
-          <span class="k">所属资产库</span>
-          <span class="v">{{ asset.name }}</span>
+          <span class="k">所属团队</span>
+          <span class="v">{{ team?.name ?? '—' }}</span>
         </div>
         <div class="confirm-item">
           <span class="k">日志规模</span>
@@ -332,7 +327,7 @@ async function execute() {
       </div>
     </div>
   </template>
-  <div v-else class="o-empty o-card">缺少资产库参数，请从团队任务页进入</div>
+  <div v-else class="o-empty o-card">团队不存在或无权访问，请从团队列表进入</div>
 </template>
 
 <style scoped>

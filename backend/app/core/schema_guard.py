@@ -23,9 +23,17 @@ _GUARDS: list[tuple[str, str]] = [
     ("ALTER TYPE tasktype ADD VALUE IF NOT EXISTS 'analyze'", "tasktype 枚举加 analyze"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name VARCHAR(128) DEFAULT ''", "tasks.name"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parser_type VARCHAR(32) DEFAULT ''", "tasks.parser_type"),
-    ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS asset_id INTEGER REFERENCES asset_libraries(id)", "tasks.asset_id"),
+    ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id)", "tasks.team_id"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS log_size BIGINT DEFAULT 0", "tasks.log_size"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_count INTEGER DEFAULT 0", "tasks.event_count"),
+    # 去资产库: 回填归属团队后再删除归属列与资产库表 (幂等; 生产请用 Alembic 迁移)
+    ("UPDATE tasks SET team_id = al.team_id FROM asset_libraries al WHERE tasks.asset_id = al.id",
+     "tasks.team_id 回填 (经资产库)"),
+    ("UPDATE tasks SET team_id = (params->>'team_id')::int "
+     "WHERE team_id IS NULL AND params ? 'team_id' AND params->>'team_id' ~ '^[0-9]+$'",
+     "tasks.team_id 回填 (经 params)"),
+    ("ALTER TABLE tasks DROP COLUMN IF EXISTS asset_id", "tasks 去 asset_id"),
+    ("DROP TABLE IF EXISTS asset_libraries", "删除 asset_libraries 表"),
     # users 表: 前端展示字段 (witty User 模型)
     ("ALTER TABLE users ADD COLUMN IF NOT EXISTS title VARCHAR(64) DEFAULT ''", "users.title"),
     ("ALTER TABLE users ADD COLUMN IF NOT EXISTS dept VARCHAR(64) DEFAULT ''", "users.dept"),
