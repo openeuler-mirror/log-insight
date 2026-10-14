@@ -1,0 +1,2 @@
+# KunpengRobot backend 开发/测试依赖 (不含运行时依赖, 运行时见 requirements.txt)
+pytest>=8.0
