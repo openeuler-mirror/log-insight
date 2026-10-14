@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 鲲鹏运维平台 - Linux 裸机安装脚本 (systemd)
+# log-insight - Linux 裸机安装脚本 (systemd)
 # 前置: 已安装 Python 3.11+ / PostgreSQL / Redis / Nginx
 # 用法: sudo bash install.sh
 set -euo pipefail
 
-APP_NAME=kunpeng
+APP_NAME=loginsight
 INSTALL_DIR=/opt/$APP_NAME
 VENV=$INSTALL_DIR/venv
 SRC_DIR="$(cd "$(dirname "$0")/../.." && pwd)/backend"
@@ -19,7 +19,7 @@ echo "==> 安装 Python 依赖"
 echo "==> 写入环境配置"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
 cat > "$INSTALL_DIR/.env" <<EOF
-DATABASE_URL=postgresql+asyncpg://kunpeng:kunpeng@127.0.0.1:5432/kunpeng
+DATABASE_URL=postgresql+asyncpg://loginsight:loginsight@127.0.0.1:5432/loginsight
 REDIS_URL=redis://127.0.0.1:6379/0
 SECRET_KEY=$(openssl rand -hex 32)
 DATA_DIR=$INSTALL_DIR/data
@@ -29,7 +29,7 @@ fi
 echo "==> 创建 systemd 服务"
 cat > /etc/systemd/system/${APP_NAME}-api.service <<EOF
 [Unit]
-Description=KunpengRobot API
+Description=log-insight API
 After=network.target postgresql.service redis.service
 
 [Service]
@@ -44,7 +44,7 @@ EOF
 
 cat > /etc/systemd/system/${APP_NAME}-worker.service <<EOF
 [Unit]
-Description=KunpengRobot Analysis Worker
+Description=log-insight Analysis Worker
 After=network.target ${APP_NAME}-api.service
 
 [Service]

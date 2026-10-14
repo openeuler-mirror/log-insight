@@ -1,8 +1,8 @@
 {
-  "name": "kunpeng-robot-frontend",
+  "name": "log-insight-frontend",
   "private": true,
   "version": "0.1.0",
-  "description": "鲲鹏运维平台前端 — 基于 witty-log-analyzer (MulanPSL-2.0) 的 o-design 实现",
+  "description": "log-insight 前端 — 基于 witty-log-analyzer (MulanPSL-2.0) 的 o-design 实现",
   "type": "module",
   "scripts": {
     "dev": "vite",

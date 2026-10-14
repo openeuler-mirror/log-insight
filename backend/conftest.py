@@ -14,7 +14,7 @@ BACKEND = Path(__file__).resolve().parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-# 真实 infra: 本地 PostgreSQL(库 kunpeng) 与 Redis(测试专用 db9)
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/kunpeng")
+# 真实 infra: 本地 PostgreSQL(库 loginsight) 与 Redis(测试专用 db9)
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://loginsight:loginsight@127.0.0.1:5432/loginsight")
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/9")
 os.environ.setdefault("SEED_DEMO_DATA", "False")  # 测试不触发演示数据种子

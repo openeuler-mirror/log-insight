@@ -1,4 +1,4 @@
-# KunpengRobot backend dependencies (API & Worker shared)
+# log-insight backend dependencies (API & Worker shared)
 fastapi>=0.115
 uvicorn[standard]>=0.30
 gunicorn>=21.2; sys_platform != "win32"

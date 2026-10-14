@@ -144,7 +144,7 @@ def completed_inspection(client, seeded_users):
         "/api/tasks/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("inspection.log", INSPECTION_LOG.encode("utf-8"), "text/plain")},
-        data={"task_type": "inspection", "server_type": "kunpeng"},
+        data={"task_type": "inspection", "server_type": "generic"},
     )
     assert resp.status_code == 200, resp.text
     task_id = resp.json()["task_id"]

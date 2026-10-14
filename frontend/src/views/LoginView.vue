@@ -55,9 +55,9 @@ function submit() {
   <div class="login">
     <div class="panel">
       <div class="brand">
-        <span class="mark">鲲</span>
+        <span class="mark">L</span>
         <div>
-          <h1>鲲鹏运维平台</h1>
+          <h1>log-insight</h1>
           <p>服务器日志解析分析 · 团队协作 · 智能诊断</p>
         </div>
       </div>

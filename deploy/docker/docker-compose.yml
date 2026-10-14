@@ -1,4 +1,4 @@
-# 鲲鹏运维平台 - Docker Compose 部署
+# log-insight - Docker Compose 部署
 # 使用: docker compose up -d
 # 镜像支持 linux/amd64 + linux/arm64 双架构 (buildx 构建)
 
@@ -6,13 +6,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: kunpeng
-      POSTGRES_PASSWORD: kunpeng
-      POSTGRES_DB: kunpeng
+      POSTGRES_USER: loginsight
+      POSTGRES_PASSWORD: loginsight
+      POSTGRES_DB: loginsight
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kunpeng"]
+      test: ["CMD-SHELL", "pg_isready -U loginsight"]
       interval: 10s
       retries: 5
     restart: unless-stopped
@@ -30,7 +30,7 @@ services:
       dockerfile: deploy/docker/Dockerfile
       target: api
     environment: &backend_env
-      DATABASE_URL: postgresql+asyncpg://kunpeng:kunpeng@postgres:5432/kunpeng
+      DATABASE_URL: postgresql+asyncpg://loginsight:loginsight@postgres:5432/loginsight
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY:-CHANGE-ME-IN-PRODUCTION}
       LLM_API_BASE: ${LLM_API_BASE:-}

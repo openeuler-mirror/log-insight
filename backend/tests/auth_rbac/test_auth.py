@@ -2,7 +2,7 @@
 
     :Preparation
         1. 依赖本地真实基础设施: PostgreSQL + Redis; 连接信息由 backend/conftest.py 在导入 app 前注入
-           (DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/kunpeng,
+           (DATABASE_URL=postgresql+asyncpg://loginsight:loginsight@127.0.0.1:5432/loginsight,
             REDIS_URL=redis://127.0.0.1:6379/9 测试专用 db9);
         2. 以 `with TestClient(app)` 启动真实 lifespan: 建 Redis 客户端 + schema_guard + create_all +
            权限/角色/管理员幂等种子(SEED_DEMO_DATA=False 跳过演示数据); 全部请求复用同一事件循环;
