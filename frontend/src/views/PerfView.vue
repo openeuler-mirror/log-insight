@@ -1,21 +1,21 @@
 <script setup lang="ts">
-/* 性能分析: 汇总性能相关分析工具 (性能图表 / 网络抓包分析 / blktrace 分析) */
+/* 性能分析: 汇总性能相关分析工具 (sar 性能分析 / 网络抓包分析 / blktrace 分析) */
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import PerfMetricsPanel from '@/components/PerfMetricsPanel.vue'
+import PerfSarPanel from '@/components/PerfSarPanel.vue'
 import PerfNetcap from '@/components/PerfNetcap.vue'
 import PerfBlktrace from '@/components/PerfBlktrace.vue'
 
-type TabKey = 'charts' | 'netcap' | 'blktrace'
+type TabKey = 'sar' | 'netcap' | 'blktrace'
 const TABS: { key: TabKey; label: string; icon: string }[] = [
-  { key: 'charts', label: '性能图表', icon: '📈' },
+  { key: 'sar', label: 'sar 性能分析', icon: '📈' },
   { key: 'netcap', label: '网络抓包分析', icon: '🔎' },
   { key: 'blktrace', label: 'blktrace 分析', icon: '💽' },
 ]
 
 const route = useRoute()
 const router = useRouter()
-const tab = ref<TabKey>('charts')
+const tab = ref<TabKey>('sar')
 
 onMounted(() => {
   const q = route.query.tab as string | undefined
@@ -41,7 +41,7 @@ watch(tab, (v) => {
     </button>
   </div>
 
-  <PerfMetricsPanel v-if="tab === 'charts'" />
+  <PerfSarPanel v-if="tab === 'sar'" />
   <PerfNetcap v-else-if="tab === 'netcap'" />
   <PerfBlktrace v-else />
 </template>
