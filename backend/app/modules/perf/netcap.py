@@ -9,6 +9,8 @@ import ipaddress
 import struct
 from collections import Counter, defaultdict
 
+from app.modules.perf.errors import PerfAnalysisError
+
 PCAP_MAGICS = {
     b"\xd4\xc3\xb2\xa1": ("<", 1_000_000),        # 小端, 微秒
     b"\xa1\xb2\xc3\xd4": (">", 1_000_000),        # 大端, 微秒
@@ -34,7 +36,7 @@ HEADER_ALIASES = {
 }
 
 
-class NetcapError(ValueError):
+class NetcapError(PerfAnalysisError):
     """输入文件无法识别为受支持的抓包格式."""
 
 

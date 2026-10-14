@@ -11,6 +11,8 @@
 import re
 from collections import Counter, defaultdict
 
+from app.modules.perf.errors import PerfAnalysisError
+
 LINE_RE = re.compile(
     r"^\s*(\d+,\d+)\s+\d+\s+\d+\s+(\d+\.\d+)\s+\d+\s+([A-Z])\s+([A-Z]*)\s+(\d+)\s*\+\s*(\d+)"
 )
@@ -23,7 +25,7 @@ SIZE_BUCKETS = [(0, 8, "0-4KB"), (8, 32, "4-16KB"), (32, 128, "16-64KB"),
                 (128, 512, "64-256KB"), (512, None, ">256KB")]  # 扇区
 
 
-class BlktraceError(ValueError):
+class BlktraceError(PerfAnalysisError):
     """输入内容无法识别为 blkparse 输出."""
 
 
