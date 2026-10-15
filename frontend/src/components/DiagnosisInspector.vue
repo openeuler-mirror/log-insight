@@ -91,7 +91,7 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
 
 <style scoped>
 .rp-scroll {
-  flex: 1;
+  flex: 1 1 44%;
   min-height: 0;
   overflow: auto;
   padding: 12px;

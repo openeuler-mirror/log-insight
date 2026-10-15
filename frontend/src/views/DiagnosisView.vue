@@ -1,22 +1,25 @@
 <script setup lang="ts">
-/* 智能诊断: 三栏 Agent 对话工作台
-   左: 会话列表(上) + 打开的目录/文件(下)   中: 对话消息 + 输入区   右: 模型信息 / Todo / 工具调用
-   说明: 当前为前端交互原型, 消息与洞察数据为内置示例, 后续对接 agent / 大模型接口。 */
+/* 智能诊断: 三栏工作台
+   左: 目录文件树 + 运行状态(模型 / Todo / 工具)   中: 文件阅读器   右: 会话列表 + 对话 + 输入区
+   说明: 当前为前端交互原型, 消息与文件内容为内置示例, 后续对接 agent / 大模型 / 文件接口。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
+import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
+import { readFile, type Attach, type ReaderTab } from '@/components/diagnosisFiles'
 
 /* ---------------- 三栏宽度拖拽 ---------------- */
-const LEFT_MIN = 190
-const LEFT_MAX = 420
-const RIGHT_MIN = 250
-const RIGHT_MAX = 480
-const leftW = ref(250)
-const rightW = ref(318)
+const LEFT_MIN = 220
+const LEFT_MAX = 460
+const RIGHT_MIN = 320
+const RIGHT_MAX = 640
+const leftW = ref(280)
+const rightW = ref(420)
 
 /* 侧边栏折叠 */
 const leftCollapsed = ref(false)
 const rightCollapsed = ref(false)
+const inspectorOpen = ref(true)
 
 type Side = 'left' | 'right'
 let dragging: Side | null = null
@@ -49,7 +52,50 @@ function startDrag(side: Side, e: MouseEvent) {
 }
 onBeforeUnmount(stopDrag)
 
-/* ---------------- 左·会话列表 ---------------- */
+/* ---------------- 中·文件阅读器 (多标签页) ---------------- */
+function toTab(f: Attach): ReaderTab {
+  const p = readFile(f)
+  return { ...f, kind: p.kind, content: p.content, original: p.content, lang: p.lang }
+}
+
+const INITIAL_FILE: Attach = {
+  id: 'f-parsedmsg',
+  name: 'messages.log',
+  path: 'opt/tasks/20261015_1011/messages.log',
+  size: '18.2 MB',
+}
+const tabs = ref<ReaderTab[]>([toTab(INITIAL_FILE)])
+const activeTabId = ref(INITIAL_FILE.id)
+
+function openFile(f: Attach) {
+  const exist = tabs.value.find((t) => t.id === f.id)
+  if (exist) {
+    activeTabId.value = exist.id
+    return
+  }
+  tabs.value.push(toTab(f))
+  activeTabId.value = f.id
+}
+function closeTab(id: string) {
+  const i = tabs.value.findIndex((t) => t.id === id)
+  if (i < 0) return
+  tabs.value.splice(i, 1)
+  if (activeTabId.value === id) activeTabId.value = tabs.value[Math.max(0, i - 1)]?.id ?? ''
+}
+function onTabEdit(payload: { id: string; content: string }) {
+  const t = tabs.value.find((x) => x.id === payload.id)
+  if (t) t.content = payload.content
+}
+function saveTab(id: string) {
+  const t = tabs.value.find((x) => x.id === id)
+  if (t) t.original = t.content
+}
+function revertTab(id: string) {
+  const t = tabs.value.find((x) => x.id === id)
+  if (t) t.content = t.original
+}
+
+/* ---------------- 右·会话列表 ---------------- */
 interface Session {
   id: number
   title: string
@@ -71,14 +117,7 @@ function removeSession(id: number) {
   if (activeSession.value === id) activeSession.value = sessions.value[0]?.id ?? 0
 }
 
-/* ---------------- 中·输入区上下文 (由左侧文件树拖入 / 手动移除) ---------------- */
-interface Attach {
-  id: string
-  name: string
-  path: string
-  size?: string
-}
-
+/* ---------------- 上下文 (由左侧文件树拖入 / 手动移除) ---------------- */
 const attached = ref<Attach[]>([
   { id: 'f-messages', name: 'messages', path: 'var/log/messages', size: '18.2 MB' },
   { id: 'f-errorlog', name: 'error.log', path: 'var/log/nginx/error.log', size: '6.8 MB' },
@@ -118,7 +157,7 @@ function onDrop(e: DragEvent) {
   }
 }
 
-/* ---------------- 中·对话消息 ---------------- */
+/* ---------------- 右·对话消息 ---------------- */
 type Block =
   | { kind: 'text'; text: string }
   | { kind: 'list'; title?: string; items: string[] }
@@ -158,8 +197,7 @@ const messages = ref<Message[]>([
       { kind: 'tool', name: 'read_log_file', args: '/var/log/messages · 10:00–10:15', status: 'done', ms: 320, result: '命中 12 条 OOM / timeout 相关记录' },
       { kind: 'tool', name: 'perf_top_snapshot', args: 'node-01 · batch=3', status: 'done', ms: 1240, result: 'loginsight-parser 峰值 480% CPU' },
       { kind: 'tool', name: 'sar_cpu_report', args: '10:00–10:20 · -u -q', status: 'done', ms: 860, result: 'runq-sz 12, %iowait 1.2 (排除 IO 等待)' },
-      { kind: 'text', text: '采样结论：CPU 集中在 loginsight-parser 进程，且 %iowait 很低，可排除磁盘 IO。进一步看该进程的线程栈：' },
-      { kind: 'code', lang: 'bash', code: 'ps -o pid,pcpu,etime,cmd -C loginsight-parser\n#  6821 481.3  00:07:42  loginsight-parser --task 20261015_1011' },
+      { kind: 'text', text: '采样结论：CPU 集中在 loginsight-parser 进程，且 %iowait 很低，可排除磁盘 IO。' },
       {
         kind: 'list',
         title: '根因初判',
@@ -169,7 +207,6 @@ const messages = ref<Message[]>([
           '慢查询未设置超时，导致任务无法自愈退出。',
         ],
       },
-      { kind: 'text', text: '建议：为单行长度加硬上限并对该规则加超时保护；把分片并发降到 2。需要我继续关联错误码与调用链吗？' },
     ],
   },
   {
@@ -227,7 +264,7 @@ async function streamText(msg: Message, text: string) {
   blk.text = text
 }
 
-/* 工具调用: 先"执行中", 结束后回填耗时与结果, 并实时同步右侧栏列表 */
+/* 工具调用: 先"执行中", 结束后回填耗时与结果, 并实时同步左侧运行状态列表 */
 async function runTool(msg: Message, name: string, args: string, result: string, ms: number) {
   const blk = reactive<ToolBlock>({ kind: 'tool', name, args, status: 'running', ms: 0 })
   msg.blocks.push(blk)
@@ -307,7 +344,7 @@ function send() {
   void runAgent()
 }
 
-/* ---------------- 中·输入区 ---------------- */
+/* ---------------- 右·输入区 ---------------- */
 const draft = ref('')
 const agentMode = ref('agent')
 const AGENT_MODES = [
@@ -323,7 +360,7 @@ const MODELS = [
   { key: 'gpt-4o', label: 'GPT-4o' },
 ]
 
-/* ---------------- 右·模型信息 ---------------- */
+/* ---------------- 左·运行状态: 模型信息 / Todo / 工具调用 ---------------- */
 const modelInfo = reactive({
   name: 'DeepSeek-V3',
   provider: '深度求索',
@@ -336,7 +373,6 @@ const modelInfo = reactive({
   latency: '1.2s',
 })
 
-/* ---------------- 右·Todo List ---------------- */
 type TodoStatus = 'done' | 'doing' | 'todo'
 const todos = ref<{ text: string; status: TodoStatus }[]>([
   { text: '采集系统与解析器 CPU 采样', status: 'done' },
@@ -346,7 +382,6 @@ const todos = ref<{ text: string; status: TodoStatus }[]>([
   { text: '输出根因结论与处置建议', status: 'todo' },
 ])
 
-/* ---------------- 右·工具调用列表 ---------------- */
 const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms: number | null }[]>([
   { name: 'read_log_file', target: '/var/log/messages', status: 'done', ms: 320 },
   { name: 'perf_top_snapshot', target: 'node-01', status: 'done', ms: 1240 },
@@ -358,15 +393,51 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
 
 <template>
   <div class="diag">
-    <!-- ============ 左侧栏 ============ -->
+    <!-- ============ 左侧栏: 文件树 + 运行状态 ============ -->
     <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
+      <DiagnosisFileTree :active-id="activeTabId" @open="openFile">
+        <template #actions>
+          <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true">«</button>
+        </template>
+      </DiagnosisFileTree>
+
+      <div class="pane-sub-head">
+        <span class="pane-title">运行状态</span>
+        <button class="icon-btn insp-toggle" :title="inspectorOpen ? '收起运行状态' : '展开运行状态'" @click="inspectorOpen = !inspectorOpen">
+          {{ inspectorOpen ? '▾' : '▸' }}
+        </button>
+      </div>
+      <DiagnosisInspector v-if="inspectorOpen" :model-info="modelInfo" :todos="todos" :tools="tools" />
+    </aside>
+    <button v-else class="rail rail--left" title="展开左侧栏" @click="leftCollapsed = false">›</button>
+
+    <div v-if="!leftCollapsed" class="resizer" @mousedown="startDrag('left', $event)"></div>
+
+    <!-- ============ 中间主体: 文件阅读器 ============ -->
+    <section class="pane pane--center">
+      <DiagnosisFileReader
+        :tabs="tabs"
+        :active-id="activeTabId"
+        @activate="activeTabId = $event"
+        @close="closeTab"
+        @edit="onTabEdit"
+        @save="saveTab"
+        @revert="revertTab"
+      />
+    </section>
+
+    <div v-if="!rightCollapsed" class="resizer" @mousedown="startDrag('right', $event)"></div>
+
+    <!-- ============ 右侧栏: 会话 + 对话 + 输入区 ============ -->
+    <aside v-if="!rightCollapsed" class="pane pane--right" :style="{ width: rightW + 'px' }">
       <div class="pane-head">
         <span class="pane-title">会话</span>
         <div class="o-row" style="gap: 6px">
           <button class="o-btn o-btn--sm o-btn--primary" title="新建会话">＋ 新建</button>
-          <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true">«</button>
+          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true">»</button>
         </div>
       </div>
+
       <div class="session-list">
         <button
           v-for="s in sessions"
@@ -382,17 +453,9 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
           </span>
           <span class="session-preview">{{ s.preview }}</span>
         </button>
-        <div v-if="!sessions.length" class="o-empty" style="padding: 24px 0; font-size: 12.5px">暂无会话</div>
+        <div v-if="!sessions.length" class="o-empty" style="padding: 18px 0; font-size: 12.5px">暂无会话</div>
       </div>
 
-      <DiagnosisFileTree />
-    </aside>
-    <button v-else class="rail rail--left" title="展开左侧栏" @click="leftCollapsed = false">›</button>
-
-    <div v-if="!leftCollapsed" class="resizer" @mousedown="startDrag('left', $event)"></div>
-
-    <!-- ============ 中间主体 ============ -->
-    <section class="pane pane--center">
       <div class="chat-head">
         <div class="chat-title">
           <b>{{ activeTitle }}</b>
@@ -400,8 +463,8 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
             running ? '● 运行中' : '● 空闲'
           }}</span>
         </div>
-        <div class="o-row" style="gap: 8px">
-          <button class="o-btn o-btn--sm">导出对话</button>
+        <div class="o-row" style="gap: 6px">
+          <button class="o-btn o-btn--sm">导出</button>
           <button class="o-btn o-btn--sm">清空</button>
         </div>
       </div>
@@ -487,27 +550,12 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
                 <option v-for="mm in MODELS" :key="mm.key" :value="mm.key">{{ mm.label }}</option>
               </select>
             </label>
-            <span class="o-mono o-text-3 pick-hint">{{ AGENT_MODES.find((a) => a.key === agentMode)?.hint }}</span>
           </div>
           <button class="o-btn o-btn--primary" :disabled="!draft.trim() || running" @click="send">
             {{ running ? '分析中…' : '发送 ➤' }}
           </button>
         </div>
       </div>
-    </section>
-
-    <div v-if="!rightCollapsed" class="resizer" @mousedown="startDrag('right', $event)"></div>
-
-    <!-- ============ 右侧栏 ============ -->
-    <aside v-if="!rightCollapsed" class="pane pane--right" :style="{ width: rightW + 'px' }">
-      <div class="pane-head">
-        <span class="pane-title">模型信息</span>
-        <div class="o-row" style="gap: 6px">
-          <span class="o-badge o-badge--brand">{{ modelInfo.name }}</span>
-          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true">»</button>
-        </div>
-      </div>
-      <DiagnosisInspector :model-info="modelInfo" :todos="todos" :tools="tools" />
     </aside>
     <button v-else class="rail rail--right" title="展开右侧栏" @click="rightCollapsed = false">‹</button>
   </div>
@@ -546,7 +594,7 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 14px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   flex: none;
 }
@@ -554,6 +602,14 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   font-size: 13px;
   font-weight: 600;
   color: var(--text-1);
+}
+.pane-sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 6px;
+  border-top: 1px solid var(--border);
+  flex: none;
 }
 
 /* ---------- 拖拽条 ---------- */
@@ -614,12 +670,14 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   color: var(--primary);
 }
 
-/* ---------- 左·会话 ---------- */
+/* ---------- 右·会话列表 ---------- */
 .session-list {
-  flex: 1 1 45%;
+  flex: 0 1 auto;
+  max-height: 32%;
   min-height: 0;
   overflow: auto;
   padding: 8px;
+  border-bottom: 1px solid var(--border);
 }
 .session {
   display: flex;
@@ -630,7 +688,7 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent;
-  padding: 9px 10px;
+  padding: 7px 10px;
   cursor: pointer;
   font: inherit;
 }
@@ -649,7 +707,7 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   gap: 8px;
 }
 .session-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -685,50 +743,50 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   color: var(--danger);
 }
 .session-preview {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* ---------- 中·头部 ---------- */
+/* ---------- 右·对话头部 ---------- */
 .chat-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 18px;
+  gap: 8px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   flex: none;
 }
 .chat-title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 .chat-title b {
-  font-size: 14px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* ---------- 中·消息 ---------- */
+/* ---------- 右·消息 ---------- */
 .chat-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 18px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   background: var(--surface);
 }
 .msg {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-start;
 }
 .msg--user {
@@ -736,13 +794,13 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
 }
 .avatar {
   flex: none;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: #fff;
 }
@@ -753,11 +811,11 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   background: hsl(212, 60%, 48%);
 }
 .bubble {
-  max-width: 74%;
+  max-width: 84%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  padding: 10px 12px;
   min-width: 0;
 }
 .msg--user .bubble {
@@ -768,28 +826,29 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
 }
 .msg-head b {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .msg-files {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .msg-file {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 2px 8px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-2);
 }
 .blk-text {
-  font-size: 13.5px;
-  line-height: 1.75;
+  font-size: 12.5px;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -801,9 +860,9 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 8px 0;
-  padding: 8px 10px 8px 12px;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 7px 9px 7px 11px;
   background: var(--surface-3);
   border: 1px solid var(--border);
   border-left: 2px solid var(--primary);
@@ -827,6 +886,7 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
 .tool-name {
   font-weight: 600;
   color: var(--primary);
+  font-size: 12px;
 }
 .tool-args {
   flex: 1;
@@ -834,27 +894,29 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11.5px;
 }
 .tool-ms {
   flex: none;
+  font-size: 11.5px;
 }
 .tool-result {
   flex-basis: 100%;
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--text-2);
-  padding-left: 15px;
+  padding-left: 13px;
 }
 .blk-list {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  font-size: 13.5px;
-  line-height: 1.8;
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 12.5px;
+  line-height: 1.75;
 }
 .blk-list-title {
   list-style: none;
-  margin-left: -18px;
+  margin-left: -16px;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
   margin-bottom: 2px;
 }
 .blk-code {
@@ -864,7 +926,7 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   color: #d7e3f4;
   border-radius: var(--radius);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.7;
   overflow: auto;
 }
@@ -872,7 +934,7 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-2);
 }
 .typing span {
@@ -889,12 +951,12 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   30% { transform: translateY(-4px); opacity: 1; }
 }
 
-/* ---------- 中·输入区 ---------- */
+/* ---------- 右·输入区 ---------- */
 .composer {
   flex: none;
   position: relative;
   border-top: 1px solid var(--border);
-  padding: 12px 16px 14px;
+  padding: 10px 14px 12px;
   background: var(--surface);
 }
 .composer.is-drop {
@@ -952,16 +1014,16 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   margin-left: auto;
 }
 .composer-text {
-  min-height: 66px;
+  min-height: 62px;
   font-family: var(--font);
-  font-size: 13.5px;
+  font-size: 13px;
 }
 .composer-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 10px;
+  gap: 10px;
+  margin-top: 8px;
   flex-wrap: wrap;
 }
 .pick {
@@ -979,8 +1041,4 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   font-size: 12.5px;
   padding: 0 8px;
 }
-.pick-hint {
-  font-size: 11.5px;
-}
-
 </style>

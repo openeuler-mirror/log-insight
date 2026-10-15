@@ -1,8 +1,12 @@
 <script setup lang="ts">
 /* 左·目录文件树(资源管理器)
-   展开 / 折叠 + 多选(目录整选 / 半选) + 拖拽文件到对话框作为提问上下文。
+   点击文件行 → 在主体阅读器打开; 勾选 → 多选(目录整选 / 半选); 拖拽 → 加入提问上下文。
    拖拽载荷: JSON 化的文件列表 [{id,name,path,size}], 由对话区的 drop 处理。 */
 import { computed, ref } from 'vue'
+import type { Attach } from '@/components/diagnosisFiles'
+
+defineProps<{ activeId?: string }>()
+const emit = defineEmits<{ open: [file: Attach] }>()
 
 interface FsNode {
   id: string
@@ -10,13 +14,6 @@ interface FsNode {
   kind: 'dir' | 'file'
   size?: string
   children?: FsNode[]
-}
-
-interface Attach {
-  id: string
-  name: string
-  path: string
-  size?: string
 }
 
 const tree = ref<FsNode[]>([
@@ -68,6 +65,8 @@ const tree = ref<FsNode[]>([
                   { id: 'f-parsedmsg', name: 'messages.log', kind: 'file', size: '18.2 MB' },
                   { id: 'f-parse', name: 'parse_result.json', kind: 'file', size: '2.4 MB' },
                   { id: 'f-sar', name: 'perf_sample.sar', kind: 'file', size: '860 KB' },
+                  { id: 'f-topology', name: 'cluster-topology.png', kind: 'file', size: '128 KB' },
+                  { id: 'f-flame', name: 'cpu-flamegraph.png', kind: 'file', size: '96 KB' },
                 ],
               },
             ],
@@ -151,6 +150,16 @@ function toggleSelect(n: FsNode) {
     : Array.from(new Set([...selectedIds.value, ...ids]))
 }
 
+/* 点击行: 目录 → 展开 / 折叠; 文件 → 在主体阅读器打开 */
+function onRowClick(n: FsNode) {
+  if (n.kind === 'dir') {
+    toggleExpand(n.id)
+    return
+  }
+  const f = allFiles.value[n.id]
+  if (f) emit('open', f)
+}
+
 /* 拖拽: 已多选时拖动选区, 否则拖动该行对应的文件 */
 function onDragStart(row: TreeRow, e: DragEvent) {
   const ids =
@@ -167,18 +176,24 @@ function onDragStart(row: TreeRow, e: DragEvent) {
 <template>
   <div class="pane-sub-head">
     <span class="pane-title">目录文件</span>
-    <span class="o-mono o-text-3">{{ selectedIds.length }} 已选</span>
+    <span class="sub-right">
+      <span class="o-mono o-text-3">{{ selectedIds.length }} 已选</span>
+      <slot name="actions" />
+    </span>
   </div>
   <div class="tree">
     <div
       v-for="r in treeRows"
       :key="r.node.id"
       class="tree-row"
-      :class="{ 'is-sel': r.node.kind === 'file' && selectedIds.includes(r.node.id) }"
+      :class="{
+        'is-sel': r.node.kind === 'file' && selectedIds.includes(r.node.id),
+        'is-open': r.node.id === activeId,
+      }"
       :draggable="fileIdsOf(r.node).length > 0"
       :style="{ paddingLeft: 6 + r.depth * 14 + 'px' }"
       :title="r.path"
-      @click="toggleSelect(r.node)"
+      @click="onRowClick(r.node)"
       @dragstart="onDragStart(r, $event)"
     >
       <span
@@ -199,7 +214,7 @@ function onDragStart(row: TreeRow, e: DragEvent) {
       <span v-if="r.node.size" class="o-mono tree-size">{{ r.node.size }}</span>
     </div>
   </div>
-  <div class="tree-hint">勾选 / 拖拽文件到对话框，作为提问上下文</div>
+  <div class="tree-hint">点击文件在主体打开 · 勾选 / 拖拽加入提问上下文</div>
 </template>
 
 <style scoped>
@@ -216,8 +231,13 @@ function onDragStart(row: TreeRow, e: DragEvent) {
   font-weight: 600;
   color: var(--text-1);
 }
+.sub-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .tree {
-  flex: 1 1 55%;
+  flex: 1 1 52%;
   min-height: 0;
   overflow: auto;
   padding: 0 6px 6px;
@@ -238,6 +258,9 @@ function onDragStart(row: TreeRow, e: DragEvent) {
 }
 .tree-row.is-sel {
   background: var(--primary-soft);
+}
+.tree-row.is-open {
+  box-shadow: inset 2px 0 0 var(--primary);
 }
 .tree-caret {
   flex: none;
@@ -272,7 +295,8 @@ function onDragStart(row: TreeRow, e: DragEvent) {
   white-space: nowrap;
   color: var(--text-2);
 }
-.tree-row.is-sel .tree-name {
+.tree-row.is-sel .tree-name,
+.tree-row.is-open .tree-name {
   color: var(--primary);
   font-weight: 600;
 }
