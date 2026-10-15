@@ -237,7 +237,7 @@ function onDragStart(row: TreeRow, e: DragEvent) {
   gap: 8px;
 }
 .tree {
-  flex: 1 1 52%;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 0 6px 6px;

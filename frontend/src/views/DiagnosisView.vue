@@ -1,11 +1,10 @@
 <script setup lang="ts">
 /* 智能诊断: 三栏工作台
-   左: 目录文件树 + 运行状态(模型 / Todo / 工具)   中: 文件阅读器   右: 会话列表 + 对话 + 输入区
+   左: 文件资源管理器树状目录   中: 文件阅读器   右: 会话页签(1/2/3) + 对话 + 输入区
    说明: 当前为前端交互原型, 消息与文件内容为内置示例, 后续对接 agent / 大模型 / 文件接口。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
-import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
 import { readFile, type Attach, type ReaderTab } from '@/components/diagnosisFiles'
 
 /* ---------------- 三栏宽度拖拽 ---------------- */
@@ -19,7 +18,6 @@ const rightW = ref(420)
 /* 侧边栏折叠 */
 const leftCollapsed = ref(false)
 const rightCollapsed = ref(false)
-const inspectorOpen = ref(true)
 
 type Side = 'left' | 'right'
 let dragging: Side | null = null
@@ -95,28 +93,6 @@ function revertTab(id: string) {
   if (t) t.content = t.original
 }
 
-/* ---------------- 右·会话列表 ---------------- */
-interface Session {
-  id: number
-  title: string
-  time: string
-  preview: string
-}
-const sessions = ref<Session[]>([
-  { id: 1, title: '北京A 集群 CPU 飙升诊断', time: '10:12', preview: '已定位: 解析器死循环' },
-  { id: 2, title: 'nginx 502 突发排查', time: '09:26', preview: '上游连接池被打满' },
-  { id: 3, title: '磁盘 IO 队列深度异常', time: '昨天', preview: '待确认是否落盘抖动' },
-  { id: 4, title: '登录服务 500 根因定位', time: '10-13', preview: 'bcrypt 版本不兼容' },
-  { id: 5, title: 'syslog 采集延迟排查', time: '10-12', preview: '已给出缓冲调参建议' },
-])
-const activeSession = ref(1)
-const activeTitle = computed(() => sessions.value.find((s) => s.id === activeSession.value)?.title ?? '未命名会话')
-
-function removeSession(id: number) {
-  sessions.value = sessions.value.filter((s) => s.id !== id)
-  if (activeSession.value === id) activeSession.value = sessions.value[0]?.id ?? 0
-}
-
 /* ---------------- 上下文 (由左侧文件树拖入 / 手动移除) ---------------- */
 const attached = ref<Attach[]>([
   { id: 'f-messages', name: 'messages', path: 'var/log/messages', size: '18.2 MB' },
@@ -174,7 +150,7 @@ interface Message {
 }
 
 let mid = 0
-const messages = ref<Message[]>([
+const DEMO_CPU: Message[] = [
   {
     id: ++mid,
     role: 'user',
@@ -232,7 +208,64 @@ const messages = ref<Message[]>([
       },
     ],
   },
+]
+
+const DEMO_NGINX: Message[] = [
+  {
+    id: ++mid,
+    role: 'user',
+    time: '09:26',
+    blocks: [{ kind: 'text', text: 'nginx 从 09:20 开始大量 502，帮忙看下。' }],
+  },
+  {
+    id: ++mid,
+    role: 'assistant',
+    time: '09:26',
+    tokens: '↑0.6k ↓320',
+    blocks: [
+      { kind: 'text', text: '我先看 upstream 连接情况与错误日志。' },
+      {
+        kind: 'tool',
+        name: 'read_log_file',
+        args: '/var/log/nginx/error.log · 09:20–09:26',
+        status: 'done',
+        ms: 280,
+        result: 'upstream 连接超时 128 次',
+      },
+      { kind: 'text', text: '上游连接池被打满，建议扩容 worker 连接数并加超时重试。' },
+    ],
+  },
+]
+
+/* ---------------- 右·会话 (页签 1/2/3, 每个页签一段独立对话) ---------------- */
+interface Session {
+  id: number
+  messages: Message[]
+}
+
+let sid = 0
+const sessions = ref<Session[]>([
+  { id: ++sid, messages: DEMO_CPU },
+  { id: ++sid, messages: DEMO_NGINX },
+  { id: ++sid, messages: [] },
 ])
+const activeSession = ref(sessions.value[0].id)
+const messages = computed<Message[]>(
+  () => sessions.value.find((s) => s.id === activeSession.value)?.messages ?? [],
+)
+
+function addSession() {
+  const s: Session = { id: ++sid, messages: [] }
+  sessions.value.push(s)
+  activeSession.value = s.id
+}
+function removeSession(id: number) {
+  if (sessions.value.length <= 1) return
+  const i = sessions.value.findIndex((s) => s.id === id)
+  if (i < 0) return
+  sessions.value.splice(i, 1)
+  if (activeSession.value === id) activeSession.value = sessions.value[Math.max(0, i - 1)].id
+}
 
 const thinking = ref(false)
 const running = ref(false)
@@ -264,48 +297,33 @@ async function streamText(msg: Message, text: string) {
   blk.text = text
 }
 
-/* 工具调用: 先"执行中", 结束后回填耗时与结果, 并实时同步左侧运行状态列表 */
+/* 工具调用: 先"执行中", 结束后回填耗时与结果 */
 async function runTool(msg: Message, name: string, args: string, result: string, ms: number) {
   const blk = reactive<ToolBlock>({ kind: 'tool', name, args, status: 'running', ms: 0 })
   msg.blocks.push(blk)
-  const row = reactive({
-    name,
-    target: args,
-    status: 'running' as 'running' | 'done',
-    ms: null as number | null,
-  })
-  tools.value.push(row)
   await scrollBottom()
   await sleep(ms)
   blk.status = 'done'
   blk.ms = ms
   blk.result = result
-  row.status = 'done'
-  row.ms = ms
   await scrollBottom()
 }
 
-function setTodo(text: string, status: TodoStatus) {
-  const t = todos.value.find((x) => x.text === text)
-  if (t) t.status = status
-}
-
 /* 演示脚本: 接入 agent 后由 SSE / WebSocket 事件驱动, 这里用定时器模拟事件流 */
-async function runAgent() {
+async function runAgent(list: Message[]) {
   running.value = true
   thinking.value = true
   await sleep(650)
   thinking.value = false
 
   const am = reactive<Message>({ id: ++mid, role: 'assistant', time: nowHM(), blocks: [] })
-  messages.value.push(am)
+  list.push(am)
 
   await streamText(am, '收到，我先抓取与这次问题相关的日志片段和系统指标。')
   await runTool(am, 'read_log_file', '/var/log/messages · 最近 30 分钟', '命中 12 条 OOM / timeout 记录', 900)
   await runTool(am, 'perf_top_snapshot', 'node-01 · batch=3', 'loginsight-parser 峰值 481% CPU', 1100)
   await streamText(am, '日志与采样一致：CPU 被解析进程占满，%iowait 很低，可先排除磁盘 IO。')
 
-  setTodo('关联日志错误码与调用链', 'done')
   await runTool(am, 'sar_cpu_report', '10:00–10:20 · -u -q', 'runq-sz 12，%iowait 1.2', 800)
   await streamText(am, '三组证据指向同一处，给出根因与处置建议：')
   am.blocks.push({
@@ -317,13 +335,8 @@ async function runAgent() {
       '慢规则缺少超时保护，任务无法自愈退出。',
     ],
   })
-  setTodo('输出根因结论与处置建议', 'done')
 
   am.tokens = '↑1.1k ↓520'
-  modelInfo.input += 1100
-  modelInfo.output += 520
-  modelInfo.total = modelInfo.input + modelInfo.output
-  modelInfo.usedPct = Math.min(100, Math.round((modelInfo.total / 128000) * 100))
   running.value = false
   await scrollBottom()
 }
@@ -331,7 +344,8 @@ async function runAgent() {
 function send() {
   const text = draft.value.trim()
   if (!text || running.value) return
-  messages.value.push({
+  const list = messages.value
+  list.push({
     id: ++mid,
     role: 'user',
     time: nowHM(),
@@ -341,7 +355,7 @@ function send() {
   draft.value = ''
   attached.value = []
   scrollBottom()
-  void runAgent()
+  void runAgent(list)
 }
 
 /* ---------------- 右·输入区 ---------------- */
@@ -359,55 +373,17 @@ const MODELS = [
   { key: 'qwen-max', label: '通义千问 Max' },
   { key: 'gpt-4o', label: 'GPT-4o' },
 ]
-
-/* ---------------- 左·运行状态: 模型信息 / Todo / 工具调用 ---------------- */
-const modelInfo = reactive({
-  name: 'DeepSeek-V3',
-  provider: '深度求索',
-  window: '128K',
-  usedPct: 12,
-  input: 12480,
-  output: 3206,
-  total: 15686,
-  cost: '¥0.18',
-  latency: '1.2s',
-})
-
-type TodoStatus = 'done' | 'doing' | 'todo'
-const todos = ref<{ text: string; status: TodoStatus }[]>([
-  { text: '采集系统与解析器 CPU 采样', status: 'done' },
-  { text: '定位高占用进程与线程栈', status: 'done' },
-  { text: '检索相似历史案例', status: 'done' },
-  { text: '关联日志错误码与调用链', status: 'doing' },
-  { text: '输出根因结论与处置建议', status: 'todo' },
-])
-
-const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms: number | null }[]>([
-  { name: 'read_log_file', target: '/var/log/messages', status: 'done', ms: 320 },
-  { name: 'perf_top_snapshot', target: 'node-01', status: 'done', ms: 1240 },
-  { name: 'sar_cpu_report', target: '10:00–10:20', status: 'done', ms: 860 },
-  { name: 'search_similar_case', target: 'kb://cpu-spike', status: 'done', ms: 540 },
-  { name: 'correlate_error_code', target: 'E-TIMEOUT-504', status: 'running', ms: null },
-])
 </script>
 
 <template>
   <div class="diag">
-    <!-- ============ 左侧栏: 文件树 + 运行状态 ============ -->
+    <!-- ============ 左侧栏: 文件资源管理器 ============ -->
     <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
       <DiagnosisFileTree :active-id="activeTabId" @open="openFile">
         <template #actions>
           <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true">«</button>
         </template>
       </DiagnosisFileTree>
-
-      <div class="pane-sub-head">
-        <span class="pane-title">运行状态</span>
-        <button class="icon-btn insp-toggle" :title="inspectorOpen ? '收起运行状态' : '展开运行状态'" @click="inspectorOpen = !inspectorOpen">
-          {{ inspectorOpen ? '▾' : '▸' }}
-        </button>
-      </div>
-      <DiagnosisInspector v-if="inspectorOpen" :model-info="modelInfo" :todos="todos" :tools="tools" />
     </aside>
     <button v-else class="rail rail--left" title="展开左侧栏" @click="leftCollapsed = false">›</button>
 
@@ -428,44 +404,35 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
 
     <div v-if="!rightCollapsed" class="resizer" @mousedown="startDrag('right', $event)"></div>
 
-    <!-- ============ 右侧栏: 会话 + 对话 + 输入区 ============ -->
+    <!-- ============ 右侧栏: 会话页签 + 对话 + 输入区 ============ -->
     <aside v-if="!rightCollapsed" class="pane pane--right" :style="{ width: rightW + 'px' }">
-      <div class="pane-head">
-        <span class="pane-title">会话</span>
-        <div class="o-row" style="gap: 6px">
-          <button class="o-btn o-btn--sm o-btn--primary" title="新建会话">＋ 新建</button>
-          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true">»</button>
+      <div class="pane-head chat-tabs">
+        <div class="tab-strip">
+          <button
+            v-for="(s, i) in sessions"
+            :key="s.id"
+            class="chat-tab"
+            :class="{ 'is-active': s.id === activeSession }"
+            :title="'会话 ' + (i + 1)"
+            @click="activeSession = s.id"
+          >
+            <span class="chat-tab-no">{{ i + 1 }}</span>
+            <span
+              v-if="sessions.length > 1"
+              class="chat-tab-x"
+              title="关闭会话"
+              @click.stop="removeSession(s.id)"
+              >✕</span
+            >
+          </button>
+          <button class="chat-tab-add" title="新建会话" @click="addSession">＋</button>
         </div>
-      </div>
-
-      <div class="session-list">
-        <button
-          v-for="s in sessions"
-          :key="s.id"
-          class="session"
-          :class="{ 'is-active': s.id === activeSession }"
-          @click="activeSession = s.id"
-        >
-          <span class="session-top">
-            <b class="session-title">{{ s.title }}</b>
-            <span class="o-mono o-text-3 session-time">{{ s.time }}</span>
-            <span class="session-del" title="删除会话" @click.stop="removeSession(s.id)">✕</span>
-          </span>
-          <span class="session-preview">{{ s.preview }}</span>
-        </button>
-        <div v-if="!sessions.length" class="o-empty" style="padding: 18px 0; font-size: 12.5px">暂无会话</div>
-      </div>
-
-      <div class="chat-head">
-        <div class="chat-title">
-          <b>{{ activeTitle }}</b>
+        <div class="o-row" style="gap: 8px">
           <span class="o-badge" :class="running ? 'o-badge--success' : 'o-badge--outline'">{{
             running ? '● 运行中' : '● 空闲'
           }}</span>
-        </div>
-        <div class="o-row" style="gap: 6px">
-          <button class="o-btn o-btn--sm">导出</button>
-          <button class="o-btn o-btn--sm">清空</button>
+          <button class="o-btn o-btn--sm" title="清空当前会话" @click="messages.length = 0">清空</button>
+          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true">»</button>
         </div>
       </div>
 
@@ -509,6 +476,12 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
           <div class="bubble">
             <div class="typing"><span></span><span></span><span></span> 正在分析…</div>
           </div>
+        </div>
+
+        <div v-if="!messages.length && !thinking" class="chat-empty">
+          <div class="chat-empty-ico">🩺</div>
+          <p>新会话已就绪</p>
+          <span>描述你的诊断问题，或从左侧目录勾选 / 拖拽文件作为分析上下文。</span>
         </div>
       </div>
 
@@ -598,19 +571,6 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   border-bottom: 1px solid var(--border);
   flex: none;
 }
-.pane-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-.pane-sub-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px 6px;
-  border-top: 1px solid var(--border);
-  flex: none;
-}
 
 /* ---------- 拖拽条 ---------- */
 .resizer {
@@ -670,107 +630,110 @@ const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms
   color: var(--primary);
 }
 
-/* ---------- 右·会话列表 ---------- */
-.session-list {
-  flex: 0 1 auto;
-  max-height: 32%;
-  min-height: 0;
-  overflow: auto;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
+/* ---------- 右·会话页签 ---------- */
+.chat-tabs {
+  gap: 10px;
 }
-.session {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  width: 100%;
-  text-align: left;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  padding: 7px 10px;
-  cursor: pointer;
-  font: inherit;
-}
-.session:is(:hover, :focus-visible) {
-  background: var(--surface);
-}
-.session.is-active {
-  background: var(--surface);
-  border-color: var(--primary-tint);
-  box-shadow: var(--shadow-1);
-}
-.session-top {
+.tab-strip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
 }
-.session-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.chat-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  min-width: 30px;
+  padding: 0 6px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  transition: all 0.15s;
 }
-.session.is-active .session-title {
+.chat-tab:hover {
+  border-color: var(--primary-tint);
   color: var(--primary);
 }
-.session-time {
-  flex: none;
+.chat-tab.is-active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
 }
-.session-del {
-  flex: none;
-  width: 16px;
-  height: 16px;
+.chat-tab-no {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.chat-tab-x {
+  width: 14px;
+  height: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: 50%;
+  font-size: 9px;
   color: var(--text-4);
-  font-size: 10px;
   opacity: 0;
+  pointer-events: none;
   transition: all 0.15s;
 }
-.session:is(:hover, :focus-within) .session-time {
-  display: none;
-}
-.session:is(:hover, :focus-within) .session-del {
+.chat-tab:hover .chat-tab-x,
+.chat-tab.is-active .chat-tab-x {
   opacity: 1;
+  pointer-events: auto;
 }
-.session-del:hover {
+.chat-tab-x:hover {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.session-preview {
-  font-size: 11.5px;
-  color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ---------- 右·对话头部 ---------- */
-.chat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
+.chat-tab-add {
   flex: none;
-}
-.chat-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.chat-title b {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
   font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1;
+  transition: all 0.15s;
+}
+.chat-tab-add:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--text-3);
+  padding: 24px 20px;
+}
+.chat-empty-ico {
+  font-size: 30px;
+}
+.chat-empty p {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.chat-empty span {
+  font-size: 12px;
+  line-height: 1.7;
+  max-width: 260px;
 }
 
 /* ---------- 右·消息 ---------- */
