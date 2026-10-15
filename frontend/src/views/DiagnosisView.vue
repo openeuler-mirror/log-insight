@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /* 智能诊断: 三栏工作台
-   左: 文件资源管理器树状目录   中: 文件阅读器   右: 会话页签(1/2/3) + 对话 + 输入区
+   左: 文件资源管理器 + 底端「运行状态」停靠面板(可折叠最小化)   中: 文件阅读器   右: 会话页签(1/2/3) + 对话 + 输入区
    说明: 当前为前端交互原型, 消息与文件内容为内置示例, 后续对接 agent / 大模型 / 文件接口。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
+import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
 import { readFile, type Attach, type ReaderTab } from '@/components/diagnosisFiles'
 
 /* ---------------- 三栏宽度拖拽 ---------------- */
@@ -297,15 +298,24 @@ async function streamText(msg: Message, text: string) {
   blk.text = text
 }
 
-/* 工具调用: 先"执行中", 结束后回填耗时与结果 */
+/* 工具调用: 先"执行中", 结束后回填耗时与结果, 并实时同步侧栏运行状态列表 */
 async function runTool(msg: Message, name: string, args: string, result: string, ms: number) {
   const blk = reactive<ToolBlock>({ kind: 'tool', name, args, status: 'running', ms: 0 })
   msg.blocks.push(blk)
+  const row = reactive({
+    name,
+    target: args,
+    status: 'running' as 'running' | 'done',
+    ms: null as number | null,
+  })
+  tools.value.push(row)
   await scrollBottom()
   await sleep(ms)
   blk.status = 'done'
   blk.ms = ms
   blk.result = result
+  row.status = 'done'
+  row.ms = ms
   await scrollBottom()
 }
 
@@ -324,6 +334,7 @@ async function runAgent(list: Message[]) {
   await runTool(am, 'perf_top_snapshot', 'node-01 · batch=3', 'loginsight-parser 峰值 481% CPU', 1100)
   await streamText(am, '日志与采样一致：CPU 被解析进程占满，%iowait 很低，可先排除磁盘 IO。')
 
+  setTodo('关联日志错误码与调用链', 'done')
   await runTool(am, 'sar_cpu_report', '10:00–10:20 · -u -q', 'runq-sz 12，%iowait 1.2', 800)
   await streamText(am, '三组证据指向同一处，给出根因与处置建议：')
   am.blocks.push({
@@ -335,8 +346,13 @@ async function runAgent(list: Message[]) {
       '慢规则缺少超时保护，任务无法自愈退出。',
     ],
   })
+  setTodo('输出根因结论与处置建议', 'done')
 
   am.tokens = '↑1.1k ↓520'
+  modelInfo.input += 1100
+  modelInfo.output += 520
+  modelInfo.total = modelInfo.input + modelInfo.output
+  modelInfo.usedPct = Math.min(100, Math.round((modelInfo.total / 128000) * 100))
   running.value = false
   await scrollBottom()
 }
@@ -373,17 +389,78 @@ const MODELS = [
   { key: 'qwen-max', label: '通义千问 Max' },
   { key: 'gpt-4o', label: 'GPT-4o' },
 ]
+
+/* ---------------- 左·运行状态 (停靠于侧栏底端, 可折叠最小化) ---------------- */
+const inspectorOpen = ref(true)
+
+const modelInfo = reactive({
+  name: 'DeepSeek-V3',
+  provider: '深度求索',
+  window: '128K',
+  usedPct: 12,
+  input: 12480,
+  output: 3206,
+  total: 15686,
+  cost: '¥0.18',
+  latency: '1.2s',
+})
+
+type TodoStatus = 'done' | 'doing' | 'todo'
+const todos = ref<{ text: string; status: TodoStatus }[]>([
+  { text: '采集系统与解析器 CPU 采样', status: 'done' },
+  { text: '定位高占用进程与线程栈', status: 'done' },
+  { text: '检索相似历史案例', status: 'done' },
+  { text: '关联日志错误码与调用链', status: 'doing' },
+  { text: '输出根因结论与处置建议', status: 'todo' },
+])
+const todoDone = computed(() => todos.value.filter((t) => t.status === 'done').length)
+
+const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms: number | null }[]>([
+  { name: 'read_log_file', target: '/var/log/messages', status: 'done', ms: 320 },
+  { name: 'perf_top_snapshot', target: 'node-01', status: 'done', ms: 1240 },
+  { name: 'sar_cpu_report', target: '10:00–10:20', status: 'done', ms: 860 },
+  { name: 'search_similar_case', target: 'kb://cpu-spike', status: 'done', ms: 540 },
+  { name: 'correlate_error_code', target: 'E-TIMEOUT-504', status: 'running', ms: null },
+])
+
+function setTodo(text: string, status: TodoStatus) {
+  const t = todos.value.find((x) => x.text === text)
+  if (t) t.status = status
+}
 </script>
 
 <template>
   <div class="diag">
-    <!-- ============ 左侧栏: 文件资源管理器 ============ -->
+    <!-- ============ 左侧栏: 文件资源管理器 + 底端运行状态 ============ -->
     <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
       <DiagnosisFileTree :active-id="activeTabId" @open="openFile">
         <template #actions>
           <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true">«</button>
         </template>
       </DiagnosisFileTree>
+
+      <!-- 底端停靠: 运行状态(Todo List / 模型信息 / 工具调用), 可折叠最小化为一条底栏 -->
+      <div class="insp-dock" :class="{ 'is-collapsed': !inspectorOpen }">
+        <div class="insp-head">
+          <span class="pane-title">运行状态</span>
+          <span v-if="!inspectorOpen" class="insp-mini o-mono o-text-3">
+            Todo {{ todoDone }}/{{ todos.length }} · {{ modelInfo.total.toLocaleString('en-US') }} tokens
+          </span>
+          <button
+            class="icon-btn insp-toggle"
+            :title="inspectorOpen ? '折叠运行状态' : '展开运行状态'"
+            @click="inspectorOpen = !inspectorOpen"
+          >
+            {{ inspectorOpen ? '▾' : '▸' }}
+          </button>
+        </div>
+        <DiagnosisInspector
+          v-show="inspectorOpen"
+          :model-info="modelInfo"
+          :todos="todos"
+          :tools="tools"
+        />
+      </div>
     </aside>
     <button v-else class="rail rail--left" title="展开左侧栏" @click="leftCollapsed = false">›</button>
 
@@ -570,6 +647,50 @@ const MODELS = [
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   flex: none;
+}
+
+/* ---------- 左·底端运行状态停靠面板 ---------- */
+.pane-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.insp-dock {
+  flex: 0 0 46%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface-3);
+}
+.insp-dock.is-collapsed {
+  flex: 0 0 auto;
+}
+.insp-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.insp-dock.is-collapsed .insp-head {
+  border-bottom: none;
+}
+.insp-head .pane-title {
+  flex: none;
+}
+.insp-mini {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  text-align: right;
+}
+.insp-head .insp-toggle {
+  margin-left: auto;
 }
 
 /* ---------- 拖拽条 ---------- */
