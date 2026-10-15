@@ -18,6 +18,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'metrics', redirect: '/perf' },
       { path: 'inspection', name: 'inspection', component: () => import('@/views/InspectionView.vue'), meta: { title: '智能巡检', perm: 'dashboard:view', menu: true } },
       { path: 'inspection/:taskId', name: 'inspection-detail', component: () => import('@/views/InspectionDetailView.vue'), meta: { title: '巡检详情', perm: 'task:view' } },
+      { path: 'diagnosis', name: 'diagnosis', component: () => import('@/views/DiagnosisView.vue'), meta: { title: '智能诊断', perm: 'dashboard:view', menu: true } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
