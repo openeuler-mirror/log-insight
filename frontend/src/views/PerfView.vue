@@ -1,16 +1,18 @@
 <script setup lang="ts">
-/* 性能分析: 汇总性能相关分析工具 (sar 性能分析 / 网络抓包分析 / blktrace 分析) */
+/* 性能分析: 汇总性能相关分析工具 (sar / 网络抓包 / blktrace / 中断计数变化) */
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PerfSarPanel from '@/components/PerfSarPanel.vue'
 import PerfNetcap from '@/components/PerfNetcap.vue'
 import PerfBlktrace from '@/components/PerfBlktrace.vue'
+import PerfInterrupts from '@/components/PerfInterrupts.vue'
 
-type TabKey = 'sar' | 'netcap' | 'blktrace'
+type TabKey = 'sar' | 'netcap' | 'blktrace' | 'interrupt'
 const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'sar', label: 'sar 性能分析', icon: '📈' },
   { key: 'netcap', label: '网络抓包分析', icon: '🔎' },
   { key: 'blktrace', label: 'blktrace 分析', icon: '💽' },
+  { key: 'interrupt', label: '中断计数变化', icon: '⚡' },
 ]
 
 const route = useRoute()
@@ -43,7 +45,8 @@ watch(tab, (v) => {
 
   <PerfSarPanel v-if="tab === 'sar'" />
   <PerfNetcap v-else-if="tab === 'netcap'" />
-  <PerfBlktrace v-else />
+  <PerfBlktrace v-else-if="tab === 'blktrace'" />
+  <PerfInterrupts v-else />
 </template>
 
 <style scoped>
