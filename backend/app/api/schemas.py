@@ -279,6 +279,28 @@ class RuleInfo(RuleCreate):
     updated_at: datetime
 
 
+# ---------- Personal Knowledge ----------
+class NoteCreate(BaseModel):
+    title: str = Field(max_length=200)
+    content: str = ""
+    tags: list[str] = Field(default_factory=list)
+    source_type: str = "manual"
+    source_task_id: str | None = None
+
+
+class NoteUpdate(NoteCreate):
+    pass
+
+
+class NoteInfo(NoteCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: int
+    created_at: datetime
+    updated_at: datetime
+
+
 # ---------- Metric ----------
 class MetricQuery(BaseModel):
     host: str
