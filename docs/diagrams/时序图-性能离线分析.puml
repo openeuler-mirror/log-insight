@@ -1,0 +1,55 @@
+@startuml 时序图-性能离线分析
+' 性能离线分析流程: 上传采集文件 → 请求内同步解析 → 聚合归一化 → 返回 → ECharts 渲染
+' 覆盖四个子页签: sar 系统性能 / 网络抓包 / blktrace / 中断计数变化
+autonumber
+skinparam shadowing false
+skinparam SequenceMessageAlignment center
+skinparam ArrowColor #1D2433
+skinparam LifeLineBorderColor #94A7C4
+skinparam ParticipantBackgroundColor #EAF1FB
+skinparam ParticipantBorderColor #2F5CAC
+skinparam ActorBackgroundColor #FFFFFF
+skinparam ActorBorderColor #1D2433
+
+actor "用户" as user
+participant "性能分析页\n(Vue3 · PerfView)" as web
+participant "API 服务\n(FastAPI · /perf)" as api
+participant "解析器\n(modules/perf)" as parser
+note right of parser
+  sar.py / netcap.py
+  blktrace.py / interrupts.py
+  统一签名 analyze(data, filename)
+end note
+
+== 上传阶段 ==
+user -> web : 切换到子页签并选择采集文件\n(sar / 抓包 / blktrace / 中断)
+activate web
+web -> api : POST /api/perf/{type}/analyze\n(JWT, multipart ≤100MB)
+activate api
+api -> api : 权限校验 + 读取上传文件 (_read_upload)
+
+== 解析阶段 (请求内同步完成) ==
+api -> parser : analyze(data, filename)
+activate parser
+alt 中断计数变化 (interrupts.py)
+  parser -> parser : 自动识别输入格式\n(/proc/interrupts 快照 或 sar -I)
+  parser -> parser : 多快照 → 各中断源/各 CPU 计数变化量\n单快照 → 累计计数 + 告警
+else sar / netcap / blktrace
+  parser -> parser : 逐行正则解析 → 分段聚合\n(Top N / per-CPU / 时序序列)
+end
+parser --> api : 归一化聚合结果 (dict, snake_case)
+deactivate parser
+
+alt 解析失败 (格式无法识别)
+  parser --> api : 抛 PerfAnalysisError 子类
+  api --> web : HTTP 400 + 可读中文原因
+else 解析成功
+  api --> web : 200 + 聚合结果 (不落库)
+end
+deactivate api
+
+== 渲染阶段 ==
+web -> web : 渲染 KPI 卡 / 时序图 / 占比图 / Top 表
+web --> user : 展示本次分析结果\n(结果不落库, 刷新即清空)
+deactivate web
+@enduml

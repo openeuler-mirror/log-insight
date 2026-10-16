@@ -79,6 +79,13 @@ rectangle "log-insight" as SYS {
         usecase "查询性能数据"          as UC_METRIC
         usecase "保存图表视图配置"      as UC_PREFERENCE
     }
+    ' 性能离线分析 (上传即解析)
+    rectangle "性能离线分析" {
+        usecase "分析 sar 系统性能"     as UC_PERF_SAR
+        usecase "分析网络抓包"          as UC_PERF_NET
+        usecase "分析 blktrace"        as UC_PERF_BLK
+        usecase "分析中断计数变化"      as UC_PERF_IRQ
+    }
     ' 审计
     rectangle "审计" {
         usecase "查看审计日志"          as UC_AUDIT
@@ -114,6 +121,10 @@ MEMBER --> UC_INSP_REPORT
 MEMBER --> UC_VRULE
 MEMBER --> UC_METRIC
 MEMBER --> UC_PREFERENCE
+MEMBER --> UC_PERF_SAR
+MEMBER --> UC_PERF_NET
+MEMBER --> UC_PERF_BLK
+MEMBER --> UC_PERF_IRQ
 ' 团队管理员: 在普通用户之上
 TADMIN --> UC_CTEAM
 TADMIN --> UC_INVITE
