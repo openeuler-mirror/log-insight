@@ -1,4 +1,5 @@
 """诊断流水线: 解压校验 → 解析 → 规则引擎 → LLM 总结 → 报告, 全程事件流输出."""
+import asyncio
 import logging
 import shutil
 import tarfile
@@ -116,7 +117,8 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
     await bus.publish(task_id, "progress", {"step": "extract", "percent": 5, "message": "解压与安全校验"})
     base = Path(task.storage_path)
     work_dir = (base if base.is_dir() else base.parent) / "extracted"
-    files = safe_extract(base, work_dir)
+    # 解压为阻塞 IO (可能解出上千文件), 放线程池, 避免堵住事件循环
+    files = await asyncio.to_thread(safe_extract, base, work_dir)
     if not files:
         raise RuntimeError("日志包为空或格式不支持")
     if await is_cancelled():
@@ -135,12 +137,13 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
         await bus.publish(task_id, "progress", {
             "step": "parse", "percent": 10 + int(40 * (i + 1) / len(files)),
             "message": f"解析 {path.name} ({i + 1}/{len(files)})"})
-        result = await identify_and_parse(path, task.params.get("server_type", ""))
+        result = await asyncio.to_thread(
+            identify_and_parse, path, task.params.get("server_type", ""))
         if result is None:
             continue
         file_stats[str(path.name)] = result.file_stats
         all_metrics.extend(result.metrics)
-        all_findings.extend(engine.match_entries(result.entries))
+        all_findings.extend(await asyncio.to_thread(engine.match_entries, result.entries))
         for entry in result.entries:
             global_line += 1
             script_entries.append({
@@ -212,4 +215,4 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
     task.progress = 95
 
     # 清理解压临时目录
-    shutil.rmtree(work_dir, ignore_errors=True)
+    await asyncio.to_thread(shutil.rmtree, work_dir, True)

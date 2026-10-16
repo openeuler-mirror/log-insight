@@ -54,6 +54,23 @@ def _ts(s: str) -> int:
         return int(time.time() * 1000) - 3600_000
 
 
+def _lines(text: str):
+    """惰性逐行 (与 text.split("\\n") 等价, 含末尾空行).
+
+    大日志下 split 会一次性构造整份行列表 (每行一个 str 对象), 内存约为文件的数倍;
+    逐行生成只保留当前行, 峰值内存从 O(文件) 降到 O(1 行)。
+    """
+    start = 0
+    end = len(text)
+    while start <= end:
+        nl = text.find("\n", start)
+        if nl < 0:
+            yield text[start:]
+            return
+        yield text[start:nl]
+        start = nl + 1
+
+
 # ---------------- 1. SEL (ipmitool sel elist) ----------------
 
 _SEL_RE = re.compile(
@@ -73,7 +90,7 @@ class SelParser(AnalyzeParser):
 
     def parse(self, text: str) -> list[ParsedEvent]:
         out: list[ParsedEvent] = []
-        for line in text.split("\n"):
+        for line in _lines(text):
             m = _SEL_RE.match(line)
             if not m:
                 continue
@@ -177,7 +194,7 @@ class SyslogParser(AnalyzeParser):
     def parse(self, text: str) -> list[ParsedEvent]:
         out: list[ParsedEvent] = []
         this_year = datetime.now().year
-        for line in text.split("\n"):
+        for line in _lines(text):
             m = _SYSLOG_RE.match(line)
             if not m:
                 continue
@@ -219,7 +236,7 @@ class DmesgParser(AnalyzeParser):
 
     def parse(self, text: str) -> list[ParsedEvent]:
         out: list[ParsedEvent] = []
-        for line in text.split("\n"):
+        for line in _lines(text):
             m = _DMESG_RE.match(line)
             if not m:
                 continue
@@ -262,7 +279,7 @@ class WindowsParser(AnalyzeParser):
 
     def parse(self, text: str) -> list[ParsedEvent]:
         out: list[ParsedEvent] = []
-        for line in text.split("\n"):
+        for line in _lines(text):
             t = line.strip()
             if not t:
                 continue
@@ -307,7 +324,7 @@ class RegexParser(AnalyzeParser):
 
     def parse(self, text: str) -> list[ParsedEvent]:
         out: list[ParsedEvent] = []
-        for line in text.split("\n"):
+        for line in _lines(text):
             m = _APP_RE.match(line)
             if not m:
                 continue

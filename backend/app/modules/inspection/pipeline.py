@@ -1,4 +1,5 @@
 """巡检流水线: 解析输入 → 遍历检查项插件 → 规则引擎 → LLM 总结 → 报告."""
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,7 +58,8 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
     await bus.publish(task_id, "progress", {"step": "extract", "percent": 5, "message": "解压巡检数据包"})
     base = Path(task.storage_path)
     work_dir = (base if base.is_dir() else base.parent) / "extracted"
-    files = safe_extract(base, work_dir)
+    # 解压与解析均为阻塞 IO/CPU, 放线程池, 避免堵住事件循环
+    files = await asyncio.to_thread(safe_extract, base, work_dir)
     if not files:
         raise RuntimeError("巡检数据包为空")
 
@@ -68,7 +70,7 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
         await bus.publish(task_id, "progress", {
             "step": "parse", "percent": 10 + int(20 * (i + 1) / len(files)),
             "message": f"解析 {path.name}"})
-        result = await identify_and_parse(path, ctx.server_type)
+        result = await asyncio.to_thread(identify_and_parse, path, ctx.server_type)
         if result:
             ctx.entries.extend(result.entries)
             ctx.metrics.extend(result.metrics)
@@ -92,7 +94,7 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
 
     # 3. 规则引擎 (复用诊断规则: 对解析条目做正则/关键字匹配)
     engine = await RuleEngine.load_for_task(db, task)
-    findings = engine.match_entries(ctx.entries[:100000])
+    findings = await asyncio.to_thread(engine.match_entries, ctx.entries[:100000])
     for f in findings[:100]:
         await bus.publish(task_id, "finding", {
             "rule_name": f.rule_name, "severity": f.severity, "text": f.raw[:300]})

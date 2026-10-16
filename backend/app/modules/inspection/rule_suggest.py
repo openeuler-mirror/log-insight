@@ -152,16 +152,16 @@ async def _parse_entries(task: Task) -> list[LogEntry]:
         return []
     work_dir = src.parent / "suggest_extracted"
     try:
-        files = safe_extract(src, work_dir)
+        files = await asyncio.to_thread(safe_extract, src, work_dir)
         server_type = (task.params or {}).get("server_type", "")
         entries: list[LogEntry] = []
         for path in files:
-            result = await identify_and_parse(path, server_type)
+            result = await asyncio.to_thread(identify_and_parse, path, server_type)
             if result:
                 entries.extend(result.entries)
         return entries
     finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, work_dir, True)
 
 
 def _heuristic_items(uncovered: list[tuple[int, LogEntry]]) -> list[dict]:

@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 SEVERITY_WEIGHT = {Severity.info: 1, Severity.warn: 3, Severity.error: 7, Severity.critical: 10}
 
+# 全局内联标志 (如 (?i) / (?x)): 合并进「或」组合后会改变其它分支的语义, 存在时放弃前置筛
+_INLINE_FLAGS_RE = re.compile(r"\(\?[aiLmsux-]+\)")
+
 # 脚本子进程入口绝对路径; 与 Worker 同一解释器, 以 -I 隔离模式拉起
 SCRIPT_RUNNER = Path(__file__).with_name("script_runner.py").resolve()
 VALID_SEVERITIES = {s.value for s in Severity}
@@ -107,11 +110,24 @@ class RuleEngine:
     def __init__(self, rules: list[Rule]):
         self._rules = rules
         self._compiled: list[tuple[Rule, re.Pattern | None]] = []
+        parts: list[str] = []
+        mergeable = True
         for rule in rules:
             pattern = None
             if rule.match_type == MatchType.regex:
                 pattern = re.compile(rule.pattern)  # 保存前已校验
+                if _INLINE_FLAGS_RE.search(rule.pattern):
+                    mergeable = False
+                parts.append(f"(?:{rule.pattern})")
             self._compiled.append((rule, pattern))
+        # 合并正则: 仅用作「本行是否存在任一 regex 规则命中」的廉价前置筛。
+        # 未命中 ⇒ 所有 regex 规则必然不命中; 命中后仍逐条 search ⇒ 结果与逐条匹配完全一致。
+        self._regex_prefilter: re.Pattern | None = None
+        if mergeable and len(parts) > 1:
+            try:
+                self._regex_prefilter = re.compile("|".join(parts))
+            except re.error:  # 组合失败则退化为逐条匹配, 不影响正确性
+                self._regex_prefilter = None
 
     @classmethod
     async def load(cls, db: AsyncSession, team_id: int | None = None) -> "RuleEngine":
@@ -153,20 +169,30 @@ class RuleEngine:
         rules = [r for r in self._rules if r.match_type == MatchType.script]
         return sorted(rules, key=lambda r: (r.priority, r.id))
 
-    def match_entries(self, entries: list[LogEntry]) -> list[Finding]:
-        """对日志条目跑正则/关键字规则, 返回命中明细."""
+    def match_entries(self, entries: list[LogEntry], start_line: int = 1) -> list[Finding]:
+        """对日志条目跑正则/关键字规则, 返回命中明细.
+
+        start_line: 首条 entry 的原始行号; 分批匹配时保持全局行号连续。
+        """
         findings: list[Finding] = []
-        for line_no, entry in enumerate(entries, 1):
+        prefilter = self._regex_prefilter
+        for offset, entry in enumerate(entries):
+            line_no = start_line + offset
+            raw = entry.raw
+            # 合并正则未命中 ⇒ 所有 regex 规则必然不命中, 省去逐条的 N 次 search
+            regex_may_hit = prefilter is None or prefilter.search(raw) is not None
             for rule, pattern in self._compiled:
                 if rule.match_type == MatchType.regex:
-                    m = pattern.search(entry.raw) if pattern else None
+                    if not regex_may_hit:
+                        continue
+                    m = pattern.search(raw) if pattern else None
                     if m:
                         findings.append(Finding(rule.id, rule.name, rule.severity.value,
-                                                line_no, entry.raw[:500], m.group(0)[:200], entry.level))
+                                                line_no, raw[:500], m.group(0)[:200], entry.level))
                 elif rule.match_type == MatchType.keyword:
-                    if rule.pattern and rule.pattern in entry.raw:
+                    if rule.pattern and rule.pattern in raw:
                         findings.append(Finding(rule.id, rule.name, rule.severity.value,
-                                                line_no, entry.raw[:500], rule.pattern, entry.level))
+                                                line_no, raw[:500], rule.pattern, entry.level))
         return findings
 
     def match_metrics(self, metrics: list[dict]) -> list[Finding]:

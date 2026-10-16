@@ -3,6 +3,7 @@
 上传类型: diagnosis (通用诊断) / analyze (witty 解析任务, 指定解析器+团队) /
 inspection (智能巡检); 指定团队的任务走团队级 RBAC (task:create).
 """
+import asyncio
 import shutil
 import uuid
 from pathlib import Path
@@ -33,7 +34,10 @@ ALLOWED_SUFFIXES = {".zip", ".tar", ".gz", ".tgz", ".log", ".txt",
 
 
 async def _save_upload(file: UploadFile, dest_dir: Path, limit: int) -> tuple[Path, int]:
-    """流式落盘单个文件 (防超大), 返回 (storage_path, size); 超限自动清理."""
+    """流式落盘单个文件 (防超大), 返回 (storage_path, size); 超限自动清理.
+
+    写盘放线程池, 不阻塞事件循环 → 多用户/多文件可真正并发上传。
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
     storage_path = dest_dir / Path(file.filename or "upload.bin").name
     size = 0
@@ -44,7 +48,7 @@ async def _save_upload(file: UploadFile, dest_dir: Path, limit: int) -> tuple[Pa
                 f.close()
                 storage_path.unlink(missing_ok=True)
                 raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "文件超出大小限制")
-            f.write(chunk)
+            await asyncio.to_thread(f.write, chunk)
     return storage_path, size
 
 
@@ -163,12 +167,17 @@ async def upload(
     task_id = uuid.uuid4()
     upload_dir = Path(settings.DATA_DIR) / "uploads" / str(task_id)
     budget = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    total = 0
-    names: list[str] = []
-    for uf in uploads:
-        _, size = await _save_upload(uf, upload_dir, budget - total)
-        total += size
-        names.append(Path(uf.filename or "upload.bin").name)
+    names = [Path(uf.filename or "upload.bin").name for uf in uploads]
+    # 多文件并发落盘 (各文件按总额度校验), 上报前再核对总量; 失败清理整个任务目录
+    try:
+        saved = await asyncio.gather(*[_save_upload(uf, upload_dir, budget) for uf in uploads])
+    except Exception:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise
+    total = sum(size for _, size in saved)
+    if total > budget:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "文件超出大小限制")
 
     if len(names) > 1:
         # 多文件: storage_path 指向目录, 由流水线遍历解析, 合并为一个任务

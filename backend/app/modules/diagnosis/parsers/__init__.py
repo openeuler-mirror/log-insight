@@ -1,12 +1,12 @@
 """日志解析器插件体系: 每种日志格式一个 Parser, 注册制接入.
 
 新增日志格式 = 新增模块内 parser 文件并调用 register(), 不动核心代码.
+解析为同步阻塞的 CPU/IO 操作, 由调用方放入线程池执行 (见 diagnosis/pipeline.py)。
 """
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Awaitable
 
 PARSERS: dict[str, "LogParser"] = {}
 
@@ -59,7 +59,7 @@ class LogParser:
         """根据文件名/内容样本判断能否解析该文件."""
         return False
 
-    async def parse_file(self, path: Path, server_type: str = "") -> ParseResult:
+    def parse_file(self, path: Path, server_type: str = "") -> ParseResult:
         raise NotImplementedError
 
 
@@ -69,8 +69,8 @@ def register(parser_cls: type[LogParser]) -> type[LogParser]:
     return parser_cls
 
 
-async def identify_and_parse(path: Path, server_type: str = "") -> ParseResult | None:
-    """格式识别: 按注册顺序尝试 detect, 命中即解析."""
+def identify_and_parse(path: Path, server_type: str = "") -> ParseResult | None:
+    """格式识别: 按注册顺序尝试 detect, 命中即解析 (同步阻塞, 调用方放线程池)."""
     sample: list[str] = []
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -83,7 +83,7 @@ async def identify_and_parse(path: Path, server_type: str = "") -> ParseResult |
         return None
     for parser in PARSERS.values():
         if parser.detect(path, sample):
-            return await parser.parse_file(path, server_type)
+            return parser.parse_file(path, server_type)
     return None
 
 
@@ -101,7 +101,7 @@ class GenericTextParser(LogParser):
     def detect(self, path: Path, sample: list[str]) -> bool:
         return path.suffix.lower() in (".log", ".txt", ".out", "") or bool(sample)
 
-    async def parse_file(self, path: Path, server_type: str = "") -> ParseResult:
+    def parse_file(self, path: Path, server_type: str = "") -> ParseResult:
         result = ParseResult()
         result.file_stats = {"lines": 0, "errors": 0, "warns": 0}
         with open(path, "r", encoding="utf-8", errors="ignore") as f:

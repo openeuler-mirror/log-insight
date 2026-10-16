@@ -5,6 +5,7 @@
 统一事件模型 ParsedEvent, 入库供结果页聚合可视化; LLM 报告按需触发
 (见 llm_report.py), 本流水线先写入规则引擎版五段报告兜底.
 """
+import asyncio
 import logging
 from pathlib import Path
 from uuid import UUID
@@ -71,7 +72,8 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
     path = Path(task.storage_path)
     if not path.is_file():
         raise RuntimeError(f"日志文件不存在: {task.filename or task.storage_path}")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    # 读文件与解析均为阻塞 CPU/IO, 放线程池执行, 避免堵住事件循环 (否则并发消费与 SSE 推送都会停摆)
+    text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
     task.log_size = path.stat().st_size
     if await is_cancelled():
         raise _Cancelled()
@@ -79,7 +81,7 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
     # 2. 解析为统一事件模型
     await bus.publish(task_id, "progress", {
         "step": "parse", "percent": 20, "message": f"「{parser.def_.name}」解析中"})
-    events = parser.parse(text)
+    events = await asyncio.to_thread(parser.parse, text)
     if not events:
         raise RuntimeError("未解析到任何日志事件, 请确认日志格式与所选解析器匹配")
     if await is_cancelled():
@@ -112,8 +114,9 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
     for start in range(0, len(events), RULE_CHUNK):
         if await is_cancelled():
             raise _Cancelled()
-        chunk = events[start:start + RULE_CHUNK]
-        findings.extend(engine.match_entries([LogEntry(raw=e.raw) for e in chunk]))
+        chunk = [LogEntry(raw=e.raw) for e in events[start:start + RULE_CHUNK]]
+        # start + 1: 分批匹配仍保持全局行号连续
+        findings.extend(await asyncio.to_thread(engine.match_entries, chunk, start + 1))
     await bus.publish(task_id, "progress", {
         "step": "rules", "percent": 85, "message": f"规则匹配完成, 命中 {len(findings)} 条"})
     for f in findings[:MAX_FINDINGS_EMIT]:
@@ -123,7 +126,7 @@ async def _pipeline(db: AsyncSession, task: Task, bus: EventBus, is_cancelled) -
 
     # 5. 五段式报告兜底 (LLM 按需生成时会覆盖此报告)
     await bus.publish(task_id, "progress", {"step": "report", "percent": 95, "message": "生成分析报告"})
-    sections = build_llm_report(events, parser.def_.name)
+    sections = await asyncio.to_thread(build_llm_report, events, parser.def_.name)
     summary = "\n\n".join(f"【{s['title']}】\n" + "\n".join(s["lines"]) for s in sections)
     await db.execute(delete(Report).where(Report.task_id == task.id))
     db.add(Report(
