@@ -1,6 +1,6 @@
 # log-insight · 日志智能分析诊断平台
 
-面向前端运维（O&M）人员的日志智能分析诊断平台，以 **规则引擎打底 + 按需 LLM 智能总结** 为核心，提供故障日志的并发上传与流式分析、智能巡检、巡检规则管理、性能数据图表以及团队协作与操作审计能力。
+面向前端运维（O&M）人员的日志智能分析诊断平台，以 **规则引擎打底 + 按需 LLM 智能总结** 为核心，提供故障日志的并发上传与流式分析、智能巡检、巡检规则管理、性能离线分析以及团队协作与操作审计能力。
 
 - **部署形态**：ARM（鲲鹏）/ x86 双架构，Linux 与 Windows 均支持（裸机 systemd / NSSM 与 Docker Compose 两套方案）
 - **访问方式**：Web 端（浏览器）
@@ -30,17 +30,33 @@
 |----------|----------|
 | ![团队列表](docs/screenshots/03-teams.png) | ![团队详情](docs/screenshots/04-team-detail.png) |
 
-| 任务结果分析 | 规则管理 |
+| 创建解析任务 | 任务结果分析 |
 |----------|----------|
-| ![任务结果分析](docs/screenshots/05-task-result.png) | ![规则管理](docs/screenshots/06-rules.png) |
+| ![创建解析任务](docs/screenshots/05-task-wizard.png) | ![任务结果分析](docs/screenshots/06-task-result.png) |
 
-| 性能分析 · sar 性能分析 | 性能分析 · 网络抓包分析 |
+| 规则管理 | 性能分析 · sar 性能分析 |
 |----------|----------|
-| ![性能分析-sar性能分析](docs/screenshots/07-perf-charts.png) | ![性能分析-网络抓包分析](docs/screenshots/08-perf-netcap.png) |
+| ![规则管理](docs/screenshots/07-rules.png) | ![性能分析-sar性能分析](docs/screenshots/08-perf-sar.png) |
 
-| 性能分析 · blktrace 分析 | 性能分析 · 中断计数变化 | 智能巡检 |
-|----------|----------|----------|
-| ![性能分析-blktrace分析](docs/screenshots/09-perf-blktrace.png) | ![性能分析-中断计数变化](docs/screenshots/14-perf-interrupts.png) | ![智能巡检](docs/screenshots/10-inspection.png) |
+| 性能分析 · 网络抓包分析 | 性能分析 · blktrace 分析 |
+|----------|----------|
+| ![性能分析-网络抓包分析](docs/screenshots/09-perf-netcap.png) | ![性能分析-blktrace分析](docs/screenshots/10-perf-blktrace.png) |
+
+| 性能分析 · 中断计数变化 | 智能巡检 |
+|----------|----------|
+| ![性能分析-中断计数变化](docs/screenshots/11-perf-interrupts.png) | ![智能巡检](docs/screenshots/12-inspection.png) |
+
+| 巡检详情 | 智能诊断 |
+|----------|----------|
+| ![巡检详情](docs/screenshots/13-inspection-detail.png) | ![智能诊断](docs/screenshots/14-diagnosis.png) |
+
+| 智能诊断 · 图片预览 | 智能诊断 · 侧栏折叠 |
+|----------|----------|
+| ![智能诊断-图片预览](docs/screenshots/15-diagnosis-image.png) | ![智能诊断-侧栏折叠](docs/screenshots/16-diagnosis-collapsed.png) |
+
+| 智能诊断 · 运行状态折叠 | |
+|----------|----------|
+| ![智能诊断-运行状态折叠](docs/screenshots/17-diagnosis-status.png) | |
 
 ## 整体架构
 
