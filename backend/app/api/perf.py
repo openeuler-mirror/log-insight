@@ -1,4 +1,4 @@
-"""性能分析 API: 上传抓包/blktrace/sar 文件后同步解析并返回聚合结果.
+"""性能分析 API: 上传抓包/blktrace/sar/中断计数文件后同步解析并返回聚合结果.
 
 - 无外部依赖 (纯 Python 解析), 单文件上限 100MB, 解析在请求内完成, 不落盘不入队
 - 解析失败以 400 返回可读原因, 便于前端直接提示
@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.core.deps import get_current_user
 from app.models.user import User
-from app.modules.perf import analyze_blktrace, analyze_netcap, analyze_sar
+from app.modules.perf import analyze_blktrace, analyze_interrupts, analyze_netcap, analyze_sar
 from app.modules.perf.errors import PerfAnalysisError
 
 router = APIRouter(prefix="/perf", tags=["perf"])
@@ -57,3 +57,12 @@ async def analyze_sar_file(
 ):
     """sar 性能分析: 输入为 sar -u / -r / -d (可选 -q) 的文本输出."""
     return await _run(analyze_sar, file)
+
+
+@router.post("/interrupts/analyze")
+async def analyze_interrupts_file(
+    file: Annotated[UploadFile, File()],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    """中断计数变化分析: 输入为 /proc/interrupts 多次快照 或 sar -I 文本输出."""
+    return await _run(analyze_interrupts, file)
