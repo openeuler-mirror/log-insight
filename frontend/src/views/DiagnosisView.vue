@@ -8,7 +8,7 @@ import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
 import { readFile, type Attach, type ReaderTab } from '@/components/diagnosisFiles'
 
-/* ---------------- 三栏宽度拖拽 ---------------- */
+/* ---------------- 侧栏竖栏: 单击收起/展开, 沿栏拖动可调宽 ---------------- */
 const LEFT_MIN = 220
 const LEFT_MAX = 460
 const RIGHT_MIN = 320
@@ -24,12 +24,17 @@ type Side = 'left' | 'right'
 let dragging: Side | null = null
 let startX = 0
 let startW = 0
+/* 本次按下是否发生了拖动: 拖动结束后的 click 不再触发收起/展开 */
+let dragged = false
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+const isCollapsed = (side: Side) => (side === 'left' ? leftCollapsed.value : rightCollapsed.value)
 
 function onMove(e: MouseEvent) {
   if (!dragging) return
   const dx = e.clientX - startX
+  if (!dragged && Math.abs(dx) < 4) return /* 小于阈值视为单击 */
+  dragged = true
   if (dragging === 'left') leftW.value = clamp(startW + dx, LEFT_MIN, LEFT_MAX)
   else rightW.value = clamp(startW - dx, RIGHT_MIN, RIGHT_MAX)
 }
@@ -41,6 +46,8 @@ function stopDrag() {
   document.body.style.userSelect = ''
 }
 function startDrag(side: Side, e: MouseEvent) {
+  dragged = false
+  if (isCollapsed(side)) return /* 收起态只响应单击展开 */
   dragging = side
   startX = e.clientX
   startW = side === 'left' ? leftW.value : rightW.value
@@ -48,6 +55,11 @@ function startDrag(side: Side, e: MouseEvent) {
   window.addEventListener('mouseup', stopDrag)
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
+}
+function toggleSide(side: Side) {
+  if (dragged) return
+  if (side === 'left') leftCollapsed.value = !leftCollapsed.value
+  else rightCollapsed.value = !rightCollapsed.value
 }
 onBeforeUnmount(stopDrag)
 
@@ -462,9 +474,15 @@ function setTodo(text: string, status: TodoStatus) {
         />
       </div>
     </aside>
-    <button v-else class="rail rail--left" title="展开左侧栏" @click="leftCollapsed = false">›</button>
-
-    <div v-if="!leftCollapsed" class="resizer" @mousedown="startDrag('left', $event)"></div>
+    <button
+      class="rail rail--left"
+      :class="{ 'is-collapsed': leftCollapsed }"
+      :title="leftCollapsed ? '展开左侧栏' : '收起左侧栏 · 沿此栏左右拖动可调整宽度'"
+      @mousedown="startDrag('left', $event)"
+      @click="toggleSide('left')"
+    >
+      {{ leftCollapsed ? '›' : '‹' }}
+    </button>
 
     <!-- ============ 中间主体: 文件阅读器 ============ -->
     <section class="pane pane--center">
@@ -479,7 +497,15 @@ function setTodo(text: string, status: TodoStatus) {
       />
     </section>
 
-    <div v-if="!rightCollapsed" class="resizer" @mousedown="startDrag('right', $event)"></div>
+    <button
+      class="rail rail--right"
+      :class="{ 'is-collapsed': rightCollapsed }"
+      :title="rightCollapsed ? '展开右侧栏' : '收起右侧栏 · 沿此栏左右拖动可调整宽度'"
+      @mousedown="startDrag('right', $event)"
+      @click="toggleSide('right')"
+    >
+      {{ rightCollapsed ? '‹' : '›' }}
+    </button>
 
     <!-- ============ 右侧栏: 会话页签 + 对话 + 输入区 ============ -->
     <aside v-if="!rightCollapsed" class="pane pane--right" :style="{ width: rightW + 'px' }">
@@ -607,7 +633,6 @@ function setTodo(text: string, status: TodoStatus) {
         </div>
       </div>
     </aside>
-    <button v-else class="rail rail--right" title="展开右侧栏" @click="rightCollapsed = false">‹</button>
   </div>
 </template>
 
@@ -632,11 +657,14 @@ function setTodo(text: string, status: TodoStatus) {
 }
 .pane--left,
 .pane--right {
-  flex: none;
+  /* width 由内联样式给出; 容器不足时允许压缩, 否则会把中栏挤成 0 并横向溢出 */
+  flex: 0 1 auto;
+  min-width: 140px;
   background: var(--surface-3);
 }
 .pane--center {
   flex: 1;
+  min-width: 240px; /* 主体保底宽度: 空间不够时由左右栏按比例让位 */
   background: var(--surface);
 }
 .pane-head {
@@ -693,27 +721,7 @@ function setTodo(text: string, status: TodoStatus) {
   margin-left: auto;
 }
 
-/* ---------- 拖拽条 ---------- */
-.resizer {
-  flex: none;
-  width: 6px;
-  cursor: col-resize;
-  background: transparent;
-  position: relative;
-  z-index: 2;
-}
-.resizer::after {
-  content: '';
-  position: absolute;
-  inset: 0 2px;
-  background: var(--border);
-  transition: background 0.15s;
-}
-.resizer:hover::after {
-  background: var(--primary);
-}
-
-/* ---------- 侧边栏折叠 ---------- */
+/* ---------- 右上角图标按钮 ---------- */
 .icon-btn {
   flex: none;
   width: 24px;
@@ -735,16 +743,30 @@ function setTodo(text: string, status: TodoStatus) {
   border-color: var(--primary);
   color: var(--primary);
 }
+/* ---------- 侧栏竖栏: 单击收起/展开, 沿栏左右拖动调宽 ---------- */
 .rail {
   flex: none;
   width: 26px;
   padding: 0;
   border: none;
-  cursor: pointer;
+  cursor: col-resize;
   background: var(--surface-3);
   color: var(--text-3);
   font-size: 14px;
-  transition: all 0.15s;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.rail.is-collapsed {
+  cursor: pointer;
+}
+.rail--left {
+  border-right: 1px solid var(--border);
+}
+.rail--right {
+  border-left: 1px solid var(--border);
 }
 .rail:hover {
   background: var(--primary-soft);
