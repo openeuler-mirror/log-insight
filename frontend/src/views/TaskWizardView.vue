@@ -145,7 +145,7 @@ async function execute() {
       form.append('parser_type', parserType.value)
       form.append('task_name', taskName.value.trim())
       form.append('team_id', teamId.value)
-      const res = await http.post('/api/tasks/upload', form)
+      const res = await http.post('/tasks/upload', form)
       taskId = res.data.taskId
     } else {
       const data = await post<{ taskId: string }>('/tasks/upload-text', {
