@@ -240,7 +240,7 @@ const PLACEHOLDER_IMAGE = svgDataUri(
     `<text x="360" y="205" font-size="14" fill="#6b7c96" text-anchor="middle">演示图片占位</text>`,
 )
 
-/* 读取文件内容 (原型: 本地 mock) */
+/* 读取文件内容 (演示数据: 本地 mock) */
 export function readFile(f: Attach): FilePayload {
   const image = IMAGES[f.id]
   if (image) return { kind: 'image', content: image }
@@ -248,4 +248,12 @@ export function readFile(f: Attach): FilePayload {
   const text = TEXT_FILES[f.id]
   if (text) return { kind: 'text', content: text.content, lang: text.lang }
   return GENERIC_TEXT(f)
+}
+
+/* 文件大小格式化 (字节 → 人类可读) */
+export function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }

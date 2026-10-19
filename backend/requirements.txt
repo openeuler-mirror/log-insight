@@ -14,3 +14,4 @@ apscheduler>=3.10
 python-multipart>=0.0.9
 sse-starlette>=2.1
 pydantic-settings>=2.2
+watchdog>=4.0

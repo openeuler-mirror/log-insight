@@ -2,11 +2,12 @@
 /* 智能诊断: 三栏工作台
    左: 文件资源管理器 + 底端「运行状态」停靠面板(可折叠最小化)   中: 文件阅读器   右: 会话页签(1/2/3) + 对话 + 输入区
    说明: 当前为前端交互原型, 消息与文件内容为内置示例, 后续对接 agent / 大模型 / 文件接口。 */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
-import { readFile, type Attach, type ReaderTab } from '@/components/diagnosisFiles'
+import { fetchFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
+import { fmtSize, readFile, type Attach, type FilePayload, type ReaderTab } from '@/components/diagnosisFiles'
 
 /* ---------------- 侧栏竖栏: 单击收起/展开, 沿栏拖动可调宽 ----------------
    三栏同属一个 flex 容器: 左右栏按设定宽度固定, 主体栏占满剩余宽度, 因此左右栏
@@ -104,6 +105,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   ro?.disconnect()
   stopDrag()
+  fsSource?.close()
+  if (reloadTimer !== null) window.clearTimeout(reloadTimer)
 })
 
 /* ---------------- 中·文件阅读器 (多标签页) ---------------- */
@@ -121,13 +124,15 @@ const INITIAL_FILE: Attach = {
 const tabs = ref<ReaderTab[]>([toTab(INITIAL_FILE)])
 const activeTabId = ref(INITIAL_FILE.id)
 
-function openFile(f: Attach) {
+/* payload 由文件树在读取真实本地文件后传入; 内置演示文件走 mock readFile */
+function openFile(f: Attach, payload?: FilePayload) {
   const exist = tabs.value.find((t) => t.id === f.id)
   if (exist) {
     activeTabId.value = exist.id
     return
   }
-  tabs.value.push(toTab(f))
+  const p = payload ?? readFile(f)
+  tabs.value.push({ ...f, kind: p.kind, content: p.content, original: p.content, lang: p.lang })
   activeTabId.value = f.id
 }
 function closeTab(id: string) {
@@ -148,6 +153,88 @@ function revertTab(id: string) {
   const t = tabs.value.find((x) => x.id === id)
   if (t) t.content = t.original
 }
+
+/* ---------------- 左·目录文件: 数据源 + 磁盘变更实时刷新 ----------------
+   目录树默认不加载(空), 由用户点「目录」显式选择; 后端 watchdog 递归监听所选目录并经
+   SSE 推送变更, 前端据此刷新受影响目录, 对已打开且无未保存编辑的文件自动重载最新内容。 */
+const rootPath = ref('')
+const fsEvents = ref<FsChange[]>([])
+let fsSource: EventSource | null = null
+
+function startWatch(path: string) {
+  fsSource?.close()
+  fsSource = null
+  if (!path) return
+  const es = new EventSource(watchUrl(path))
+  es.addEventListener('change', (e) => {
+    try {
+      fsEvents.value.push(JSON.parse((e as MessageEvent).data) as FsChange)
+    } catch {
+      /* 忽略异常事件包 */
+    }
+  })
+  fsSource = es
+}
+watch(rootPath, (p) => startWatch(p))
+
+/* 已打开文件随磁盘变化自动重载(有未保存编辑时不覆盖); 同名批量事件做去抖合并 */
+const dirtyPaths = new Set<string>()
+let reloadTimer: number | null = null
+
+async function reloadTab(t: ReaderTab, path: string) {
+  try {
+    const r = await fetchFile(path)
+    const content = r.kind === 'image' ? rawUrl(path) : (r.content ?? '')
+    t.kind = r.kind
+    t.content = content
+    t.original = content
+    t.lang = r.lang
+    t.size = fmtSize(r.size)
+  } catch {
+    /* 文件可能正被写入 / 已删除, 忽略 */
+  }
+}
+
+function scheduleReload(path: string) {
+  dirtyPaths.add(path)
+  if (reloadTimer !== null) window.clearTimeout(reloadTimer)
+  reloadTimer = window.setTimeout(() => {
+    reloadTimer = null
+    const paths = Array.from(dirtyPaths)
+    dirtyPaths.clear()
+    for (const p of paths) {
+      const t = tabs.value.find((x) => x.id === p)
+      if (t && t.content === t.original) void reloadTab(t, p)
+    }
+  }, 300)
+}
+
+let fsCursor = 0
+watch(
+  () => fsEvents.value.length,
+  () => {
+    const list = fsEvents.value
+    for (; fsCursor < list.length; fsCursor++) {
+      const ev = list[fsCursor]
+      if (ev.kind !== 'file') continue
+      const target = ev.src ?? ev.path
+      const t = tabs.value.find((x) => x.id === target)
+      if (!t) continue
+      if (ev.op === 'deleted') {
+        if (t.content === t.original) closeTab(t.id)
+        continue
+      }
+      if (ev.op === 'moved') {
+        const name = ev.path.split(/[\\/]/).pop() ?? t.name
+        if (activeTabId.value === t.id) activeTabId.value = ev.path
+        t.id = ev.path
+        t.name = name
+        t.path = ev.path
+      }
+      scheduleReload(t.id)
+    }
+  },
+)
 
 /* ---------------- 上下文 (由左侧文件树拖入 / 手动移除) ---------------- */
 const attached = ref<Attach[]>([
@@ -488,7 +575,13 @@ function setTodo(text: string, status: TodoStatus) {
   <div ref="rootEl" class="diag">
     <!-- ============ 左侧栏: 文件资源管理器 + 底端运行状态 ============ -->
     <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
-      <DiagnosisFileTree :active-id="activeTabId" @open="openFile">
+      <DiagnosisFileTree
+        :root-path="rootPath"
+        :active-id="activeTabId"
+        :events="fsEvents"
+        @open="openFile"
+        @pick-root="rootPath = $event"
+      >
         <template #actions>
           <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true; reflow()">«</button>
         </template>
@@ -640,13 +733,17 @@ function setTodo(text: string, status: TodoStatus) {
         @drop.prevent="onDrop"
       >
         <div v-if="dropActive" class="drop-mask">松开鼠标，将文件加入本次提问上下文</div>
-        <div v-if="attached.length" class="ctx-chips">
-          <span class="ctx-label">上下文 {{ attached.length }}</span>
-          <span v-for="f in attached" :key="f.id" class="ctx-chip o-mono" :title="f.path">
-            {{ f.name }}
-            <button class="ctx-x" title="移除" @click="detachFile(f.id)">×</button>
-          </span>
-          <button class="o-btn o-btn--text ctx-clear" @click="attached = []">清空</button>
+        <div v-if="attached.length" class="ctx">
+          <div class="ctx-head">
+            <span class="ctx-label">上下文 {{ attached.length }}</span>
+            <button class="o-btn o-btn--text ctx-clear" @click="attached = []">清空</button>
+          </div>
+          <div class="ctx-chips">
+            <span v-for="f in attached" :key="f.id" class="ctx-chip o-mono" :title="f.path">
+              {{ f.name }}
+              <button class="ctx-x" title="移除" @click="detachFile(f.id)">×</button>
+            </span>
+          </div>
         </div>
         <textarea
           v-model="draft"
@@ -1126,12 +1223,25 @@ function setTodo(text: string, status: TodoStatus) {
   font-weight: 600;
   pointer-events: none;
 }
+.ctx {
+  margin-bottom: 8px;
+}
+/* 上下文较多时: 标题与「清空」固定在头部, 标签区限高可滚动, 避免按钮被挤出可视区 */
+.ctx-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
 .ctx-chips {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  max-height: 84px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 .ctx-label {
   font-size: 12px;
@@ -1159,9 +1269,6 @@ function setTodo(text: string, status: TodoStatus) {
 }
 .ctx-x:hover {
   opacity: 1;
-}
-.ctx-clear {
-  margin-left: auto;
 }
 .composer-text {
   min-height: 62px;

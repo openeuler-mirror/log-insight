@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import (analysis, audit, auth, dashboard, knowledge, metrics,
+from app.api import (analysis, audit, auth, dashboard, fs, knowledge, metrics,
                      notices, perf, rules, rule_suggest, sse, tasks, teams,
                      users)
 
@@ -20,3 +20,4 @@ api_router.include_router(rule_suggest.router)
 api_router.include_router(metrics.router)
 api_router.include_router(perf.router)
 api_router.include_router(knowledge.router)
+api_router.include_router(fs.router)

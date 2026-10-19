@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # 演示数据种子 (5 个演示账号 demo123 + 示例团队/任务); 生产环境置 False
     SEED_DEMO_DATA: bool = True
 
+    # 本地文件浏览 (智能诊断左栏「目录文件」)
+    FS_ROOTS: str = ""                 # 允许浏览的根目录(逗号分隔绝对路径); 空则默认用户主目录 + Windows 盘符
+    FS_EAGER_MAX_CHILDREN: int = 300   # 单目录子项超过该值 → 该目录改懒加载, 避免一次性拉取过多
+    FS_TREE_MAX_DEPTH: int = 10         # 一次性嵌套加载的最大深度
+    FS_TREE_MAX_NODES: int = 10000     # 一次性嵌套加载的节点总数上限
+    FS_LIST_MAX: int = 2000            # 单层列表返回条数上限(懒加载)
+    FS_MAX_TEXT_MB: float = 50          # 文本文件读取上限(MB), 超出只提示不加载
+
 
 @lru_cache
 def get_settings() -> Settings:
