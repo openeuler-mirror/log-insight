@@ -10,7 +10,8 @@ import { apiError } from '@/api/http'
 import DiagnosisPathPicker from '@/components/DiagnosisPathPicker.vue'
 import { fmtSize, type Attach, type FilePayload } from '@/components/diagnosisFiles'
 
-const props = defineProps<{ rootPath: string; activeId?: string; events: FsChange[] }>()
+/* rootSeq: 视图侧每次「重新选择目录」自增, 用于在 rootPath 未变(重选同一目录)时也能触发重载与状态释放 */
+const props = defineProps<{ rootPath: string; rootSeq: number; activeId?: string; events: FsChange[] }>()
 const emit = defineEmits<{ open: [file: Attach, payload?: FilePayload]; 'pick-root': [path: string] }>()
 
 /* ---------------- 树加载 ---------------- */
@@ -26,8 +27,16 @@ const pickerMode = ref<'dir' | 'file'>('dir')
 async function loadRoot(path: string) {
   root.value = null
   expanded.value = {}
+  loadingPaths.value = {}
   truncated.value = false
   error.value = ''
+  /* 换目录(含重选同一目录)时释放上一次的勾选与待刷新队列, 避免残留选中态 */
+  selectedIds.value = []
+  pendingDirs.clear()
+  if (flushTimer !== null) {
+    window.clearTimeout(flushTimer)
+    flushTimer = null
+  }
   if (!path) return
   loading.value = true
   try {
@@ -43,8 +52,6 @@ async function loadRoot(path: string) {
     loading.value = false
   }
 }
-
-watch(() => props.rootPath, (p) => void loadRoot(p), { immediate: true })
 
 /* ---------------- 展开 / 懒加载 ---------------- */
 interface TreeRow {
@@ -231,6 +238,8 @@ watch(
   () => props.events.length,
   () => {
     const list = props.events
+    /* 事件数组已被截断(超出上限)时长游标会越界, 重置以重新对齐 */
+    if (cursor > list.length) cursor = 0
     for (; cursor < list.length; cursor++) {
       const ev = list[cursor]
       if (ev.op === 'modified') {
@@ -254,6 +263,9 @@ watch(
     }, 250)
   },
 )
+
+/* rootPath 变化 或 视图侧重新选择目录(rootSeq 自增) 时重载并释放上一次状态 */
+watch([() => props.rootPath, () => props.rootSeq], ([p]) => void loadRoot(p), { immediate: true })
 </script>
 
 <template>

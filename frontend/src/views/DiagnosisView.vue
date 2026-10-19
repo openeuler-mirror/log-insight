@@ -158,8 +158,13 @@ function revertTab(id: string) {
    目录树默认不加载(空), 由用户点「目录」显式选择; 后端 watchdog 递归监听所选目录并经
    SSE 推送变更, 前端据此刷新受影响目录, 对已打开且无未保存编辑的文件自动重载最新内容。 */
 const rootPath = ref('')
+const rootSeq = ref(0)
 const fsEvents = ref<FsChange[]>([])
 let fsSource: EventSource | null = null
+let fsCursor = 0
+
+/* 事件缓存上限: 超出后丢弃最旧的一段, 防止长时间运行无界增长 */
+const FS_EVENTS_MAX = 2000
 
 function startWatch(path: string) {
   fsSource?.close()
@@ -169,13 +174,26 @@ function startWatch(path: string) {
   es.addEventListener('change', (e) => {
     try {
       fsEvents.value.push(JSON.parse((e as MessageEvent).data) as FsChange)
+      if (fsEvents.value.length > FS_EVENTS_MAX) fsEvents.value.splice(0, fsEvents.value.length - FS_EVENTS_MAX)
     } catch {
       /* 忽略异常事件包 */
     }
   })
   fsSource = es
 }
-watch(rootPath, (p) => startWatch(p))
+/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效) */
+function pickRoot(path: string) {
+  rootPath.value = path
+  rootSeq.value++
+  fsEvents.value = []
+  fsCursor = 0
+  dirtyPaths.clear()
+  if (reloadTimer !== null) {
+    window.clearTimeout(reloadTimer)
+    reloadTimer = null
+  }
+  startWatch(path)
+}
 
 /* 已打开文件随磁盘变化自动重载(有未保存编辑时不覆盖); 同名批量事件做去抖合并 */
 const dirtyPaths = new Set<string>()
@@ -209,11 +227,12 @@ function scheduleReload(path: string) {
   }, 300)
 }
 
-let fsCursor = 0
 watch(
   () => fsEvents.value.length,
   () => {
     const list = fsEvents.value
+    /* 事件数组被截断(超出上限)后游标越界, 重置重新对齐 */
+    if (fsCursor > list.length) fsCursor = 0
     for (; fsCursor < list.length; fsCursor++) {
       const ev = list[fsCursor]
       if (ev.kind !== 'file') continue
@@ -577,10 +596,11 @@ function setTodo(text: string, status: TodoStatus) {
     <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
       <DiagnosisFileTree
         :root-path="rootPath"
+        :root-seq="rootSeq"
         :active-id="activeTabId"
         :events="fsEvents"
         @open="openFile"
-        @pick-root="rootPath = $event"
+        @pick-root="pickRoot"
       >
         <template #actions>
           <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true; reflow()">«</button>
