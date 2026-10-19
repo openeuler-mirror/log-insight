@@ -1,0 +1,16 @@
+# 构建上下文瘦身 (buildx/docker build 均以仓库根为 context)
+.git
+**/node_modules
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+data/
+**/data/
+*.log
+docs/
+tests/
+backend/tests/
+.agents/
+.vscode/
+.idea/

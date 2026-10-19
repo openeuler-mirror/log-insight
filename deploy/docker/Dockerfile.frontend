@@ -1,5 +1,6 @@
-# 前端构建
-FROM node:20-alpine AS build
+# syntax=docker/dockerfile:1
+# 前端构建 (dist 与架构无关, 固定在原生平台构建, 运行时层按目标平台输出 → 双架构低成本)
+FROM --platform=$BUILDPLATFORM node:20-alpine AS build
 WORKDIR /src
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --registry=https://registry.npmmirror.com
