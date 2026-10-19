@@ -4,10 +4,11 @@ FROM python:3.11-slim AS base
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
 WORKDIR /srv/app
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY backend/ backend/
+COPY backend/ .
 
 # ---- API 镜像入口 ----
 FROM base AS api
