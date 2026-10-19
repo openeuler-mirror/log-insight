@@ -15,6 +15,9 @@ data/
 backend/data/
 *.log
 
+# 本地便携运行时 (PostgreSQL / Redis, 不入库)
+.runtime/
+
 # 前端
 node_modules/
 frontend/dist/

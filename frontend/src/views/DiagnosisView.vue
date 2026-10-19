@@ -8,11 +8,16 @@ import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
 import { readFile, type Attach, type ReaderTab } from '@/components/diagnosisFiles'
 
-/* ---------------- 侧栏竖栏: 单击收起/展开, 沿栏拖动可调宽 ---------------- */
+/* ---------------- 侧栏竖栏: 单击收起/展开, 沿栏拖动可调宽 ----------------
+   三栏同属一个 flex 容器: 左右栏按设定宽度固定, 主体栏占满剩余宽度, 因此左右栏
+   变宽时主体栏同步变窄、变窄时同步变宽; 主体栏内容自适应换行/缩放。 */
 const LEFT_MIN = 220
-const LEFT_MAX = 460
+const LEFT_MAX = 560
 const RIGHT_MIN = 320
-const RIGHT_MAX = 640
+const RIGHT_MAX = 720
+const RAILS_W = 52        /* 左右两条竖栏的宽度之和 */
+const CENTER_MIN = 240    /* 主体栏保底宽度, 左右栏拖动上限据此动态计算 */
+
 const leftW = ref(280)
 const rightW = ref(420)
 
@@ -30,13 +35,33 @@ let dragged = false
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 const isCollapsed = (side: Side) => (side === 'left' ? leftCollapsed.value : rightCollapsed.value)
 
+/* 容器实时宽度: 左右栏宽度上限据此计算, 保证主体栏不被挤到保底宽度以下 */
+const rootEl = ref<HTMLElement | null>(null)
+const containerW = ref(0)
+
+/* 某一侧栏的宽度上限 = 容器宽 - 竖栏 - 主体保底 - 另一侧栏当前宽度 */
+function sideMax(side: Side) {
+  const hard = side === 'left' ? LEFT_MAX : RIGHT_MAX
+  const lo = side === 'left' ? LEFT_MIN : RIGHT_MIN
+  if (!containerW.value) return hard
+  const other = side === 'left'
+    ? (rightCollapsed.value ? 0 : rightW.value)
+    : (leftCollapsed.value ? 0 : leftW.value)
+  return clamp(containerW.value - RAILS_W - CENTER_MIN - other, lo, hard)
+}
+/* 容器缩放 / 折叠切换后重新收敛一次左右栏宽度 */
+function reflow() {
+  leftW.value = clamp(leftW.value, LEFT_MIN, sideMax('left'))
+  rightW.value = clamp(rightW.value, RIGHT_MIN, sideMax('right'))
+}
+
 function onMove(e: MouseEvent) {
   if (!dragging) return
   const dx = e.clientX - startX
   if (!dragged && Math.abs(dx) < 4) return /* 小于阈值视为单击 */
   dragged = true
-  if (dragging === 'left') leftW.value = clamp(startW + dx, LEFT_MIN, LEFT_MAX)
-  else rightW.value = clamp(startW - dx, RIGHT_MIN, RIGHT_MAX)
+  if (dragging === 'left') leftW.value = clamp(startW + dx, LEFT_MIN, sideMax('left'))
+  else rightW.value = clamp(startW - dx, RIGHT_MIN, sideMax('right'))
 }
 function stopDrag() {
   dragging = null
@@ -60,8 +85,26 @@ function toggleSide(side: Side) {
   if (dragged) return
   if (side === 'left') leftCollapsed.value = !leftCollapsed.value
   else rightCollapsed.value = !rightCollapsed.value
+  reflow()
 }
-onBeforeUnmount(stopDrag)
+
+/* 监听容器宽度: 窗口缩放时同步收敛左右栏, 主体栏始终保持为剩余宽度 */
+let ro: ResizeObserver | null = null
+onMounted(() => {
+  const el = rootEl.value
+  if (!el) return
+  containerW.value = el.clientWidth
+  ro = new ResizeObserver(() => {
+    containerW.value = el.clientWidth
+    reflow()
+  })
+  ro.observe(el)
+  reflow()
+})
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  stopDrag()
+})
 
 /* ---------------- 中·文件阅读器 (多标签页) ---------------- */
 function toTab(f: Attach): ReaderTab {
@@ -442,12 +485,12 @@ function setTodo(text: string, status: TodoStatus) {
 </script>
 
 <template>
-  <div class="diag">
+  <div ref="rootEl" class="diag">
     <!-- ============ 左侧栏: 文件资源管理器 + 底端运行状态 ============ -->
     <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
       <DiagnosisFileTree :active-id="activeTabId" @open="openFile">
         <template #actions>
-          <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true">«</button>
+          <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true; reflow()">«</button>
         </template>
       </DiagnosisFileTree>
 
@@ -535,7 +578,7 @@ function setTodo(text: string, status: TodoStatus) {
             running ? '● 运行中' : '● 空闲'
           }}</span>
           <button class="o-btn o-btn--sm" title="清空当前会话" @click="messages.length = 0">清空</button>
-          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true">»</button>
+          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true; reflow()">»</button>
         </div>
       </div>
 
@@ -657,14 +700,15 @@ function setTodo(text: string, status: TodoStatus) {
 }
 .pane--left,
 .pane--right {
-  /* width 由内联样式给出; 容器不足时允许压缩, 否则会把中栏挤成 0 并横向溢出 */
+  /* 宽度由内联样式给出(已按容器动态收敛); 三栏同属一个 flex 容器,
+     左右栏变化时由主体栏吸收, 故正常情况下无需压缩 */
   flex: 0 1 auto;
   min-width: 140px;
   background: var(--surface-3);
 }
 .pane--center {
-  flex: 1;
-  min-width: 240px; /* 主体保底宽度: 空间不够时由左右栏按比例让位 */
+  flex: 1 1 0;         /* 占满左右栏之外的剩余宽度: 左右栏变宽则主体栏变窄 */
+  min-width: 240px;    /* 与 CENTER_MIN 一致: 主体栏保底宽度 */
   background: var(--surface);
 }
 .pane-head {

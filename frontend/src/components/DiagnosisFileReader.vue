@@ -23,7 +23,8 @@ const draft = ref('')
 const active = computed<ReaderTab | null>(() => props.tabs.find((t) => t.id === props.activeId) ?? null)
 const dirty = computed(() => !!active.value && active.value.content !== active.value.original)
 const lines = computed(() => (active.value ? active.value.content.split('\n') : []))
-const lineNo = computed(() => lines.value.map((_, i) => i + 1).join('\n'))
+/* 行号栏宽度: 按最大行号位数预留, 保证各行正文左边界对齐 */
+const gutterW = computed(() => `${Math.max(2, String(lines.value.length).length)}ch`)
 
 /* 切换标签页时回到预览态并重置编辑缓冲 */
 watch(
@@ -98,9 +99,11 @@ function onRevert() {
         <img :src="active.content" :alt="active.name" />
       </div>
 
-      <div v-else-if="mode === 'view'" class="rd-code">
-        <pre class="rd-ln">{{ lineNo }}</pre>
-        <pre class="rd-pre"><code>{{ active.content }}</code></pre>
+      <div v-else-if="mode === 'view'" class="rd-code" :style="{ '--ln-w': gutterW }">
+        <div v-for="(ln, i) in lines" :key="i" class="rd-line">
+          <span class="rd-ln">{{ i + 1 }}</span>
+          <span class="rd-txt">{{ ln }}</span>
+        </div>
       </div>
 
       <textarea v-else v-model="draft" class="rd-edit" spellcheck="false" @input="onInput"></textarea>
@@ -228,33 +231,37 @@ function onRevert() {
 .rd-code {
   flex: 1;
   min-width: 0;
-  display: flex;
   overflow: auto;
+  padding: 14px 0;
   background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.rd-line {
+  display: flex;
+  align-items: flex-start;
 }
 .rd-ln {
   flex: none;
-  margin: 0;
-  padding: 14px 10px 14px 14px;
+  width: calc(var(--ln-w, 2ch) + 24px);
+  box-sizing: border-box;
+  padding: 0 10px;
   text-align: right;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.7;
   color: var(--text-4);
   background: var(--surface-3);
   border-right: 1px solid var(--border);
   user-select: none;
+  font-variant-numeric: tabular-nums;
 }
-.rd-pre {
+.rd-txt {
   flex: 1;
   min-width: 0;
-  margin: 0;
-  padding: 14px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  line-height: 1.7;
+  padding: 0 14px;
   color: var(--text-1);
-  white-space: pre;
+  /* 主体栏变窄时自动换行而不是横向滚动; 超长单行/长 token 强制断行 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .rd-edit {
   flex: 1;
