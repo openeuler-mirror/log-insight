@@ -102,9 +102,10 @@ def _runner_error(stdout: bytes, stderr: str) -> str:
 
 
 class RuleEngine:
-    """规则引擎: 每任务实例化一次; 规则集从 DB 加载最新启用版本.
+    """规则引擎: 每任务实例化一次; 规则集从 DB 加载当前启用的规则.
 
-    热加载: 规则表 version 全局递增, Worker 每任务加载时取最新, 无需重启.
+    热加载: Worker 每任务执行前重新查库(仅取 enabled 规则), 故规则改动免重启即生效;
+    与规则行的 version 字段无关 (version 只是该条规则的内容版本).
     """
 
     def __init__(self, rules: list[Rule]):

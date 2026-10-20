@@ -2,7 +2,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,9 +24,11 @@ class Severity(str, enum.Enum):
 
 
 class Rule(Base):
-    """规则为数据库实体, 版本化存储; Worker 按最大 version 感知变更并热加载."""
+    """规则为数据库实体; version 是「本条规则的内容版本」, 仅内容变更时 +1.
+
+    规则集变更不靠 version 通知: RuleEngine 每个任务都重新查库, 天然热加载.
+    """
     __tablename__ = "rules"
-    __table_args__ = (UniqueConstraint("name", "version", name="uq_rule_name_version"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), index=True)

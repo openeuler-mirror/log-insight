@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import RuleCreate, RuleInfo, RuleUpdate
@@ -73,6 +73,18 @@ def _normalize_rule(body: RuleCreate) -> RuleCreate:
 def _rule_snapshot(rule: Rule) -> dict:
     """规则快照 (审计 detail 用): 经 RuleInfo 转 JSON 安全类型, 避免 datetime 无法写入 JSONB."""
     return RuleInfo.model_validate(rule).model_dump(mode="json")
+
+
+# 内容字段: 参与「内容版本」比较; enabled 只是状态开关, 不计入
+_CONTENT_FIELDS = ("name", "description", "match_type", "pattern", "threshold",
+                   "script_path", "script_params", "script_timeout",
+                   "severity", "log_type", "server_type", "priority")
+
+
+def _content_changed(rule: Rule, body: RuleCreate) -> bool:
+    """内容字段是否有实际变更 (仅启停不算)."""
+    new = body.model_dump()
+    return any(getattr(rule, f) != new.get(f) for f in _CONTENT_FIELDS)
 
 
 @router.get("/scripts")
@@ -147,8 +159,7 @@ async def create_rule(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "需要规则管理权限")
     validate_rule(body)
     _normalize_rule(body)
-    max_version = (await db.execute(select(func.max(Rule.version)))).scalar() or 0
-    rule = Rule(**body.model_dump(), version=max_version + 1, created_by=user.id, team_id=None)
+    rule = Rule(**body.model_dump(), version=1, created_by=user.id, team_id=None)
     db.add(rule)
     await db.flush()  # 先落库生成 rule.id, 审计日志外键依赖它
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="create",
@@ -174,12 +185,13 @@ async def update_rule(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "规则不存在")
     if rule.team_id is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "团队专属规则请通过团队规则接口管理")
-    # 版本化: 更新即产生新版本号, Worker 感知到版本变化后热加载
-    max_version = (await db.execute(select(func.max(Rule.version)))).scalar() or 0
+    # 内容版本: 只有内容字段真的变了才 +1; 单纯启停不改版本
     old = _rule_snapshot(rule)
+    changed = _content_changed(rule, body)
     for key, value in body.model_dump().items():
         setattr(rule, key, value)
-    rule.version = max_version + 1
+    if changed:
+        rule.version += 1
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="update",
                         operator_id=user.id, detail={"old": old, "new": body.model_dump(mode="json")}))
     await db.commit()
@@ -253,8 +265,7 @@ async def create_team_rule(
     _reject_team_script(body)
     validate_rule(body)
     _normalize_rule(body)
-    max_version = (await db.execute(select(func.max(Rule.version)))).scalar() or 0
-    rule = Rule(**body.model_dump(), version=max_version + 1, created_by=user.id, team_id=team_id)
+    rule = Rule(**body.model_dump(), version=1, created_by=user.id, team_id=team_id)
     db.add(rule)
     await db.flush()
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="create",
@@ -280,11 +291,13 @@ async def update_team_rule(
     rule = (await db.execute(select(Rule).where(Rule.id == rule_id))).scalar_one_or_none()
     if rule is None or rule.team_id != team_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队规则不存在")
-    max_version = (await db.execute(select(func.max(Rule.version)))).scalar() or 0
+    # 内容版本: 只有内容字段真的变了才 +1; 单纯启停不改版本
     old = _rule_snapshot(rule)
+    changed = _content_changed(rule, body)
     for key, value in body.model_dump().items():
         setattr(rule, key, value)
-    rule.version = max_version + 1
+    if changed:
+        rule.version += 1
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="update",
                         operator_id=user.id, detail={"old": old, "new": body.model_dump(mode="json")}))
     await db.commit()
