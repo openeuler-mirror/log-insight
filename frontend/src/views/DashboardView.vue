@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { get } from '@/api/http'
 import { useRbacStore } from '@/stores/rbac'
+import { useTeamsStore } from '@/stores/teams'
+import { teamRoleById } from '@/rbac/permissions'
 import { PARSER_DEFS } from '@/parser/parsers'
 import { fmtTime } from '@/parser/types'
 import type { AnalyzeTask } from '@/stores/tasks'
@@ -11,6 +13,7 @@ import ChartBase from '@/components/ChartBase.vue'
 
 const route = useRoute()
 const rbac = useRbacStore()
+const teamsStore = useTeamsStore()
 
 const denied = computed(() => (route.query.denied as string) || '')
 
@@ -37,7 +40,14 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(load)
+onMounted(() => {
+  load()
+  teamsStore.fetchTeams().catch(() => {})
+})
+
+/* 我加入的团队 (顶部导航不再单列页签, 这里作为团队入口) */
+const myTeams = computed(() => teamsStore.teams.filter((t) => !!teamsStore.myRoleOf(t.id)))
+const roleName = (id: number) => teamRoleById(teamsStore.myRoleOf(id) ?? '')?.name ?? ''
 
 const codeChart = computed<EChartsOption>(() => {
   const top = data.value?.topCodes ?? []
@@ -90,6 +100,29 @@ function parserName(type: string) {
       <div class="o-kpi"><b style="color: var(--warning)">{{ data.kpi.error }}</b><span>错误事件</span></div>
     </div>
 
+    <div class="o-card" style="margin-bottom: 20px">
+      <div class="o-card__title">
+        我的团队
+        <span class="o-mono o-text-3">{{ myTeams.length }} 个</span>
+        <router-link class="o-btn o-btn--text" to="/teams" style="margin-left: auto">全部团队 →</router-link>
+      </div>
+      <div v-if="myTeams.length" class="team-chips">
+        <router-link v-for="t in myTeams" :key="t.id" class="team-chip" :to="`/teams/${t.id}`">
+          <div class="team-chip__head">
+            <span class="team-chip__name" :title="t.name">{{ t.name }}</span>
+            <span class="o-badge o-badge--brand">{{ roleName(t.id) }}</span>
+          </div>
+          <div class="o-mono o-text-3 team-chip__sub">
+            {{ t.memberCount }} 成员 · {{ t.taskCount }} 任务
+          </div>
+        </router-link>
+      </div>
+      <div v-else class="o-empty" style="padding: 28px 0">
+        <div class="icon">👥</div>
+        <div>你还没有加入任何团队 —— <router-link to="/teams">去创建或申请加入 →</router-link></div>
+      </div>
+    </div>
+
     <div class="grid">
       <div class="o-card">
         <div class="o-card__title">全局错误码 Top 8<span class="o-mono o-text-3">我的团队合并</span></div>
@@ -135,5 +168,45 @@ function parserName(type: string) {
 }
 @media (max-width: 1080px) {
   .grid { grid-template-columns: 1fr; }
+}
+
+/* 我的团队: 可点击进入团队详情 */
+.team-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
+  gap: 12px;
+}
+.team-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.team-chip:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-1px);
+}
+.team-chip__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.team-chip__name {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-chip__sub {
+  font-size: 12px;
 }
 </style>

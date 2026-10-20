@@ -55,7 +55,7 @@ const crumbs = computed<Crumb[]>(() => {
 const menus = computed(() =>
   router
     .getRoutes()
-    .filter((r) => r.meta?.menu && r.meta?.perm && rbac.hasPerm(r.meta.perm as string))
+    .filter((r) => r.meta?.menu && !r.meta?.hidden && r.meta?.perm && rbac.hasPerm(r.meta.perm as string))
     .map((r) => ({ path: r.path, title: r.meta.title as string })),
 )
 
@@ -66,6 +66,8 @@ const myTeamRole = computed(() => {
   }
   return ''
 })
+/* 我加入的团队数 (来自 /auth/me team_roles), 用于下拉入口计数 */
+const myTeamCount = computed(() => Object.keys(rbac.myTeamRoles).length)
 
 /* ---------- 头像下拉 + 通知中心 ---------- */
 const menuOpen = ref(false)
@@ -94,6 +96,12 @@ async function logout() {
   noticeOpen.value = false
   await rbac.logout()
   rr.push('/login')
+}
+
+/* 团队入口: 顶部导航已不再单列页签, 从下拉进入 */
+function gotoTeams() {
+  menuOpen.value = false
+  rr.push('/teams')
 }
 </script>
 
@@ -165,6 +173,10 @@ async function logout() {
               <span class="o-mono o-text-3">{{ user?.email }}</span>
               <span class="o-mono o-text-3">{{ user?.dept }}{{ user?.title ? ' · ' + user.title : '' }}</span>
             </div>
+            <button class="menu-row" @click="gotoTeams">
+              我的团队
+              <span v-if="myTeamCount" class="o-badge o-badge--outline">{{ myTeamCount }}</span>
+            </button>
             <button class="menu-row" @click="noticeOpen = true; menuOpen = false">
               申请与邀请 <span v-if="noticeCount" class="o-badge o-badge--danger">{{ noticeCount }}</span>
             </button>
