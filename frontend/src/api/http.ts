@@ -70,6 +70,11 @@ export function apiError(e: unknown): string {
   return (e as Error)?.message || '请求失败'
 }
 
+/** 取后端返回的 HTTP 状态码 (无响应时为 0) */
+export function apiStatus(e: unknown): number {
+  return axios.isAxiosError(e) ? e.response?.status ?? 0 : 0
+}
+
 /** 发起 GET 请求并自动驼峰化响应体 */
 export async function get<T = any>(url: string, params?: Record<string, unknown>): Promise<T> {
   const res = await http.get(url, { params })

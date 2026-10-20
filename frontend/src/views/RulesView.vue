@@ -4,7 +4,7 @@
    - 团队规则(team_id=X): 团队 owner/team_admin 维护, 执行时同名覆盖通用规则 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { get, post, put, del, apiError } from '@/api/http'
+import { get, post, put, del, apiError, apiStatus } from '@/api/http'
 import { fmtTime } from '@/parser/types'
 import { useRbacStore } from '@/stores/rbac'
 import { useTeamsStore } from '@/stores/teams'
@@ -244,7 +244,9 @@ async function toggleEnabled(row: RuleRow) {
     })
     await load()
   } catch (e) {
-    loadErr.value = apiError(e)
+    /* 404: 该规则已被他人删除, 重拉列表清掉失效行, 不再抛误导性报错 */
+    if (apiStatus(e) === 404) await load()
+    else loadErr.value = apiError(e)
   } finally {
     togglingId.value = null
   }
@@ -258,7 +260,8 @@ async function remove(row: RuleRow) {
     await del(`${ruleBase()}/${row.id}`)
     await load()
   } catch (e) {
-    loadErr.value = apiError(e)
+    if (apiStatus(e) === 404) await load()
+    else loadErr.value = apiError(e)
   }
 }
 

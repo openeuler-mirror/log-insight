@@ -17,8 +17,10 @@ from app.models.user import User
 
 router = APIRouter(prefix="/rules", tags=["rules"])
 
-# 防灾难性回溯: 禁止嵌套量子等危险模式 (保守黑名单 + 编译超时不可用时的兜底)
-DANGEROUS_REGEX = re.compile(r"(\((?:[^()]*\+|\+[^()]*)\))|(\{.*,\s*,.*\})|(?:\(\?.*\))")
+# 防灾难性回溯: 禁止"括号内含量词"的嵌套量子模式与 {m,,n} 畸形量词
+# 注意: 不能笼统禁止 (?...) —— (?:...) 非捕获组等是常用且安全的写法
+# (内置示例规则就用了 (?:A|B) 形式, 之前被误判)
+DANGEROUS_REGEX = re.compile(r"\((?:[^()]*\+|\+[^()]*)\)|(\{.*,\s*,.*\})")
 
 
 def _validate_script_path(path: str) -> None:
