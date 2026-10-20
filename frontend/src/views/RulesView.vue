@@ -228,8 +228,31 @@ async function save() {
   }
 }
 
+/* 快捷启用/停用: 不必进编辑弹窗; 接口为整体更新, 故按当前行回填全部字段 */
+const togglingId = ref<number | null>(null)
+async function toggleEnabled(row: RuleRow) {
+  togglingId.value = row.id
+  loadErr.value = ''
+  try {
+    await put(`${ruleBase()}/${row.id}`, {
+      name: row.name, description: row.description, match_type: row.matchType,
+      pattern: row.pattern, threshold: row.threshold ?? {},
+      script_path: row.scriptPath || '', script_params: row.scriptParams ?? {},
+      script_timeout: row.scriptTimeout ?? 5,
+      severity: row.severity, log_type: row.logType, server_type: row.serverType,
+      enabled: !row.enabled, priority: row.priority,
+    })
+    await load()
+  } catch (e) {
+    loadErr.value = apiError(e)
+  } finally {
+    togglingId.value = null
+  }
+}
+
 async function remove(row: RuleRow) {
-  if (!window.confirm(`确认删除规则「${row.name}」？`)) return
+  const tip = row.isBuiltin ? '\n（内置规则，删除后如需恢复需手动重建）' : ''
+  if (!window.confirm(`确认删除规则「${row.name}」？${tip}`)) return
   loadErr.value = ''
   try {
     await del(`${ruleBase()}/${row.id}`)
@@ -330,7 +353,16 @@ function editFromDetail() {
             <td class="o-mono">{{ r.priority }}</td>
             <td class="o-mono">v{{ r.version }}</td>
             <td>
-              <span class="o-badge" :class="r.enabled ? 'o-badge--success' : 'o-badge--grey'">
+              <button
+                v-if="canEditRow(r)"
+                type="button"
+                class="o-badge status-toggle"
+                :class="r.enabled ? 'o-badge--success' : 'o-badge--grey'"
+                :disabled="togglingId === r.id"
+                :title="r.enabled ? '点击停用 · 停用后不再参与匹配，可随时重新启用' : '点击启用 · 启用后立即参与匹配'"
+                @click="toggleEnabled(r)"
+              >{{ togglingId === r.id ? '…' : (r.enabled ? '启用' : '停用') }}</button>
+              <span v-else class="o-badge" :class="r.enabled ? 'o-badge--success' : 'o-badge--grey'">
                 {{ r.enabled ? '启用' : '停用' }}
               </span>
             </td>
@@ -338,7 +370,11 @@ function editFromDetail() {
             <td class="actions">
               <template v-if="canEditRow(r)">
                 <button class="o-btn o-btn--text o-btn--sm" @click="openEdit(r)">编辑</button>
-                <button class="o-btn o-btn--text o-btn--sm danger" :disabled="r.isBuiltin" @click="remove(r)">删除</button>
+                <button
+                  class="o-btn o-btn--text o-btn--sm danger"
+                  :title="r.isBuiltin ? '内置规则，删除后如需恢复需手动重建' : '删除该规则'"
+                  @click="remove(r)"
+                >删除</button>
               </template>
               <span v-else class="o-text-3">—</span>
             </td>
@@ -553,6 +589,23 @@ function editFromDetail() {
 }
 .actions .danger {
   color: var(--danger);
+}
+/* 状态列即开关: 徽标样式可点击切换启用/停用 */
+.status-toggle {
+  font-family: inherit;
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+}
+.status-toggle:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.status-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.status-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .mono-input {
   font-family: var(--mono);

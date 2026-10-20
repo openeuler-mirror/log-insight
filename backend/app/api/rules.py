@@ -68,6 +68,11 @@ def _normalize_rule(body: RuleCreate) -> RuleCreate:
     return body
 
 
+def _rule_snapshot(rule: Rule) -> dict:
+    """规则快照 (审计 detail 用): 经 RuleInfo 转 JSON 安全类型, 避免 datetime 无法写入 JSONB."""
+    return RuleInfo.model_validate(rule).model_dump(mode="json")
+
+
 @router.get("/scripts")
 async def list_rule_scripts(
     user: Annotated[User, Depends(get_current_user)],
@@ -169,12 +174,12 @@ async def update_rule(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "团队专属规则请通过团队规则接口管理")
     # 版本化: 更新即产生新版本号, Worker 感知到版本变化后热加载
     max_version = (await db.execute(select(func.max(Rule.version)))).scalar() or 0
-    old = {c.name: getattr(rule, c.name) for c in rule.__table__.columns}
+    old = _rule_snapshot(rule)
     for key, value in body.model_dump().items():
         setattr(rule, key, value)
     rule.version = max_version + 1
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="update",
-                        operator_id=user.id, detail={"old": old, "new": body.model_dump()}))
+                        operator_id=user.id, detail={"old": old, "new": body.model_dump(mode="json")}))
     await db.commit()
     await db.refresh(rule)
     return rule
@@ -186,6 +191,7 @@ async def delete_rule(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
+    """删除平台通用规则 (含内置规则, 需 rule:manage); 团队规则请用团队接口."""
     if "rule:manage" not in {p.code for r in user.roles for p in r.permissions}:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "需要规则管理权限")
     rule = (await db.execute(select(Rule).where(Rule.id == rule_id))).scalar_one_or_none()
@@ -193,8 +199,6 @@ async def delete_rule(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "规则不存在")
     if rule.team_id is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "团队专属规则请通过团队规则接口管理")
-    if rule.is_builtin:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "内置规则不可删除, 可停用")
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="delete",
                         operator_id=user.id, detail={}))
     await db.delete(rule)
@@ -275,12 +279,12 @@ async def update_team_rule(
     if rule is None or rule.team_id != team_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队规则不存在")
     max_version = (await db.execute(select(func.max(Rule.version)))).scalar() or 0
-    old = {c.name: getattr(rule, c.name) for c in rule.__table__.columns}
+    old = _rule_snapshot(rule)
     for key, value in body.model_dump().items():
         setattr(rule, key, value)
     rule.version = max_version + 1
     db.add(RuleAuditLog(rule_id=rule.id, rule_name=rule.name, action="update",
-                        operator_id=user.id, detail={"old": old, "new": body.model_dump()}))
+                        operator_id=user.id, detail={"old": old, "new": body.model_dump(mode="json")}))
     await db.commit()
     await db.refresh(rule)
     return rule
