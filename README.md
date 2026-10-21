@@ -109,6 +109,20 @@ API 服务 ── 路径白名单校验(FS_ROOTS) ──► 后端所在主机�
 - Python 3.11+、Node.js 18+
 - PostgreSQL 15+、Redis 7+（本机服务或容器均可）
 
+本地开发也可直接使用仓库自带的便携版（放在 `.runtime/`，已 gitignore，不纳入版本控制）：
+
+```powershell
+# PostgreSQL（.runtime/pgsql 便携版）
+.\.runtime\pgsql\bin\pg_ctl.exe -D .\.runtime\pgdata -l .\.runtime\pg.log `
+    -o "-p 5432 -c max_connections=100" start
+
+# Redis（.runtime/redis 便携版）
+.\.runtime\redis\Redis-7.4.11-Windows-x64-msys2\redis-server.exe --port 6379 `
+    --dir .\.runtime\redis --pidfile .\.runtime\redis\redis_6379.pid --appendonly no
+```
+
+> Redis 必须用 `--dir` / `--pidfile` 把持久化文件与 pid 重定向到 `.runtime/redis`，否则会在仓库根目录生成 `dump.rdb` / `redis_6379.pid` 污染工作区。
+
 ### 2. 后端
 
 ```bash
@@ -130,6 +144,8 @@ python -m app.worker
 
 默认管理员账号：`admin / admin123`（首次登录后请修改）。API 文档：http://localhost:8000/docs
 
+> **启动顺序**：PostgreSQL / Redis → API（`uvicorn`）→ Worker（`python -m app.worker`）→ 前端。API 与 Worker 需同时运行，否则上传的日志任务只会入队而不会被执行。
+
 演示账号（密码统一 `demo123`，`SEED_DEMO_DATA=True` 时自动初始化，生产环境请置 `False` 关闭）：
 
 | 账号 | 姓名 | 平台角色 | 团队角色（演示团队） |
@@ -147,10 +163,12 @@ python -m app.worker
 ```bash
 cd frontend
 npm install
-npm run dev          # 开发模式，http://localhost:5180
-npm run typecheck    # vue-tsc 类型检查
-npm run build        # 生产构建，产物在 dist/
+npm run dev -- --host 0.0.0.0   # 开发模式，http://localhost:5180
+npm run typecheck               # vue-tsc 类型检查
+npm run build                   # 生产构建，产物在 dist/
 ```
+
+> **务必显式指定 `--host`**：Vite 默认只监听 `localhost`，在 Windows 上通常解析为 IPv6 `::1`；若浏览器改为 `127.0.0.1` 访问会提示「服务不可用」。用 `--host 0.0.0.0` 可同时监听 IPv4 / IPv6。
 
 开发模式下接口请求（含 SSE）由 Vite 代理至 `http://localhost:8000`，且对 `text/event-stream` 关闭缓冲。
 
@@ -170,6 +188,13 @@ docker compose up -d       # 拉起 postgres / redis / api / worker / web
 - **Linux（systemd）**：`deploy/linux/install.sh`
 - **Windows（NSSM 服务）**：`deploy/windows/install-nssm.ps1`
 - **Nginx 反代**：`deploy/nginx/nginx.conf`（含 SSE 专用配置 `proxy_buffering off`）
+
+### 6. 本地开发注意事项
+
+- **PowerShell 5.1 不支持 `&&`**：多条命令请用 `;` 分开，或逐条执行。
+- **`Start-Process -ArgumentList` 不接受空字符串参数**：例如 Redis 的 `--save ""` 会直接抛参数校验错误导致脚本中断，需把整串参数合并为一个字符串传入。
+- **Worker consumer 名**：默认按 `hostname-pid` 自动生成（`WORKER_CONSUMER_NAME` 留空即可），多副本部署时禁止写死同一个名字，否则 Redis Stream 消费组语义错乱。
+- **数据库连接预算**：API 与 N 个 Worker 共用 PostgreSQL，请按进程角色拆分 `DB_POOL_SIZE` / `DB_MAX_OVERFLOW`，必要时前置 PgBouncer。
 
 ## 使用说明
 
