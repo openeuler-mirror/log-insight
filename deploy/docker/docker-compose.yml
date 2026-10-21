@@ -68,7 +68,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend
     ports:
-      - "80:80"
+      - "${WEB_PORT:-80}:80"
     depends_on:
       - api
     restart: unless-stopped
