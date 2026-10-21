@@ -41,6 +41,8 @@ _GUARDS: list[tuple[str, str]] = [
     # rules 表: 归属团队 (NULL=平台通用规则, 非空=团队专属规则)
     ("ALTER TABLE rules ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE", "rules.team_id"),
     ("CREATE INDEX IF NOT EXISTS ix_rules_team_id ON rules (team_id)", "rules.team_id 索引"),
+    # 团队角色合并: 创建者 (owner) 与团队管理员合并为 team_admin (幂等)
+    ("UPDATE team_members SET role = 'team_admin' WHERE role = 'owner'", "team_members 角色合并 owner -> team_admin"),
 ]
 
 

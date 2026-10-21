@@ -423,7 +423,7 @@ async function revoke(userId: number, name: string) {
 
       <div class="o-operate-bar">
         <div class="o-operate-left">
-          <span class="o-text-3" style="font-size: 13px">团队内固定三角色：创建者 / 管理员 / 普通用户，详见「角色」页签</span>
+          <span class="o-text-3" style="font-size: 13px">团队内固定两角色：管理员 / 普通用户，详见「角色」页签</span>
         </div>
         <div class="o-operate-right">
           <button v-if="can('team:invite')" class="o-btn o-btn--primary" @click="showInvite = true">+ 邀请成员</button>
@@ -452,20 +452,20 @@ async function revoke(userId: number, name: string) {
               <td class="o-mono o-text-3">{{ m.email || '—' }}</td>
               <td>
                 <select
-                  v-if="can('team:role') && m.role !== 'owner'"
+                  v-if="can('team:role') && m.userId !== team.ownerUserId"
                   class="o-select role-select"
                   :value="m.role"
                   @change="changeRole(m.userId, ($event.target as HTMLSelectElement).value)"
                 >
-                  <option v-for="r in TEAM_ROLES.filter(x => x.id !== 'owner')" :key="r.id" :value="r.id">{{ r.name }}</option>
+                  <option v-for="r in TEAM_ROLES" :key="r.id" :value="r.id">{{ r.name }}</option>
                 </select>
-                <span v-else class="o-badge" :class="m.role === 'owner' ? 'o-badge--primary' : 'o-badge--outline'">
+                <span v-else class="o-badge" :class="m.role === 'team_admin' ? 'o-badge--primary' : 'o-badge--outline'">
                   {{ teamRoleById(m.role)?.name ?? m.role }}
                 </span>
               </td>
               <td>
                 <button
-                  v-if="can('team:remove') && m.role !== 'owner'"
+                  v-if="can('team:remove') && m.userId !== team.ownerUserId"
                   class="o-btn o-btn--sm o-btn--text o-btn--danger"
                   @click="revoke(m.userId, m.name)"
                 >
@@ -523,7 +523,7 @@ async function revoke(userId: number, name: string) {
         <div class="o-form-item">
           <label class="o-form-item__label required">团队角色</label>
           <select v-model="inviteForm.roleId" class="o-select">
-            <option v-for="r in TEAM_ROLES.filter(x => x.id !== 'owner')" :key="r.id" :value="r.id">{{ r.name }} — {{ r.desc }}</option>
+            <option v-for="r in TEAM_ROLES" :key="r.id" :value="r.id">{{ r.name }} — {{ r.desc }}</option>
           </select>
         </div>
         <div v-if="inviteErr" class="o-badge o-badge--danger">{{ inviteErr }}</div>

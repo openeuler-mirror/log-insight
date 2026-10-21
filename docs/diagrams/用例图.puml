@@ -3,8 +3,9 @@
 '  log-insight · UML 用例图
 '  依据: backend/app/api/*.py + frontend/src/rbac/permissions.ts
 '        + frontend/src/router/index.ts (v0.2 已实现)
-'  说明: 双级权限模型 —— 平台级(admin/普通) × 团队级(创建者/管理员/成员)
-'        平台管理员对任意团队具备"创建者"级权限 (is_platform_admin)
+'  说明: 双级权限模型 —— 平台级(admin/普通) × 团队级(管理员/普通用户)
+'        团队成员只有两种角色, 团队创建者与团队管理员权限已合一
+'        平台管理员对任意团队自动具备"团队管理员"权限 (is_platform_admin)
 ' ============================================================
 left to right direction
 skinparam shadowing false
@@ -21,11 +22,9 @@ title log-insight · 用例图
 ' ---------- 参与者 (Actors) ----------
 actor "普通用户\n(团队·成员)"     as MEMBER
 actor "团队管理员"              as TADMIN
-actor "团队创建者"              as OWNER
 actor "平台管理员"              as PADMIN
 ' 泛化: 更具体(权限更高) <|-- 更一般 —— 子 actor 继承父 actor 的全部用例
 TADMIN <|-- MEMBER
-OWNER  <|-- TADMIN
 PADMIN <|-- MEMBER
 ' ---------- 系统边界 ----------
 rectangle "log-insight" as SYS {
@@ -112,6 +111,7 @@ MEMBER --> UC_DASH
 MEMBER --> UC_VTEAM
 MEMBER --> UC_APPLY
 MEMBER --> UC_NOTICE
+MEMBER --> UC_CTEAM
 MEMBER --> UC_SUBMIT
 MEMBER --> UC_LISTTASK
 MEMBER --> UC_RESULT
@@ -126,7 +126,6 @@ MEMBER --> UC_PERF_NET
 MEMBER --> UC_PERF_BLK
 MEMBER --> UC_PERF_IRQ
 ' 团队管理员: 在普通用户之上
-TADMIN --> UC_CTEAM
 TADMIN --> UC_INVITE
 TADMIN --> UC_APPROVE
 TADMIN --> UC_ROLE
@@ -138,7 +137,7 @@ PADMIN --> UC_MRULE
 ' ---------- 说明 ----------
 note bottom of PADMIN
   平台管理员: 拥有规则管理权限 (rule:manage)
-  且对任意团队自动具备"创建者"级权限
+  且对任意团队自动具备"团队管理员"级权限
 end note
 legend right
   |= 关系符号 |= 含义 |

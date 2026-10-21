@@ -7,10 +7,11 @@
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
@@ -43,8 +44,18 @@ async def run_analyze(task_id: UUID, bus: EventBus, is_cancelled) -> None:
         task = (await db.execute(db_get(Task, task_id))).scalar_one_or_none()
         if task is None:
             return
-        task.status = TaskStatus.running
+        # 条件更新: 已被取消/结束的任务不再执行 (修复「取消排队任务」竞态);
+        # interrupted 允许崩溃回收后重跑
+        result = await db.execute(
+            update(Task)
+            .where(Task.id == task_id,
+                   Task.status.in_((TaskStatus.pending, TaskStatus.running, TaskStatus.interrupted)))
+            .values(status=TaskStatus.running, started_at=datetime.now(timezone.utc))
+        )
         await db.commit()
+        if not result.rowcount:
+            return
+        await db.refresh(task)
 
         try:
             await _pipeline(db, task, bus, is_cancelled)

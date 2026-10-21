@@ -247,14 +247,14 @@ async def seed_teams() -> None:
             demo_user_objs[username] = u
         await db.flush()
 
-        # ---- 团队: 北京A (顾创建 owner + 蒋管理 team_admin + 孙普通 member) ----
+        # ---- 团队: 北京A (顾创建为创建人/管理员 + 蒋管理 管理员 + 孙普通 普通用户) ----
         if (await db.execute(select(Team).where(Team.name == "北京A"))).scalar_one_or_none() is None:
             team = Team(name="北京A", desc="北京机房 A 区服务器运维团队",
                         owner_user_id=demo_user_objs["guchuang"].id)
             db.add(team)
             await db.flush()
             db.add_all([
-                TeamMember(team_id=team.id, user_id=demo_user_objs["guchuang"].id, role="owner"),
+                TeamMember(team_id=team.id, user_id=demo_user_objs["guchuang"].id, role="team_admin"),
                 TeamMember(team_id=team.id, user_id=demo_user_objs["jiangguanli"].id, role="team_admin"),
                 TeamMember(team_id=team.id, user_id=demo_user_objs["sunputong"].id, role="member"),
             ])
@@ -263,14 +263,14 @@ async def seed_teams() -> None:
                               from_user_id=demo_user_objs["jiangguanli"].id,
                               to_user_id=demo_user_objs["sunputong"].id, role="member"))
 
-        # ---- 团队: 上海B (蒋管理 owner + 张审批 team_admin) ----
+        # ---- 团队: 上海B (蒋管理为创建人/管理员 + 张审批 管理员) ----
         if (await db.execute(select(Team).where(Team.name == "上海B"))).scalar_one_or_none() is None:
             team = Team(name="上海B", desc="上海机房 B 区服务器运维团队",
                         owner_user_id=demo_user_objs["jiangguanli"].id)
             db.add(team)
             await db.flush()
             db.add_all([
-                TeamMember(team_id=team.id, user_id=demo_user_objs["jiangguanli"].id, role="owner"),
+                TeamMember(team_id=team.id, user_id=demo_user_objs["jiangguanli"].id, role="team_admin"),
                 TeamMember(team_id=team.id, user_id=demo_user_objs["zhangshenpi"].id, role="team_admin"),
             ])
             # 待审批申请: 李一般申请加入 (张审批登录后通知中心可见)

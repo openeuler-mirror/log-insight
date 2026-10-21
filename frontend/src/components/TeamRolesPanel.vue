@@ -1,14 +1,13 @@
 <script setup lang="ts">
-/* 团队三角色：卡片可点击切换，权限对照表联动高亮选中角色列 */
+/* 团队双角色：卡片可点击切换，权限对照表联动高亮选中角色列 */
 import { computed, ref } from 'vue'
 import { PERMISSIONS, PERM_GROUPS, TEAM_ROLES, teamRoleHasPerm } from '@/rbac/permissions'
 
-const selectedId = ref('owner')
+const selectedId = ref('team_admin')
 const selected = computed(() => TEAM_ROLES.find((r) => r.id === selectedId.value) ?? TEAM_ROLES[0])
 
 const ROLE_BADGE: Record<string, string> = {
-  owner: 'o-badge--primary',
-  team_admin: 'o-badge--brand',
+  team_admin: 'o-badge--primary',
   member: 'o-badge--outline',
 }
 

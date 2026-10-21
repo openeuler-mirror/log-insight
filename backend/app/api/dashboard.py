@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import DashboardResponse, TaskInfo
 from app.core.database import get_db
-from app.core.deps import get_current_user, is_platform_admin
+from app.core.deps import get_current_user
 from app.models.task import Task
 from app.models.team import Team, TeamMember
 from app.models.user import User
@@ -20,12 +20,9 @@ async def dashboard(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """我的团队范围聚合 (平台管理员为全量范围)."""
-    if is_platform_admin(user):
-        team_ids = list((await db.execute(select(Team.id))).scalars().all())
-    else:
-        team_ids = list((await db.execute(
-            select(TeamMember.team_id).where(TeamMember.user_id == user.id))).scalars().all())
+    """我的团队范围聚合: 仅统计当前用户所属团队的数据."""
+    team_ids = list((await db.execute(
+        select(TeamMember.team_id).where(TeamMember.user_id == user.id))).scalars().all())
 
     task_query = select(Task).where(Task.team_id.in_(team_ids or [0]))
     tasks = (await db.execute(task_query.order_by(Task.created_at.desc())

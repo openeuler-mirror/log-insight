@@ -11,7 +11,7 @@ from app.core.database import Base
 
 
 class Team(Base):
-    """团队: 解析任务与规则的作用域归属主体."""
+    """团队: 解析任务与规则的作用域归属主体 (owner_user_id 仅标识创建人)."""
     __tablename__ = "teams"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -22,17 +22,17 @@ class Team(Base):
 
 
 class TeamMember(Base):
-    """团队成员: 用户在团队内的角色 (owner / team_admin / member)."""
+    """团队成员: 用户在团队内的角色 (team_admin 管理员 / member 普通用户)."""
     __tablename__ = "team_members"
     __table_args__ = (
         UniqueConstraint("team_id", "user_id", name="uq_team_member"),
-        {"comment": "团队内三角色, 权限映射见 app/core/team_rbac.py"},
+        {"comment": "团队内双角色, 权限映射见 app/core/team_rbac.py"},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    role: Mapped[str] = mapped_column(String(16))  # owner / team_admin / member
+    role: Mapped[str] = mapped_column(String(16))  # team_admin / member
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -40,7 +40,7 @@ class TeamNotice(Base):
     """团队通知: 邀请 (invite) 与加入申请 (apply) 的审批流转."""
     __tablename__ = "team_notices"
     __table_args__ = (
-        {"comment": "pending -> accepted / rejected; invite 由被邀人处理, apply 由团队 owner/team_admin 审批"},
+        {"comment": "pending -> accepted / rejected; invite 由被邀人处理, apply 由团队管理员审批"},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

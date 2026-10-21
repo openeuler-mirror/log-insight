@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # 数据库 / 缓存
     DATABASE_URL: str = "postgresql+asyncpg://loginsight:loginsight@localhost:5432/loginsight"
     REDIS_URL: str = "redis://localhost:6379/0"
+    # 连接池预算 (API/Worker 进程各自独立计数; 总和须小于 PG max_connections)
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    AUTH_CACHE_TTL_SECONDS: int = 30   # 用户角色/权限缓存, 0 表示禁用
 
     # 存储
     DATA_DIR: str = "./data"
@@ -37,8 +41,11 @@ class Settings(BaseSettings):
 
     # Worker
     WORKER_CONCURRENCY: int = 8          # 单 Worker 同时分析任务数
-    WORKER_CONSUMER_NAME: str = "worker-1"
+    WORKER_CONSUMER_NAME: str = ""       # 留空自动生成 hostname-pid, 多副本必须保持唯一
     WORKER_PENDING_TIMEOUT_MS: int = 600000  # 超过该时长的 pending 任务视为崩溃遗留, 重新投递
+    WORKER_RECLAIM_INTERVAL_SECONDS: int = 60  # 周期性回收超时 pending 消息的间隔
+    WORKER_RETRY_MAX: int = 2            # 处理异常时的重试次数, 超过后标记任务失败
+    WORKER_SHUTDOWN_TIMEOUT_SECONDS: int = 60  # 优雅停机时等待在途任务的上限
 
     # LLM (OpenAI 兼容 API, 留空则降级为纯规则)
     LLM_API_BASE: str = ""

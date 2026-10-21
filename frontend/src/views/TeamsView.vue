@@ -48,7 +48,7 @@ async function create() {
   creating.value = true
   actionErr.value = ''
   try {
-    /* 后端同事务创建团队 + owner 成员 */
+    /* 后端同事务创建团队 + 管理员成员 */
     const team = await teamsStore.createTeam(form.value.name.trim(), form.value.desc.trim())
     showModal.value = false
     form.value = { name: '', desc: '' }
@@ -119,7 +119,7 @@ async function create() {
         <label class="o-form-item__label">描述</label>
         <input v-model="form.desc" class="o-input" placeholder="职责、负责范围" />
       </div>
-      <div class="o-mono o-text-3" style="font-size: 12px">创建后你将成为团队「创建者」，可邀请管理员与普通用户</div>
+      <div class="o-mono o-text-3" style="font-size: 12px">创建后你将成为团队「管理员」，可邀请普通用户或管理员</div>
       <div class="o-modal__foot">
         <button class="o-btn" @click="showModal = false">取消</button>
         <button class="o-btn o-btn--primary" :disabled="creating" @click="create">{{ creating ? '创建中…' : '创建' }}</button>

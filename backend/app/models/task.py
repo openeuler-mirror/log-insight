@@ -52,7 +52,9 @@ class Task(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    report: Mapped["Report | None"] = relationship(back_populates="task", uselist=False, lazy="selectin")
+    # noload: 任务列表/看板/SSE 鉴权不应连带加载完整报告;
+    # 需要报告时请显式查询 Report (见 analysis.task_report)
+    report: Mapped["Report | None"] = relationship(back_populates="task", uselist=False, lazy="noload")
 
 
 class Report(Base):

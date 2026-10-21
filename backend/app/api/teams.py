@@ -1,6 +1,7 @@
 """团队 API: 列表/创建/详情/编辑 + 邀请/申请 + 成员角色管理 + 团队任务列表 (团队级 RBAC).
 
-对齐 witty-log-analyzer 团队体系: 三角色 (owner/team_admin/member)、邀请与申请审批流.
+对齐 witty-log-analyzer 团队体系: 双角色 (team_admin/member)、邀请与申请审批流.
+创建者与团队管理员权限已合一, Team.owner_user_id 仅用于标识创建人 (不可被移除).
 """
 from typing import Annotated
 
@@ -21,7 +22,7 @@ from app.models.user import User
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
-VALID_ROLES = {"member", "team_admin"}  # owner 仅经创建/转让产生, 不走邀请与角色调整
+VALID_ROLES = {"member", "team_admin"}  # 团队内双角色: 管理员 / 普通用户
 SPARK_BUCKETS = 16
 
 
@@ -68,18 +69,18 @@ async def create_team(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """创建团队: 同事务建 Team + owner 成员 (对齐 witty 联动)."""
+    """创建团队: 同事务建 Team + 管理员成员 (创建者即团队管理员)."""
     if (await db.execute(select(Team).where(Team.name == body.name))).scalar_one_or_none():
         raise HTTPException(status.HTTP_409_CONFLICT, "团队名已存在")
     team = Team(name=body.name, desc=body.desc, owner_user_id=user.id)
     db.add(team)
     await db.flush()
-    db.add(TeamMember(team_id=team.id, user_id=user.id, role="owner"))
-    log_audit(db, user, "创建团队", f"{body.name}（你自动成为创建者）", team_id=team.id)
+    db.add(TeamMember(team_id=team.id, user_id=user.id, role="team_admin"))
+    log_audit(db, user, "创建团队", f"{body.name}（你自动成为团队管理员）", team_id=team.id)
     await db.commit()
     return TeamInfo(id=team.id, name=team.name, desc=team.desc,
                     owner_user_id=team.owner_user_id, created_at=team.created_at,
-                    my_role="owner", member_count=1, task_count=0)
+                    my_role="team_admin", member_count=1, task_count=0)
 
 
 @router.get("/{team_id}", response_model=TeamDetail)
@@ -88,7 +89,7 @@ async def team_detail(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """团队详情: 成员/待审批申请 (申请仅 owner/team_admin 可见)."""
+    """团队详情: 成员/待审批申请 (申请仅团队管理员可见)."""
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if team is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
@@ -103,7 +104,7 @@ async def team_detail(
             .order_by(TeamMember.created_at))).all()]
 
     pending_applies: list[NoticeInfo] = []
-    if my_role in ("owner", "team_admin"):
+    if my_role == "team_admin":
         pending_applies = await _notice_infos(db, select(TeamNotice).where(
             TeamNotice.team_id == team_id, TeamNotice.type == "apply",
             TeamNotice.status == "pending"))
@@ -197,7 +198,7 @@ async def update_team(
     trio: Annotated[tuple, Depends(require_team_perm("team:role"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """编辑团队信息 (owner / team_admin)."""
+    """编辑团队信息 (团队管理员)."""
     user, team, _ = trio
     if body.name != team.name:
         if (await db.execute(select(Team).where(Team.name == body.name))).scalar_one_or_none():
@@ -238,7 +239,7 @@ async def invite_member(
     trio: Annotated[tuple, Depends(require_team_perm("team:invite"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """邀请成员 (owner/team_admin): 生成 pending 邀请, 待对方在通知中心确认."""
+    """邀请成员 (团队管理员): 生成 pending 邀请, 待对方在通知中心确认."""
     user, team, _ = trio
     if body.role not in VALID_ROLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"角色必须是: {sorted(VALID_ROLES)}")
@@ -267,7 +268,7 @@ async def apply_join(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """申请加入团队 (任意登录用户): 生成 pending 申请, 待 owner/team_admin 审批."""
+    """申请加入团队 (任意登录用户): 生成 pending 申请, 待团队管理员审批."""
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if team is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
@@ -278,7 +279,7 @@ async def apply_join(
         TeamNotice.type == "apply", TeamNotice.team_id == team_id,
         TeamNotice.from_user_id == user.id, TeamNotice.status == "pending"))).scalar_one_or_none()
     if dup is None:
-        # 默认审批人: 团队 owner (与 witty apply 行为一致)
+        # 默认审批人: 团队创建人 (其亦为团队管理员)
         db.add(TeamNotice(type="apply", team_id=team_id, from_user_id=user.id,
                           to_user_id=team.owner_user_id, role="member"))
     log_audit(db, user, "申请加入团队", team.name, team_id=team_id)
@@ -294,7 +295,7 @@ async def update_member_role(
     trio: Annotated[tuple, Depends(require_team_perm("team:role"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """调整成员角色 (owner/team_admin); owner 角色受保护不可调整."""
+    """调整成员角色 (团队管理员); 团队创建人不可被调整."""
     user, team, _ = trio
     if body.role not in VALID_ROLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"角色必须是: {sorted(VALID_ROLES)}")
@@ -302,8 +303,8 @@ async def update_member_role(
         TeamMember.team_id == team_id, TeamMember.user_id == member_user_id))).scalar_one_or_none()
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "成员不存在")
-    if member.role == "owner":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "创建者角色不可调整")
+    if member_user_id == team.owner_user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "团队创建人角色不可调整")
     member.role = body.role
     target = (await db.execute(select(User).where(User.id == member_user_id))).scalar_one()
     log_audit(db, user, "调整成员角色",
@@ -320,14 +321,14 @@ async def remove_member(
     trio: Annotated[tuple, Depends(require_team_perm("team:remove"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """移除团队成员 (owner/team_admin); owner 不可被移除, 也不可移除自己."""
+    """移除团队成员 (团队管理员); 团队创建人不可被移除, 也不可移除自己."""
     user, team, _ = trio
     member = (await db.execute(select(TeamMember).where(
         TeamMember.team_id == team_id, TeamMember.user_id == member_user_id))).scalar_one_or_none()
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "成员不存在")
-    if member.role == "owner":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "创建者不可被移除")
+    if member_user_id == team.owner_user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "团队创建人不可被移除")
     if member_user_id == user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "不可移除自己")
     await db.delete(member)

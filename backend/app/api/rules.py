@@ -220,17 +220,17 @@ async def delete_rule(
     return {"detail": "已删除"}
 
 
-# ---------- 团队级规则管理 (团队 owner/team_admin 定制本团队巡检规则) ----------
+# ---------- 团队级规则管理 (团队管理员定制本团队巡检规则) ----------
 
 team_router = APIRouter(prefix="/teams/{team_id}/rules", tags=["rules"])
 
 
 async def _ensure_team_rule_admin(db: AsyncSession, user: User, team_id: int) -> None:
-    """团队规则写操作权限: 团队 owner/team_admin (平台管理员经 load_team_role 直通 owner)."""
+    """团队规则写操作权限: 团队管理员 (平台管理员经 load_team_role 直通 team_admin)."""
     team, role = await load_team_role(db, user, team_id)
     if team is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
-    if role not in ("owner", "team_admin"):
+    if role != "team_admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "需要团队管理员权限")
 
 
@@ -260,7 +260,7 @@ async def create_team_rule(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """新增团队专属规则 (owner/team_admin)."""
+    """新增团队专属规则 (团队管理员)."""
     await _ensure_team_rule_admin(db, user, team_id)
     _reject_team_script(body)
     validate_rule(body)
@@ -283,7 +283,7 @@ async def update_team_rule(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """编辑团队专属规则 (owner/team_admin); 仅限本团队规则."""
+    """编辑团队专属规则 (团队管理员); 仅限本团队规则."""
     await _ensure_team_rule_admin(db, user, team_id)
     _reject_team_script(body)
     validate_rule(body)
@@ -312,7 +312,7 @@ async def delete_team_rule(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
-    """删除团队专属规则 (owner/team_admin); 仅限本团队规则."""
+    """删除团队专属规则 (团队管理员); 仅限本团队规则."""
     await _ensure_team_rule_admin(db, user, team_id)
     rule = (await db.execute(select(Rule).where(Rule.id == rule_id))).scalar_one_or_none()
     if rule is None or rule.team_id != team_id:

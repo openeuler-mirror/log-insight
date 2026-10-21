@@ -9,7 +9,7 @@ const rbac = useRbacStore()
 
 /* 演示账号 (后端种子数据, 密码统一 demo123) */
 const DEMO_ACCOUNTS = [
-  { username: 'guchuang', name: '顾创建', desc: '团队创建者 · 运维主管', hue: 212 },
+  { username: 'guchuang', name: '顾创建', desc: '团队管理员 · 运维主管', hue: 212 },
   { username: 'jiangguanli', name: '蒋管理', desc: '团队管理员 · 高级运维', hue: 268 },
   { username: 'sunputong', name: '孙普通', desc: '普通用户 · 运维工程师', hue: 20 },
   { username: 'zhangshenpi', name: '张审批', desc: '团队管理员 · 系统管理员', hue: 155 },
@@ -110,7 +110,7 @@ function submit() {
       </div>
 
       <div class="foot o-mono">
-        团队三角色：创建者 / 管理员 / 普通用户 ｜ 申请与邀请在右上角 🔔 处理
+        团队双角色：管理员 / 普通用户 ｜ 申请与邀请在右上角 🔔 处理
       </div>
     </div>
   </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* 规则管理: 平台通用规则 + 各团队专属规则 CRUD, 版本化热加载
    - 通用规则(team_id=NULL): 平台 rule:manage 权限维护
-   - 团队规则(team_id=X): 团队 owner/team_admin 维护, 执行时同名覆盖通用规则 */
+   - 团队规则(team_id=X): 团队管理员维护, 执行时同名覆盖通用规则 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, put, del, apiError, apiStatus } from '@/api/http'
@@ -60,9 +60,9 @@ const isTeamScope = computed(() => scopeTeamId.value != null)
 /* 可选团队: 平台管理员全部可见, 否则仅我所属团队 */
 const myTeams = computed(() => teamsStore.teams.filter(
   t => rbac.isPlatformAdmin || teamsStore.myRoleOf(t.id)))
-/* 当前作用域是否具备团队规则写权限 (owner/team_admin 或平台管理员) */
+/* 当前作用域是否具备团队规则写权限 (团队管理员 或平台管理员) */
 const canManageTeam = computed(() => isTeamScope.value &&
-  (rbac.isPlatformAdmin || ['owner', 'team_admin'].includes(teamsStore.myRoleOf(scopeTeamId.value!) ?? '')))
+  (rbac.isPlatformAdmin || teamsStore.myRoleOf(scopeTeamId.value!) === 'team_admin'))
 const canCreate = computed(() => (isTeamScope.value ? canManageTeam.value : canManage.value))
 /* 团队作用域不开放脚本类型 */
 const MATCH_TYPES = computed(() => {
@@ -323,7 +323,7 @@ function editFromDetail() {
       <table class="o-table">
         <thead>
           <tr>
-            <th>名称</th><th>归属</th><th>匹配类型</th><th>匹配内容</th><th>级别</th>
+            <th>名称</th><th>级别</th><th>匹配类型</th><th>匹配内容</th><th>归属</th>
             <th>优先级</th><th>版本</th><th>状态</th><th>更新时间</th><th></th>
           </tr>
         </thead>
@@ -337,11 +337,7 @@ function editFromDetail() {
               <span v-if="r.isBuiltin" class="o-badge o-badge--brand" style="margin-left: 6px">内置</span>
               <div v-if="r.description" class="o-text-3 desc">{{ r.description }}</div>
             </td>
-            <td>
-              <span class="o-badge" :class="r.teamId == null ? 'o-badge--outline' : 'o-badge--brand'">
-                {{ teamName(r.teamId) }}
-              </span>
-            </td>
+            <td><span class="o-badge" :class="SEV_BADGE[r.severity]">{{ SEV_LABEL[r.severity] }}</span></td>
             <td><span class="o-badge" :class="MATCH_BADGE[r.matchType]">{{ MATCH_LABEL[r.matchType] }}</span></td>
             <td class="pattern-cell" title="点击查看完整规则信息" @click="openDetail(r)">
               <span class="o-mono pattern pattern-link">
@@ -352,7 +348,11 @@ function editFromDetail() {
                 <template v-else>{{ r.scriptPath || '—' }}</template>
               </span>
             </td>
-            <td><span class="o-badge" :class="SEV_BADGE[r.severity]">{{ SEV_LABEL[r.severity] }}</span></td>
+            <td>
+              <span class="o-badge" :class="r.teamId == null ? 'o-badge--outline' : 'o-badge--brand'">
+                {{ teamName(r.teamId) }}
+              </span>
+            </td>
             <td class="o-mono">{{ r.priority }}</td>
             <td class="o-mono">v{{ r.version }}</td>
             <td>

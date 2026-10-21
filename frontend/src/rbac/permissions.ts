@@ -24,7 +24,7 @@ export const PERMISSIONS: PermDef[] = [
 
 export const PERM_GROUPS = ['工作台', '团队', '解析任务', '审计日志']
 
-/* ---------- 团队内固定三角色 ---------- */
+/* ---------- 团队内固定双角色 (创建者与管理员权限已合一) ---------- */
 export interface TeamRole {
   id: string
   name: string
@@ -34,20 +34,10 @@ export interface TeamRole {
 
 export const TEAM_ROLES: TeamRole[] = [
   {
-    id: 'owner',
-    name: '创建者',
-    desc: '团队创建者，拥有团队内全部权限',
-    perms: ['*'],
-  },
-  {
     id: 'team_admin',
     name: '管理员',
-    desc: '管理成员与审批申请，任务全权',
-    perms: [
-      'dashboard:view', 'team:view', 'team:create', 'team:invite', 'team:remove', 'team:role', 'team:approve',
-      'task:view', 'task:create', 'task:execute', 'task:delete', 'task:llm',
-      'audit:view',
-    ],
+    desc: '团队创建者与管理员权限合一，拥有团队内全部权限',
+    perms: ['*'],
   },
   {
     id: 'member',

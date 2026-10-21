@@ -1,4 +1,5 @@
 """FastAPI 依赖注入: 当前用户 / RBAC 权限校验 / Redis 客户端."""
+import json
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Query, status
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_token
-from app.models.user import User
+from app.models.user import Permission, Role, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
 settings = get_settings()
@@ -28,6 +29,46 @@ def get_redis() -> Redis:
     return _redis
 
 
+def _auth_cache_key(user_id: str) -> str:
+    return f"auth:{user_id}"
+
+
+def _dump_auth(user: User) -> str:
+    """鉴权快照: 只含判定所需字段 + 角色/权限, 避免每请求 3 条 selectin SQL."""
+    return json.dumps({
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_active": bool(user.is_active),
+        "title": user.title or "",
+        "dept": user.dept or "",
+        "avatar_hue": user.avatar_hue,
+        "roles": [
+            {"name": r.name, "permissions": [p.code for p in r.permissions]}
+            for r in user.roles
+        ],
+    }, ensure_ascii=False)
+
+
+def _load_auth(data: dict) -> User:
+    """由缓存快照重建游离态 User (只读用途, 不参与 ORM 持久化)."""
+    user = User()
+    user.id = data["id"]
+    user.username = data["username"]
+    user.email = data["email"]
+    user.display_name = data["display_name"]
+    user.is_active = data["is_active"]
+    user.title = data["title"]
+    user.dept = data["dept"]
+    user.avatar_hue = data["avatar_hue"]
+    user.roles = [
+        Role(name=r["name"], permissions=[Permission(code=c) for c in r["permissions"]])
+        for r in data["roles"]
+    ]
+    return user
+
+
 async def _authenticate(token_value: str, db: AsyncSession) -> User:
     """token 值 → 用户 (含有效期 / 登出黑名单 / 存活校验)."""
     user_id = decode_token(token_value, "access")
@@ -37,9 +78,23 @@ async def _authenticate(token_value: str, db: AsyncSession) -> User:
     redis = get_redis()
     if await redis.get(f"bl:{token_value}"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "令牌已注销")
+
+    # 鉴权快照缓存: 命中时免去 user + roles + permissions 三条 SQL
+    ttl = settings.AUTH_CACHE_TTL_SECONDS
+    cache_key = _auth_cache_key(user_id)
+    if ttl > 0:
+        cached = await redis.get(cache_key)
+        if cached:
+            try:
+                return _load_auth(json.loads(cached))
+            except (ValueError, KeyError, TypeError):
+                await redis.delete(cache_key)  # 快照损坏/结构变更, 回源查询
+
     user = (await db.execute(select(User).where(User.id == int(user_id), User.is_active.is_(True)))).scalar_one_or_none()
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在或已禁用")
+    if ttl > 0:
+        await redis.set(cache_key, _dump_auth(user), ex=ttl)
     return user
 
 
@@ -82,14 +137,14 @@ def is_platform_admin(user: User) -> bool:
 
 
 async def load_team_role(db: AsyncSession, user: User, team_id: int):
-    """返回 (team, my_role); 平台管理员对任意团队返回 role='owner' 语义的 admin."""
+    """返回 (team, my_role); 平台管理员对任意团队返回 'team_admin'."""
     from app.models.team import Team, TeamMember
 
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if team is None:
         return None, None
     if is_platform_admin(user):
-        return team, "owner"
+        return team, "team_admin"
     member = (await db.execute(
         select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user.id)
     )).scalar_one_or_none()
@@ -122,7 +177,8 @@ def require_team_perm(perm: str):
         user: Annotated[User, Depends(get_current_user)],
         db: Annotated[AsyncSession, Depends(get_db)],
     ):
-        return await ensure_team_perm(db, user, team_id, perm)
+        team, role = await ensure_team_perm(db, user, team_id, perm)
+        return user, team, role
 
     return checker
 

@@ -1,5 +1,6 @@
 @startuml 时序图-日志智能分析诊断
 ' 日志智能分析诊断流程: 上传 → 入队即返回 → 后台解析 → 规则匹配 → AI 二次总结 → 报告
+' 权限模型: 平台级 admin/普通用户 × 团队级 管理员/普通用户 (创建者与管理员权限已合一)
 autonumber
 skinparam shadowing false
 skinparam SequenceMessageAlignment center
@@ -24,7 +25,7 @@ user -> web : 选择日志文件上传
 activate web
 web -> api : POST /api/tasks/upload\n(JWT, multipart)
 activate api
-api -> api : 权限校验 + 流式落盘
+api -> api : 权限校验 (JWT + 平台角色/团队角色\n团队内仅 管理员/普通用户 两种角色) + 流式落盘
 api -> db : 创建任务记录 (pending)
 api -> mq : XADD 任务消息入队
 api --> web : 返回 task_id (立即)

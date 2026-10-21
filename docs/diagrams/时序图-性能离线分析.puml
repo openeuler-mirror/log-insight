@@ -1,6 +1,7 @@
 @startuml 时序图-性能离线分析
 ' 性能离线分析流程: 上传采集文件 → 请求内同步解析 → 聚合归一化 → 返回 → ECharts 渲染
 ' 覆盖四个子页签: sar 系统性能 / 网络抓包 / blktrace / 中断计数变化
+' 权限模型: 平台级 admin/普通用户 × 团队级 管理员/普通用户
 autonumber
 skinparam shadowing false
 skinparam SequenceMessageAlignment center
@@ -26,7 +27,7 @@ user -> web : 切换到子页签并选择采集文件\n(sar / 抓包 / blktrace 
 activate web
 web -> api : POST /api/perf/{type}/analyze\n(JWT, multipart ≤100MB)
 activate api
-api -> api : 权限校验 + 读取上传文件 (_read_upload)
+api -> api : 权限校验 (JWT 认证, 登录用户可用\n团队内角色: 管理员/普通用户) + 读取上传文件 (_read_upload)
 
 == 解析阶段 (请求内同步完成) ==
 api -> parser : analyze(data, filename)

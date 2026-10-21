@@ -2,7 +2,7 @@
 
 规则与 witty myNotices 一致:
 - invite 且 status=pending: 仅 to_user (被邀请人) 可见/可处理
-- apply  且 status=pending: 团队 owner/team_admin (审批人) 可见/可处理
+- apply  且 status=pending: 团队管理员 (审批人) 可见/可处理
 - accept 时同事务 grantMember (成员不存在则加入, 角色取通知上的 role)
 """
 from typing import Annotated
@@ -23,11 +23,11 @@ router = APIRouter(prefix="/notices", tags=["notices"])
 
 
 async def _my_pending_applies(db: AsyncSession, user: User) -> list[int]:
-    """我作为 owner/team_admin 的团队 → 其 pending apply 的 team_id 集合."""
+    """我作为团队管理员的团队 → 其 pending apply 的 team_id 集合."""
     admin_teams = (await db.execute(
         select(TeamMember.team_id).where(
             TeamMember.user_id == user.id,
-            TeamMember.role.in_(["owner", "team_admin"])))).scalars().all()
+            TeamMember.role == "team_admin"))).scalars().all()
     if not admin_teams:
         return []
     return list((await db.execute(
@@ -80,8 +80,8 @@ async def resolve_notice(
     else:  # apply
         member = (await db.execute(select(TeamMember).where(
             TeamMember.team_id == n.team_id, TeamMember.user_id == user.id))).scalar_one_or_none()
-        if member is None or member.role not in ("owner", "team_admin"):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "仅团队创建者/管理员可审批申请")
+        if member is None or member.role != "team_admin":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "仅团队管理员可审批申请")
         action, join_user_id = "处理加入申请", n.from_user_id
 
     n.status = "accepted" if body.accept else "rejected"

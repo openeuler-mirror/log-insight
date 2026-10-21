@@ -1,7 +1,8 @@
-"""团队级 RBAC 常量: 13 原子权限点 + 团队内三角色权限映射.
+"""团队级 RBAC 常量: 13 原子权限点 + 团队内双角色权限映射.
 
-与前端 src/rbac/permissions.ts 保持镜像 (witty-log-analyzer),
-修改任一侧必须同步另一侧.
+团队成员只有两种角色: 管理员 / 普通用户 (创建者与管理员权限已合一,
+Team.owner_user_id 仅保留为创建人元数据, 不再作为独立权限角色).
+与前端 src/rbac/permissions.ts 保持镜像, 修改任一侧必须同步另一侧.
 """
 
 # 13 个原子权限点 (key, 分组, 中文标签)
@@ -23,10 +24,9 @@ PERMISSIONS: list[tuple[str, str, str]] = [
 
 PERM_GROUPS = ["工作台", "团队", "解析任务", "审计日志"]
 
-# 团队内三角色 -> 权限映射 ('*' 表示全部)
+# 团队内双角色 -> 权限映射 ('*' 表示全部)
 TEAM_ROLE_PERMS: dict[str, list[str]] = {
-    "owner": ["*"],
-    "team_admin": [p[0] for p in PERMISSIONS],
+    "team_admin": ["*"],
     "member": ["dashboard:view", "team:view",
                "task:view", "task:create", "task:execute", "task:llm"],
 }

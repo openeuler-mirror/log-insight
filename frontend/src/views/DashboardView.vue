@@ -18,7 +18,6 @@ const teamsStore = useTeamsStore()
 const denied = computed(() => (route.query.denied as string) || '')
 
 interface DashboardData {
-  teams: number
   tasks: number
   kpi: { total: number; critical: number; error: number; warning: number }
   recentTasks: AnalyzeTask[]
@@ -93,7 +92,6 @@ function parserName(type: string) {
 
   <template v-else-if="data">
     <div class="o-kpis" style="margin-bottom: 20px">
-      <div class="o-kpi"><b>{{ data.teams }}</b><span>团队</span></div>
       <div class="o-kpi"><b>{{ data.tasks }}</b><span>解析任务</span></div>
       <div class="o-kpi"><b>{{ data.kpi.total }}</b><span>日志事件总量</span></div>
       <div class="o-kpi"><b style="color: var(--danger)">{{ data.kpi.critical }}</b><span>致命事件</span></div>

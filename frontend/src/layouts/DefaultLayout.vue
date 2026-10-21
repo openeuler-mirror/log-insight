@@ -60,12 +60,6 @@ const menus = computed(() =>
 )
 
 const user = computed(() => rbac.currentUser)
-const myTeamRole = computed(() => {
-  for (const [tid, rid] of Object.entries(rbac.myTeamRoles)) {
-    if (rid === 'owner' && teamsStore.teamById(tid)) return '创建者'
-  }
-  return ''
-})
 /* 我加入的团队数 (来自 /auth/me team_roles), 用于下拉入口计数 */
 const myTeamCount = computed(() => Object.keys(rbac.myTeamRoles).length)
 
@@ -164,8 +158,7 @@ function gotoTeams() {
               user?.name.slice(0, 1)
             }}</span>
             <span class="name">{{ user?.name }}</span>
-            <span v-if="myTeamRole" class="o-badge o-badge--brand">{{ myTeamRole }}</span>
-            <span v-else-if="user?.dept" class="o-badge o-badge--outline">{{ user?.dept }}</span>
+            <span v-if="user?.dept" class="o-badge o-badge--outline">{{ user?.dept }}</span>
           </button>
           <div v-if="menuOpen" class="user-menu">
             <div class="user-info">

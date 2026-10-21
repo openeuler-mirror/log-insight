@@ -1,4 +1,4 @@
-/* 团队 store: 团队(三角色) → 任务 + 申请/邀请通知, 全量走后端 API */
+/* 团队 store: 团队(双角色) → 任务 + 申请/邀请通知, 全量走后端 API */
 import { defineStore } from 'pinia'
 import { get, post, put, del } from '@/api/http'
 import { teamRoleHasPerm } from '@/rbac/permissions'
@@ -58,7 +58,7 @@ export const useTeamsStore = defineStore('teams', {
       return (id: string | number) =>
         state.teams.find((t) => String(t.id) === String(id)) ?? state.details[String(id)]
     },
-    /* 我在某团队的角色 (来自 /auth/me team_roles; 详情页补充 admin 的 owner 语义) */
+    /* 我在某团队的角色 (来自 /auth/me team_roles; 详情页补充平台管理员直通) */
     myRoleOf(state) {
       return (teamId: string | number) =>
         useRbacStore().myTeamRoles[String(teamId)] ?? state.details[String(teamId)]?.myRole ?? undefined
@@ -68,8 +68,7 @@ export const useTeamsStore = defineStore('teams', {
       return () => state.notices
     },
     isApproverOf() {
-      return (teamId: string | number) =>
-        ['owner', 'team_admin'].includes(this.myRoleOf(teamId) ?? '')
+      return (teamId: string | number) => this.myRoleOf(teamId) === 'team_admin'
     },
   },
   actions: {
