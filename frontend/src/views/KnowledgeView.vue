@@ -5,6 +5,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { get, post, put, del, apiError } from '@/api/http'
 import { fmtTime } from '@/parser/types'
+import Icon from '@/components/Icon.vue'
 
 interface NoteRow {
   id: number
@@ -130,11 +131,14 @@ async function remove(row: NoteRow) {
     </div>
   </div>
 
-  <div v-if="loadErr" class="o-mono" style="color: var(--danger); margin-bottom: 12px">⚠ {{ loadErr }}</div>
+  <div v-if="loadErr" class="o-mono err-line"><Icon name="alert" :size="13" /> {{ loadErr }}</div>
 
   <div v-if="loading" class="o-text-3" style="padding: 32px 0; font-size: 13px">加载中…</div>
   <div v-else-if="!notes.length" class="o-card">
-    <div class="o-empty" style="padding: 56px 0">📭 还没有笔记，点击右上角「新增笔记」开始沉淀</div>
+    <div class="o-empty" style="padding: 56px 0">
+      <div class="icon"><Icon name="search" :size="28" /></div>
+      <div>还没有笔记，点击右上角「新增笔记」开始沉淀</div>
+    </div>
   </div>
   <div v-else class="note-grid">
     <div v-for="n in notes" :key="n.id" class="note-card" @click="openEdit(n)">
@@ -172,7 +176,7 @@ async function remove(row: NoteRow) {
           placeholder="记录现象、定位过程、根因与处置方式…"
         ></textarea>
       </div>
-      <div v-if="saveErr" class="o-mono" style="color: var(--danger); font-size: 12.5px">⚠ {{ saveErr }}</div>
+      <div v-if="saveErr" class="o-mono err-line"><Icon name="alert" :size="13" /> {{ saveErr }}</div>
       <div class="o-modal__foot">
         <button class="o-btn" @click="showEdit = false">取消</button>
         <button class="o-btn o-btn--primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -182,6 +186,13 @@ async function remove(row: NoteRow) {
 </template>
 
 <style scoped>
+.err-line {
+  color: var(--danger);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .note-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

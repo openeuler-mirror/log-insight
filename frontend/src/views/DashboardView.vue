@@ -10,6 +10,7 @@ import { fmtTime } from '@/parser/types'
 import type { AnalyzeTask } from '@/stores/tasks'
 import type { EChartsOption } from 'echarts'
 import ChartBase from '@/components/ChartBase.vue'
+import Icon from '@/components/Icon.vue'
 
 const route = useRoute()
 const rbac = useRbacStore()
@@ -44,7 +45,7 @@ onMounted(() => {
   teamsStore.fetchTeams().catch(() => {})
 })
 
-/* 我加入的团队 (顶部导航不再单列页签, 这里作为团队入口) */
+/* 我加入的团队 (工作台快捷入口) */
 const myTeams = computed(() => teamsStore.teams.filter((t) => !!teamsStore.myRoleOf(t.id)))
 const roleName = (id: number) => teamRoleById(teamsStore.myRoleOf(id) ?? '')?.name ?? ''
 
@@ -82,11 +83,13 @@ function parserName(type: string) {
       <h2>工作台</h2>
       <div class="sub">欢迎，{{ rbac.currentUser?.name }} —— 以下是我的团队范围内解析任务的汇总视图</div>
     </div>
-    <button class="o-btn o-btn--sm" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '↻ 刷新' }}</button>
+    <button class="o-btn o-btn--sm" :disabled="loading" @click="load">
+      <span class="btn-ico"><Icon name="refresh" :size="13" />{{ loading ? '刷新中…' : '刷新' }}</span>
+    </button>
   </div>
 
   <div v-if="loadErr" class="o-empty o-card">
-    <div class="icon">⚠️</div>
+    <div class="icon"><Icon name="alert" :size="28" /></div>
     <div>{{ loadErr }}</div>
   </div>
 
@@ -126,7 +129,7 @@ function parserName(type: string) {
         <div class="o-card__title">全局错误码 Top 8<span class="o-mono o-text-3">我的团队合并</span></div>
         <ChartBase v-if="data.topCodes.length" :option="codeChart" height="320px" />
         <div v-else class="o-empty" style="padding: 60px 0">
-          <div class="icon">📭</div>
+          <div class="icon"><Icon name="search" :size="28" /></div>
           <div>暂无事件数据，请先执行解析任务</div>
         </div>
       </div>
@@ -139,7 +142,7 @@ function parserName(type: string) {
           </thead>
           <tbody>
             <tr v-if="!data.recentTasks.length">
-              <td colspan="5"><div class="o-empty" style="padding: 36px 0">📭 暂无解析任务</div></td>
+              <td colspan="5"><div class="o-empty" style="padding: 36px 0">暂无解析任务</div></td>
             </tr>
             <tr v-for="t in data.recentTasks" :key="t.id">
               <td>
@@ -159,6 +162,11 @@ function parserName(type: string) {
 </template>
 
 <style scoped>
+.btn-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 .grid {
   display: grid;
   grid-template-columns: 5fr 7fr;

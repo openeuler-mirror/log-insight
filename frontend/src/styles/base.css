@@ -449,6 +449,34 @@ a .o-card:hover,
   white-space: normal;
 }
 
+/* ---------- 折叠箭头（macOS 风格小按钮） ---------- */
+.o-fold {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: var(--text-4);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.o-fold svg {
+  width: 9px;
+  height: 9px;
+  transition: transform 0.15s ease;
+}
+.o-fold.is-open svg {
+  transform: rotate(90deg);
+}
+button:hover > .o-fold,
+.o-fold:hover {
+  color: var(--text-2);
+}
+button:hover > .o-fold {
+  background: rgba(15, 23, 42, 0.06);
+}
+
 /* ---------- modal（witty 12px） ---------- */
 .o-modal-mask {
   position: fixed;
@@ -535,6 +563,10 @@ a .o-card:hover,
 .o-empty .icon {
   font-size: 44px;
   margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-4);
 }
 .o-empty .hint {
   color: var(--text-3);
@@ -611,6 +643,10 @@ a .o-card:hover,
 .o-upload .icon {
   font-size: 38px;
   margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-4);
 }
 .o-upload .t {
   font-size: 14px;

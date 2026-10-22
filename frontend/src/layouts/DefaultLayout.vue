@@ -1,56 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { router } from '@/router'
 import { useRbacStore } from '@/stores/rbac'
 import { useTeamsStore } from '@/stores/teams'
-import { useTasksStore } from '@/stores/tasks'
 import { teamRoleById } from '@/rbac/permissions'
 import { fmtTime } from '@/parser/types'
 import { apiError } from '@/api/http'
+import Icon from '@/components/Icon.vue'
 
-const route = useRoute()
 const rr = useRouter()
 const rbac = useRbacStore()
 const teamsStore = useTeamsStore()
-const tasksStore = useTasksStore()
-
-/* 动态面包屑：首页 / 团队 / 团队名 / 当前页，中间层级可点击返回 */
-interface Crumb {
-  label: string
-  to?: string
-}
-const cachedTask = computed(() => tasksStore.taskCached(route.params.taskId as string))
-const cachedTeam = computed(() =>
-  cachedTask.value?.teamId ? teamsStore.teamById(cachedTask.value.teamId) : undefined,
-)
-
-const crumbs = computed<Crumb[]>(() => {
-  const items: Crumb[] = []
-  if (route.name !== 'dashboard') items.push({ label: '首页', to: '/dashboard' })
-  if (route.name === 'team-detail' || route.name === 'task-new') {
-    items.push({ label: '团队', to: '/teams' })
-    const t = teamsStore.teamById(route.params.id as string)
-    if (route.name === 'task-new') {
-      items.push({ label: t?.name ?? '团队', to: `/teams/${route.params.id}?tab=tasks` })
-    } else {
-      items.push({ label: t?.name ?? '团队' })
-    }
-  }
-  if (route.name === 'task-result') {
-    items.push({ label: '团队', to: '/teams' })
-    items.push({
-      label: cachedTeam.value?.name ?? cachedTask.value?.teamName ?? '团队',
-      to: cachedTeam.value ? `/teams/${cachedTeam.value.id}?tab=tasks` : '/teams',
-    })
-  }
-  /* 末级标题：仅当最后一级还是可点击链接（或无层级）时追加，避免「团队 / 团队」重复 */
-  const last = items[items.length - 1]
-  if (!last || last.to) {
-    items.push({ label: (route.meta.title as string) ?? '' })
-  }
-  return items
-})
 
 const menus = computed(() =>
   router
@@ -60,6 +21,13 @@ const menus = computed(() =>
 )
 
 const user = computed(() => rbac.currentUser)
+/* 我在任一团队中的管理员身份 (本地设计: 头像旁展示团队角色) */
+const myTeamRole = computed(() => {
+  for (const [tid, rid] of Object.entries(rbac.myTeamRoles)) {
+    if (rid === 'team_admin' && teamsStore.teamById(tid)) return '管理员'
+  }
+  return ''
+})
 /* 我加入的团队数 (来自 /auth/me team_roles), 用于下拉入口计数 */
 const myTeamCount = computed(() => Object.keys(rbac.myTeamRoles).length)
 
@@ -92,7 +60,7 @@ async function logout() {
   rr.push('/login')
 }
 
-/* 团队入口: 顶部导航已不再单列页签, 从下拉进入 */
+/* 团队快捷入口: 头像下拉 */
 function gotoTeams() {
   menuOpen.value = false
   rr.push('/teams')
@@ -119,8 +87,8 @@ function gotoTeams() {
       <div class="right" @click.stop>
         <!-- 通知 -->
         <div class="bell-wrap">
-          <button class="bell" :class="{ 'has': noticeCount }" @click="noticeOpen = !noticeOpen; menuOpen = false">
-            🔔
+          <button class="bell" :class="{ 'has': noticeCount }" title="申请与邀请" @click="noticeOpen = !noticeOpen; menuOpen = false">
+            <Icon name="bell" :size="16" />
             <span v-if="noticeCount" class="dot">{{ noticeCount }}</span>
           </button>
           <div v-if="noticeOpen" class="notice-panel">
@@ -128,8 +96,8 @@ function gotoTeams() {
               <b>申请与邀请</b>
               <span class="o-mono o-text-3">{{ noticeCount }} 条待处理</span>
             </div>
-            <div v-if="resolveErr" class="notice-err">⚠ {{ resolveErr }}</div>
-            <div v-if="!myNotices.length" class="o-empty" style="padding: 28px 0">📭 暂无待处理的申请或邀请</div>
+            <div v-if="resolveErr" class="notice-err"><Icon name="alert" :size="13" /> {{ resolveErr }}</div>
+            <div v-if="!myNotices.length" class="o-empty" style="padding: 28px 0">暂无待处理的申请或邀请</div>
             <div v-for="n in myNotices" :key="n.id" class="notice-item">
               <div class="notice-body">
                 <template v-if="n.type === 'invite'">
@@ -158,7 +126,8 @@ function gotoTeams() {
               user?.name.slice(0, 1)
             }}</span>
             <span class="name">{{ user?.name }}</span>
-            <span v-if="user?.dept" class="o-badge o-badge--outline">{{ user?.dept }}</span>
+            <span v-if="myTeamRole" class="o-badge o-badge--brand">{{ myTeamRole }}</span>
+            <span v-else-if="user?.dept" class="o-badge o-badge--outline">{{ user?.dept }}</span>
           </button>
           <div v-if="menuOpen" class="user-menu">
             <div class="user-info">
@@ -180,14 +149,6 @@ function gotoTeams() {
     </header>
 
     <main class="main" @click="noticeOpen = false; menuOpen = false">
-      <div class="crumb">
-        <template v-for="(c, i) in crumbs" :key="i">
-          <router-link v-if="c.to" :to="c.to">{{ c.label }}</router-link>
-          <span v-else-if="i < crumbs.length - 1" class="mid">{{ c.label }}</span>
-          <span v-else class="current">{{ c.label }}</span>
-          <span v-if="i < crumbs.length - 1" class="sep">/</span>
-        </template>
-      </div>
       <router-view />
     </main>
   </div>
@@ -255,9 +216,12 @@ function gotoTeams() {
   position: relative;
 }
 .bell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: transparent;
-  font-size: 17px;
+  color: var(--text-2);
   cursor: pointer;
   position: relative;
   padding: 4px 6px;
@@ -301,6 +265,9 @@ function gotoTeams() {
   font-size: 14px;
 }
 .notice-err {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 18px;
   font-size: 12.5px;
   color: var(--danger);
@@ -400,24 +367,5 @@ function gotoTeams() {
   margin: 0 auto;
   padding: 80px 24px 24px;
   min-height: calc(100vh - var(--topbar-h));
-}
-.crumb {
-  font-size: 14px;
-  color: var(--text-2);
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.crumb .mid {
-  color: var(--text-2);
-}
-.crumb .current {
-  color: var(--primary);
-  font-weight: 600;
-}
-.crumb .sep {
-  color: var(--text-4);
 }
 </style>

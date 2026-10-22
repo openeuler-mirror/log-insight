@@ -5,6 +5,7 @@ import { get, post, del, apiError } from '@/api/http'
 import { fmtTime } from '@/parser/types'
 import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
+import Icon from '@/components/Icon.vue'
 
 interface InspectionTask {
   id: string
@@ -160,8 +161,8 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <div v-if="uploadTip" class="o-mono" style="color: var(--primary); margin-bottom: 12px">✓ {{ uploadTip }}</div>
-  <div v-if="loadErr" class="o-mono" style="color: var(--danger); margin-bottom: 12px">⚠ {{ loadErr }}</div>
+  <div v-if="uploadTip" class="o-mono ok-line"><Icon name="check" :size="13" /> {{ uploadTip }}</div>
+  <div v-if="loadErr" class="o-mono" style="color: var(--danger); margin-bottom: 12px">{{ loadErr }}</div>
 
   <div v-if="pendingFiles.length" class="o-card">
     <div class="o-card__title">
@@ -193,7 +194,7 @@ onBeforeUnmount(() => {
           <tr v-if="!tasks.length && !loading">
             <td colspan="8">
               <div class="o-empty" style="padding: 48px 0">
-                <div class="icon">🔍</div>
+                <div class="icon"><Icon name="search" :size="28" /></div>
                 <div>暂无巡检任务 — 点击「上传日志」选择一个或多个日志后「发起巡检」</div>
               </div>
             </td>
@@ -233,6 +234,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.ok-line {
+  color: var(--primary);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .err {
   color: var(--danger);
   font-size: 11.5px;

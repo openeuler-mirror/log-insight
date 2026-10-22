@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import type { EChartsOption } from 'echarts'
 import { post, apiError } from '@/api/http'
 import ChartBase from '@/components/ChartBase.vue'
+import Icon from '@/components/Icon.vue'
 
 interface BlkResult {
   format: string
@@ -122,7 +123,7 @@ const timelineOption = computed<EChartsOption>(() => {
   </div>
 
   <div v-if="err" class="o-card" style="border-color: var(--danger)">
-    <span class="o-mono" style="color: var(--danger)">⚠ {{ err }}</span>
+    <span class="o-mono err-line"><Icon name="alert" :size="13" /> {{ err }}</span>
   </div>
 
   <template v-if="result">
@@ -194,13 +195,19 @@ const timelineOption = computed<EChartsOption>(() => {
 
   <div v-else-if="!loading && !err" class="o-card">
     <div class="o-empty" style="padding: 80px 0">
-      <div class="icon">💽</div>
+      <div class="icon"><Icon name="disk" :size="30" /></div>
       <div>选择 blktrace 文件开始分析 — 解析结果不落库，仅本次展示</div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.err-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger);
+}
 .kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

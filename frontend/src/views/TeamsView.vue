@@ -5,6 +5,7 @@ import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
 import { teamRoleById } from '@/rbac/permissions'
 import { apiError } from '@/api/http'
+import Icon from '@/components/Icon.vue'
 
 const rr = useRouter()
 const teamsStore = useTeamsStore()
@@ -75,7 +76,7 @@ async function create() {
   <div v-if="actionErr" class="o-badge o-badge--danger" style="margin-bottom: 12px">{{ actionErr }}</div>
 
   <div v-if="!filtered.length" class="o-empty">
-    <div class="icon">👥</div>
+    <div class="icon"><Icon name="users" :size="28" /></div>
     <div>暂无团队</div>
   </div>
 
@@ -96,7 +97,9 @@ async function create() {
           <button v-if="!myRole(t)" class="o-btn o-btn--sm" :disabled="hasPendingApply(t)" @click="applyJoin(t)">
             {{ hasPendingApply(t) ? '申请中...' : '+ 申请加入' }}
           </button>
-          <button class="o-btn o-btn--sm o-btn--primary enter-btn" @click="rr.push(`/teams/${t.id}`)">进入团队 →</button>
+          <button class="o-btn o-btn--sm o-btn--primary enter-btn" @click="rr.push(`/teams/${t.id}`)">
+            <span class="btn-ico">进入团队<Icon name="arrow-right" :size="12" /></span>
+          </button>
         </div>
       </div>
     </div>
@@ -129,6 +132,11 @@ async function create() {
 </template>
 
 <style scoped>
+.btn-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));

@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRbacStore } from '@/stores/rbac'
 import { apiError } from '@/api/http'
+import Icon from '@/components/Icon.vue'
 
 const rr = useRouter()
 const rbac = useRbacStore()
@@ -82,7 +83,7 @@ function submit() {
             </button>
           </div>
         </div>
-        <div v-if="err" class="err">⚠ {{ err }}</div>
+        <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
         <button class="o-btn o-btn--primary o-btn--lg" type="submit" :disabled="loading">
           <span v-if="!loading">登 录</span>
           <span v-else class="o-row" style="gap: 8px"><span class="spin" />登录中…</span>
@@ -105,12 +106,12 @@ function submit() {
             <b>{{ acc.name }} <span class="o-mono o-text-3">{{ acc.username }}</span></b>
             <span class="o-text-3">{{ acc.desc }}</span>
           </span>
-          <span class="go">进入 →</span>
+          <span class="go">进入 <Icon name="arrow-right" :size="12" /></span>
         </button>
       </div>
 
       <div class="foot o-mono">
-        团队双角色：管理员 / 普通用户 ｜ 申请与邀请在右上角 🔔 处理
+        团队双角色：管理员 / 普通用户 ｜ 申请与邀请在右上角通知中心处理
       </div>
     </div>
   </div>
@@ -182,6 +183,9 @@ function submit() {
   color: var(--danger);
   font-size: 13px;
   margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .o-btn--lg {
   height: 42px;
@@ -254,6 +258,9 @@ function submit() {
   flex: none;
   font-size: 12px;
   color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .foot {
   margin-top: 18px;
