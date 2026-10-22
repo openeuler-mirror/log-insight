@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, apiError, TOKEN_KEY } from '@/api/http'
 import { fmtTime } from '@/parser/types'
+import { useTeamsStore } from '@/stores/teams'
 import Icon from '@/components/Icon.vue'
 
 interface InspectionTask {
@@ -17,6 +18,7 @@ interface InspectionTask {
   createdAt: string
   finishedAt?: string | null
   logSize: number
+  teamId?: number | null
   creatorName: string
 }
 
@@ -88,6 +90,7 @@ const SEV_BADGE: Record<string, { label: string; cls: string }> = {
 
 const route = useRoute()
 const taskId = computed(() => route.params.taskId as string)
+const teamsStore = useTeamsStore()
 
 const task = ref<InspectionTask | null>(null)
 const report = ref<InspectionReport | null>(null)
@@ -103,6 +106,7 @@ async function loadTask() {
   loadErr.value = ''
   try {
     task.value = await get<InspectionTask>(`/tasks/${taskId.value}`)
+    if (task.value.teamId) teamsStore.setActiveTeam(task.value.teamId)
     noAccess.value = false
     notFound.value = false
   } catch (e: any) {
@@ -300,7 +304,9 @@ onBeforeUnmount(() => {
     <!-- 信息横幅 + 结论概览 -->
     <div class="o-banner">
       <div class="banner-left">
-        <router-link to="/inspection" class="back-btn"><Icon name="arrow-left" :size="13" /> 返回智能巡检</router-link>
+        <router-link to="/inspection" class="back-btn">
+          <Icon name="arrow-left" :size="13" /> 返回智能巡检
+        </router-link>
         <h2>
           {{ task.name || task.filename }}
           <span class="o-badge" :class="STATUS_BADGE[task.status].cls">{{ STATUS_BADGE[task.status].label }}</span>

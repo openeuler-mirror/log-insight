@@ -27,6 +27,7 @@ async function loadTask() {
   loadErr.value = ''
   try {
     task.value = await tasksStore.fetchTask(taskId.value)
+    if (task.value.teamId) teamsStore.setActiveTeam(task.value.teamId)
     noAccess.value = false
     notFound.value = false
   } catch (e: any) {
@@ -356,15 +357,15 @@ async function startLlm() {
     <!-- 信息横幅 + 统计 -->
     <div class="o-banner">
       <div class="banner-left">
-        <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`" class="back-btn">
-          <Icon name="arrow-left" :size="13" /> 返回{{ task.teamName || '团队' }}
+        <router-link v-if="teamId" to="/inspection" class="back-btn">
+          <Icon name="arrow-left" :size="13" /> 返回智能巡检
         </router-link>
         <h2>
           {{ task.name || task.filename }}
           <span class="o-badge o-badge--outline">{{ parserName }}</span>
         </h2>
         <div class="meta">
-          <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`">{{ task.teamName || '—' }}</router-link>
+          <router-link v-if="teamId" to="/inspection">{{ task.teamName || '—' }}</router-link>
           <span class="o-mono o-text-3">{{ task.filename }}（{{ (task.logSize / 1024).toFixed(1) }} KB）</span>
           <span class="o-text-3">{{ task.creatorName }} · {{ fmtTime(task.createdAt) }}</span>
         </div>

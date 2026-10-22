@@ -6,7 +6,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (InviteRequest, MemberInfo, MemberRoleUpdate, NoticeInfo,
@@ -16,7 +16,7 @@ from app.core.audit import log_audit
 from app.core.database import get_db
 from app.core.deps import (ensure_team_perm, get_current_user, load_team_role,
                            require_team_perm)
-from app.models.task import Task
+from app.models.task import Task, TaskType
 from app.models.team import Team, TeamMember, TeamNotice
 from app.models.user import User
 
@@ -155,6 +155,7 @@ async def list_team_tasks(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
     status_filter: str | None = None,
+    task_type: TaskType | None = None,
     parser_type: str | None = None,
     kw: str | None = None,
     page: int = 1,
@@ -168,10 +169,13 @@ async def list_team_tasks(
     query = select(Task).where(Task.team_id == team_id)
     if status_filter:
         query = query.where(Task.status == status_filter)
+    if task_type:
+        query = query.where(Task.type == task_type)
     if parser_type:
         query = query.where(Task.parser_type == parser_type)
     if kw:
-        query = query.where(Task.name.ilike(f"%{kw}%"))
+        like = f"%{kw}%"
+        query = query.where(or_(Task.name.ilike(like), Task.filename.ilike(like)))
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     tasks = (await db.execute(query.order_by(Task.created_at.desc())
                               .offset((page - 1) * page_size).limit(page_size))).scalars().all()

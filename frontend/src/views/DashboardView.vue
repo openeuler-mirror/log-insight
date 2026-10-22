@@ -105,7 +105,7 @@ function parserName(type: string) {
       <div class="o-card__title">
         我的团队
         <span class="o-mono o-text-3">{{ myTeams.length }} 个</span>
-        <router-link class="o-btn o-btn--text" to="/teams" style="margin-left: auto">全部团队 →</router-link>
+        <router-link class="o-btn o-btn--text" to="/teams" style="margin-left: auto">团队管理 →</router-link>
       </div>
       <div v-if="myTeams.length" class="team-chips">
         <router-link v-for="t in myTeams" :key="t.id" class="team-chip" :to="`/teams/${t.id}`">

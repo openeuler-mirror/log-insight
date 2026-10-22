@@ -20,6 +20,7 @@ const canView = computed(() => teamsStore.can(teamId.value, 'task:view'))
 const canExecute = computed(() => teamsStore.can(teamId.value, 'task:execute'))
 
 onMounted(() => {
+  teamsStore.setActiveTeam(Number(teamId.value))
   teamsStore.fetchTeam(teamId.value).catch(() => {})
 })
 
@@ -177,7 +178,7 @@ async function execute() {
       <div>
         <h2>创建解析任务</h2>
         <div class="sub">
-          <router-link :to="`/teams/${teamId}?tab=tasks`">{{ team?.name ?? '' }}</router-link>
+          <router-link to="/inspection">{{ team?.name ?? '' }}</router-link>
         </div>
       </div>
       <span class="o-badge o-badge--outline">三步完成：准备日志 → 确认执行 → 查看结果</span>
@@ -280,7 +281,7 @@ async function execute() {
 
       <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
       <div class="o-row" style="margin-top: 6px">
-        <button class="o-btn" @click="rr.push(`/teams/${teamId}?tab=tasks`)">取消</button>
+        <button class="o-btn" @click="rr.push('/inspection')">取消</button>
         <button class="o-btn o-btn--primary" @click="toStep2">下一步</button>
       </div>
     </div>
