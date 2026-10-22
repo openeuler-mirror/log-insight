@@ -1,20 +1,17 @@
 <script setup lang="ts">
-/* 左·底端停靠面板: 模型信息 / Token 用量 / Todo List / 工具调用
-   数据由父级持有, 随流式事件实时刷新, 本组件只负责渲染。 */
+/* 左·底部运行状态: 模型 / 用量 / 诊断进度 / 工具调用 */
 import { computed } from 'vue'
+import Icon, { type IconName } from '@/components/Icon.vue'
 
 type TodoStatus = 'done' | 'doing' | 'todo'
 
 interface ModelInfo {
-  name: string
-  provider: string
-  window: string
-  usedPct: number
+  model: string
+  permission: string
+  skills: number
   input: number
   output: number
   total: number
-  cost: string
-  latency: string
 }
 
 interface Todo {
@@ -25,8 +22,7 @@ interface Todo {
 interface ToolCall {
   name: string
   target: string
-  status: 'done' | 'running'
-  ms: number | null
+  status: 'done' | 'running' | 'failed'
 }
 
 const props = defineProps<{
@@ -36,38 +32,37 @@ const props = defineProps<{
 }>()
 
 const todoDone = computed(() => props.todos.filter((t) => t.status === 'done').length)
-const TODO_MARK: Record<TodoStatus, string> = { done: '✓', doing: '◐', todo: '○' }
-const fmtNum = (n: number) => n.toLocaleString('en-US')
+const TODO_MARK: Record<TodoStatus, IconName> = { done: 'check', doing: 'activity', todo: 'circle' }
+const fmtNum = (n: number) => (n || 0).toLocaleString('en-US')
 </script>
 
 <template>
   <div class="rp-scroll">
     <div class="rp-card">
-      <div class="mi-row"><span class="o-text-3">服务商</span><b>{{ modelInfo.provider }}</b></div>
-      <div class="mi-row"><span class="o-text-3">上下文窗口</span><b>{{ modelInfo.window }}</b></div>
-      <div class="mi-row"><span class="o-text-3">平均延迟</span><b>{{ modelInfo.latency }}</b></div>
-      <div class="mi-row"><span class="o-text-3">累计费用</span><b>{{ modelInfo.cost }}</b></div>
+      <div class="mi-row"><span class="o-text-3">模型</span><b>{{ modelInfo.model || '未配置' }}</b></div>
+      <div class="mi-row"><span class="o-text-3">文件权限</span><b>{{ modelInfo.permission }}</b></div>
+      <div class="mi-row"><span class="o-text-3">可用技能</span><b>{{ modelInfo.skills }} 项</b></div>
 
       <div class="mi-usage">
         <div class="mi-usage-head">
-          <span class="o-text-3">Token 用量</span>
+          <span class="o-text-3">本次对话 Token</span>
           <b class="o-mono">{{ fmtNum(modelInfo.total) }}</b>
         </div>
-        <div class="bar"><span :style="{ width: modelInfo.usedPct + '%' }"></span></div>
         <div class="mi-usage-foot o-mono o-text-3">
-          <span>↑ 输入 {{ fmtNum(modelInfo.input) }}</span>
-          <span>↓ 输出 {{ fmtNum(modelInfo.output) }}</span>
+          <span>输入 {{ fmtNum(modelInfo.input) }}</span>
+          <span>输出 {{ fmtNum(modelInfo.output) }}</span>
         </div>
       </div>
     </div>
 
     <div class="rp-section">
       <div class="rp-section-head">
-        <span class="pane-title">Todo List</span>
-        <span class="o-mono o-text-3">{{ todoDone }}/{{ todos.length }}</span>
+        <span class="pane-title">诊断进度</span>
+        <span class="o-mono o-text-3">{{ todos.length ? `${todoDone}/${todos.length}` : '' }}</span>
       </div>
+      <div v-if="!todos.length" class="rp-empty">助手会在需要时列出诊断步骤。</div>
       <div v-for="(t, i) in todos" :key="i" class="todo" :class="`todo--${t.status}`">
-        <span class="todo-mark">{{ TODO_MARK[t.status] }}</span>
+        <span class="todo-mark"><Icon :name="TODO_MARK[t.status]" :size="12" /></span>
         <span class="todo-text">{{ t.text }}</span>
       </div>
     </div>
@@ -77,13 +72,14 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
         <span class="pane-title">工具调用</span>
         <span class="o-mono o-text-3">{{ tools.length }}</span>
       </div>
+      <div v-if="!tools.length" class="rp-empty">还没有调用工具。</div>
       <div v-for="(tl, i) in tools" :key="i" class="tool-row">
-        <span class="tool-dot" :class="{ 'is-run': tl.status === 'running' }"></span>
+        <span class="tool-dot" :class="{ 'is-run': tl.status === 'running', 'is-fail': tl.status === 'failed' }"></span>
         <div class="tool-row-main">
-          <span class="o-mono tool-name">{{ tl.name }}</span>
+          <span class="tool-name">{{ tl.name }}</span>
           <span class="o-mono o-text-3 tool-args">{{ tl.target }}</span>
         </div>
-        <span class="o-mono o-text-3">{{ tl.ms ? tl.ms + 'ms' : '执行中' }}</span>
+        <span class="o-mono o-text-3">{{ tl.status === 'running' ? '进行中' : tl.status === 'failed' ? '失败' : '完成' }}</span>
       </div>
     </div>
   </div>
@@ -91,13 +87,25 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
 
 <style scoped>
 .rp-scroll {
-  flex: 1 1 44%;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.rp-scroll::-webkit-scrollbar {
+  width: 7px;
+}
+.rp-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+.rp-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 .rp-card {
   background: var(--surface);
@@ -114,8 +122,14 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 12.5px;
   padding: 3px 0;
+}
+.mi-row b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mi-usage {
   margin-top: 10px;
@@ -127,24 +141,12 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   align-items: baseline;
   justify-content: space-between;
   font-size: 12.5px;
-  margin-bottom: 6px;
-}
-.bar {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--primary-soft);
-  overflow: hidden;
-}
-.bar span {
-  display: block;
-  height: 100%;
-  background: var(--primary);
-  border-radius: 3px;
 }
 .mi-usage-foot {
   display: flex;
   justify-content: space-between;
   margin-top: 6px;
+  font-size: 11px;
 }
 .rp-section {
   background: var(--surface);
@@ -158,6 +160,11 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   justify-content: space-between;
   margin-bottom: 8px;
 }
+.rp-empty {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-4);
+}
 .todo {
   display: flex;
   align-items: flex-start;
@@ -170,6 +177,8 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   flex: none;
   width: 14px;
   color: var(--text-4);
+  display: inline-flex;
+  align-items: center;
 }
 .todo--done .todo-mark {
   color: var(--success);
@@ -196,13 +205,19 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   background: var(--warning);
   animation: pulse 1s ease-in-out infinite;
 }
+.tool-dot.is-fail {
+  background: var(--danger);
+}
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
 .tool-name {
   font-weight: 600;
-  color: var(--primary);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tool-args {
   flex: 1;
@@ -210,6 +225,7 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11px;
 }
 .tool-row {
   display: flex;
@@ -227,8 +243,5 @@ const fmtNum = (n: number) => n.toLocaleString('en-US')
   min-width: 0;
   display: flex;
   flex-direction: column;
-}
-.tool-row-main .tool-args {
-  font-size: 11px;
 }
 </style>

@@ -1,68 +1,66 @@
 <script setup lang="ts">
-/* 智能诊断: 三栏工作台
-   左: 文件资源管理器 + 底端「运行状态」停靠面板(可折叠最小化)   中: 文件阅读器   右: 会话页签(1/2/3) + 对话 + 输入区
-   说明: 当前为前端交互原型, 消息与文件内容为内置示例, 后续对接 agent / 大模型 / 文件接口。 */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+/* 智能诊断: 对话优先
+   左: 资料栏(日志树 + 运行状态)   中: 诊断对话   右: 按需展开的日志原文 */
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
-import { fetchFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
-import { fmtSize, readFile, type Attach, type FilePayload, type ReaderTab } from '@/components/diagnosisFiles'
+import ComposerModelMenu from '@/components/diagnosis/ComposerModelMenu.vue'
+import ComposerTaskDock from '@/components/diagnosis/ComposerTaskDock.vue'
+import AssistantTurn from '@/components/diagnosis/AssistantTurn.vue'
+import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
+import SessionHistoryDialog from '@/components/diagnosis/SessionHistoryDialog.vue'
+import Icon from '@/components/Icon.vue'
+import { useTeamsStore } from '@/stores/teams'
+import { useRbacStore } from '@/stores/rbac'
+import type { Attach, ReaderTab } from '@/components/diagnosisFiles'
+import { apiError } from '@/api/http'
+import {
+  agentStatus,
+  createSession,
+  fetchCatalog,
+  listFiles,
+  listMessages,
+  listSessions,
+  readFile as fetchFileContent,
+  saveTeamSelection,
+  sendMessage,
+  type AgentStatus,
+  type CatalogTeam,
+  type ChatMessage,
+  type FileNode,
+  type MessageBlock,
+  type PlanBlock,
+  type SessionInfo,
+  type ToolBlock,
+} from '@/api/diagnosis'
 
-/* ---------------- 侧栏竖栏: 单击收起/展开, 沿栏拖动可调宽 ----------------
-   三栏同属一个 flex 容器: 左右栏按设定宽度固定, 主体栏占满剩余宽度, 因此左右栏
-   变宽时主体栏同步变窄、变窄时同步变宽; 主体栏内容自适应换行/缩放。 */
-const LEFT_MIN = 220
-const LEFT_MAX = 560
-const RIGHT_MIN = 320
-const RIGHT_MAX = 720
-const RAILS_W = 52        /* 左右两条竖栏的宽度之和 */
-const CENTER_MIN = 240    /* 主体栏保底宽度, 左右栏拖动上限据此动态计算 */
+/* ---------------- 侧栏 / 日志面板宽度 ---------------- */
+const LEFT_MIN = 240
+const LEFT_MAX = 400
+const DRAWER_MIN = 360
+const DRAWER_MAX = 760
 
-const leftW = ref(280)
-const rightW = ref(420)
-
-/* 侧边栏折叠 */
+const leftW = ref(276)
 const leftCollapsed = ref(false)
-const rightCollapsed = ref(false)
+const drawerW = ref(560)
+const drawerVisible = ref(false)
 
-type Side = 'left' | 'right'
-let dragging: Side | null = null
-let startX = 0
-let startW = 0
-/* 本次按下是否发生了拖动: 拖动结束后的 click 不再触发收起/展开 */
+type DragSide = 'left' | 'drawer'
+let dragging: DragSide | null = null
+let dragStartX = 0
+let dragStartW = 0
 let dragged = false
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-const isCollapsed = (side: Side) => (side === 'left' ? leftCollapsed.value : rightCollapsed.value)
-
-/* 容器实时宽度: 左右栏宽度上限据此计算, 保证主体栏不被挤到保底宽度以下 */
-const rootEl = ref<HTMLElement | null>(null)
-const containerW = ref(0)
-
-/* 某一侧栏的宽度上限 = 容器宽 - 竖栏 - 主体保底 - 另一侧栏当前宽度 */
-function sideMax(side: Side) {
-  const hard = side === 'left' ? LEFT_MAX : RIGHT_MAX
-  const lo = side === 'left' ? LEFT_MIN : RIGHT_MIN
-  if (!containerW.value) return hard
-  const other = side === 'left'
-    ? (rightCollapsed.value ? 0 : rightW.value)
-    : (leftCollapsed.value ? 0 : leftW.value)
-  return clamp(containerW.value - RAILS_W - CENTER_MIN - other, lo, hard)
-}
-/* 容器缩放 / 折叠切换后重新收敛一次左右栏宽度 */
-function reflow() {
-  leftW.value = clamp(leftW.value, LEFT_MIN, sideMax('left'))
-  rightW.value = clamp(rightW.value, RIGHT_MIN, sideMax('right'))
-}
 
 function onMove(e: MouseEvent) {
   if (!dragging) return
-  const dx = e.clientX - startX
-  if (!dragged && Math.abs(dx) < 4) return /* 小于阈值视为单击 */
+  const dx = e.clientX - dragStartX
+  if (!dragged && Math.abs(dx) < 4) return
   dragged = true
-  if (dragging === 'left') leftW.value = clamp(startW + dx, LEFT_MIN, sideMax('left'))
-  else rightW.value = clamp(startW - dx, RIGHT_MIN, sideMax('right'))
+  if (dragging === 'left') leftW.value = clamp(dragStartW + dx, LEFT_MIN, LEFT_MAX)
+  else drawerW.value = clamp(dragStartW - dx, DRAWER_MIN, DRAWER_MAX)
 }
 function stopDrag() {
   dragging = null
@@ -71,200 +69,530 @@ function stopDrag() {
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
 }
-function startDrag(side: Side, e: MouseEvent) {
+function startDrag(side: DragSide, e: MouseEvent) {
   dragged = false
-  if (isCollapsed(side)) return /* 收起态只响应单击展开 */
+  if (side === 'left' && leftCollapsed.value) return
   dragging = side
-  startX = e.clientX
-  startW = side === 'left' ? leftW.value : rightW.value
+  dragStartX = e.clientX
+  dragStartW = side === 'left' ? leftW.value : drawerW.value
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', stopDrag)
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
 }
-function toggleSide(side: Side) {
+function toggleLeft() {
   if (dragged) return
-  if (side === 'left') leftCollapsed.value = !leftCollapsed.value
-  else rightCollapsed.value = !rightCollapsed.value
-  reflow()
+  leftCollapsed.value = !leftCollapsed.value
 }
 
-/* 监听容器宽度: 窗口缩放时同步收敛左右栏, 主体栏始终保持为剩余宽度 */
-let ro: ResizeObserver | null = null
-onMounted(() => {
-  const el = rootEl.value
-  if (!el) return
-  containerW.value = el.clientWidth
-  ro = new ResizeObserver(() => {
-    containerW.value = el.clientWidth
-    reflow()
-  })
-  ro.observe(el)
-  reflow()
+/* ---------------- 运行状态 / 团队模型 ---------------- */
+const inspectorOpen = ref(false)
+const status = ref<AgentStatus | null>(null)
+const catalog = ref<CatalogTeam[]>([])
+const errorText = ref('')
+
+const teamsStore = useTeamsStore()
+const rbac = useRbacStore()
+const ready = computed(() => !!status.value?.ready)
+const modelLabel = computed(() => status.value?.modelName || status.value?.model || '—')
+const modelEmpty = computed(() => !catalog.value.some((t) => t.models.length))
+/* 大模型页签仅管理者可见：无管理权限的成员不引导去「团队配置」 */
+const canConfigureModel = computed(() => {
+  const tid = status.value?.teamId
+  return !tid || teamsStore.can(tid, 'llm:manage')
 })
-onBeforeUnmount(() => {
-  ro?.disconnect()
-  stopDrag()
-  fsSource?.close()
-  if (reloadTimer !== null) window.clearTimeout(reloadTimer)
+const permissionLabel = computed(() => {
+  const mode = status.value?.permission ?? ''
+  if (mode === 'workspace-write') return '只能写本次诊断目录'
+  if (mode === 'danger-full-access') return '不受限（仅调试用）'
+  return '只读'
 })
 
-/* ---------------- 中·文件阅读器 (多标签页) ---------------- */
-function toTab(f: Attach): ReaderTab {
-  const p = readFile(f)
-  return { ...f, kind: p.kind, content: p.content, original: p.content, lang: p.lang }
+async function loadCatalog() {
+  try {
+    catalog.value = (await fetchCatalog()).teams
+  } catch {
+    catalog.value = []
+  }
 }
 
-const INITIAL_FILE: Attach = {
-  id: 'f-parsedmsg',
-  name: 'messages.log',
-  path: 'opt/tasks/20261015_1011/messages.log',
-  size: '18.2 MB',
+async function refreshStatus(teamId?: number | null) {
+  try {
+    status.value = await agentStatus(teamId ?? undefined)
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
 }
-const tabs = ref<ReaderTab[]>([toTab(INITIAL_FILE)])
-const activeTabId = ref(INITIAL_FILE.id)
 
-/* payload 由文件树在读取真实本地文件后传入; 内置演示文件走 mock readFile */
-function openFile(f: Attach, payload?: FilePayload) {
-  const exist = tabs.value.find((t) => t.id === f.id)
-  if (exist) {
-    activeTabId.value = exist.id
+/* 本次会话显式选择的模型 (未选择时沿用历史会话自己的模型) */
+const pickedModel = ref<{ modelRowId: number; reasoning: string } | null>(null)
+
+/* 输入框内切换模型/推理强度: 保存到当前团队的选择 */
+async function onModelChange(payload: { teamId: number; modelRowId: number; reasoning: string }) {
+  pickedModel.value = { modelRowId: payload.modelRowId, reasoning: payload.reasoning }
+  try {
+    status.value = await saveTeamSelection({
+      team_id: payload.teamId,
+      model_row_id: payload.modelRowId,
+      reasoning: payload.reasoning,
+    })
+    await loadCatalog()
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
+}
+
+/* ---------------- 日志文件 ---------------- */
+const fileNodes = ref<FileNode[]>([])
+const filesLoading = ref(false)
+const attached = ref<Attach[]>([])
+const treeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
+
+async function loadFiles() {
+  filesLoading.value = true
+  try {
+    fileNodes.value = await listFiles()
+  } catch (e) {
+    errorText.value = apiError(e)
+  } finally {
+    filesLoading.value = false
+  }
+}
+
+function onTreeSelect(files: Attach[]) {
+  attached.value = files
+}
+function detachFile(id: string) {
+  attached.value = attached.value.filter((a) => a.id !== id)
+  treeRef.value?.deselect(id)
+}
+function clearAttached() {
+  attached.value = []
+  treeRef.value?.clear()
+}
+
+/* ---------------- 中间阅读器 ---------------- */
+const tabs = ref<ReaderTab[]>([])
+const activeTabId = ref('')
+const fileCache = new Map<string, ReaderTab>()
+
+function fmtSize(bytes?: number) {
+  if (!bytes || bytes < 0) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+async function openFile(f: Attach) {
+  drawerVisible.value = true
+  const cached = fileCache.get(f.id)
+  if (cached) {
+    if (!tabs.value.some((t) => t.id === f.id)) tabs.value.push(cached)
+    activeTabId.value = f.id
     return
   }
-  const p = payload ?? readFile(f)
-  tabs.value.push({ ...f, kind: p.kind, content: p.content, original: p.content, lang: p.lang })
-  activeTabId.value = f.id
+  try {
+    const payload = await fetchFileContent(f.id)
+    const tab: ReaderTab = {
+      ...f,
+      size: fmtSize(payload.size) || f.size,
+      kind: payload.kind,
+      content: payload.content,
+      original: payload.content,
+      lang: payload.lang,
+    }
+    fileCache.set(f.id, tab)
+    tabs.value.push(tab)
+    activeTabId.value = tab.id
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
 }
 function closeTab(id: string) {
   const i = tabs.value.findIndex((t) => t.id === id)
   if (i < 0) return
   tabs.value.splice(i, 1)
   if (activeTabId.value === id) activeTabId.value = tabs.value[Math.max(0, i - 1)]?.id ?? ''
+  if (!tabs.value.length) drawerVisible.value = false
 }
-function onTabEdit(payload: { id: string; content: string }) {
-  const t = tabs.value.find((x) => x.id === payload.id)
-  if (t) t.content = payload.content
+function closeDrawer() {
+  drawerVisible.value = false
 }
-function saveTab(id: string) {
-  const t = tabs.value.find((x) => x.id === id)
-  if (t) t.original = t.content
+function reopenDrawer() {
+  if (tabs.value.length) drawerVisible.value = true
 }
-function revertTab(id: string) {
-  const t = tabs.value.find((x) => x.id === id)
-  if (t) t.content = t.original
-}
-
-/* ---------------- 左·目录文件: 数据源 + 磁盘变更实时刷新 ----------------
-   目录树默认不加载(空), 由用户点「目录」显式选择; 后端 watchdog 递归监听所选目录并经
-   SSE 推送变更, 前端据此刷新受影响目录, 对已打开且无未保存编辑的文件自动重载最新内容。 */
-const rootPath = ref('')
-const rootSeq = ref(0)
-const fsEvents = ref<FsChange[]>([])
-let fsSource: EventSource | null = null
-let fsCursor = 0
-
-/* 事件缓存上限: 超出后丢弃最旧的一段, 防止长时间运行无界增长 */
-const FS_EVENTS_MAX = 2000
-
-function startWatch(path: string) {
-  fsSource?.close()
-  fsSource = null
-  if (!path) return
-  const es = new EventSource(watchUrl(path))
-  es.addEventListener('change', (e) => {
-    try {
-      fsEvents.value.push(JSON.parse((e as MessageEvent).data) as FsChange)
-      if (fsEvents.value.length > FS_EVENTS_MAX) fsEvents.value.splice(0, fsEvents.value.length - FS_EVENTS_MAX)
-    } catch {
-      /* 忽略异常事件包 */
-    }
-  })
-  fsSource = es
-}
-/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效) */
-function pickRoot(path: string) {
-  rootPath.value = path
-  rootSeq.value++
-  fsEvents.value = []
-  fsCursor = 0
-  dirtyPaths.clear()
-  if (reloadTimer !== null) {
-    window.clearTimeout(reloadTimer)
-    reloadTimer = null
+function attachFromReader(tab: ReaderTab) {
+  if (treeRef.value) {
+    treeRef.value.select(tab.id)
+    return
   }
-  startWatch(path)
+  if (!attached.value.some((a) => a.id === tab.id)) {
+    attached.value.push({ id: tab.id, name: tab.name, path: tab.path, size: tab.size })
+  }
 }
 
-/* 已打开文件随磁盘变化自动重载(有未保存编辑时不覆盖); 同名批量事件做去抖合并 */
-const dirtyPaths = new Set<string>()
-let reloadTimer: number | null = null
+/* ---------------- 会话 ---------------- */
+const sessions = ref<SessionInfo[]>([])
+const activeSessionId = ref('')
+const messages = ref<ChatMessage[]>([])
+const loadingSession = ref(false)
+const bodyRef = ref<HTMLElement | null>(null)
+const historyOpen = ref(false)
 
-async function reloadTab(t: ReaderTab, path: string) {
+const currentSession = computed(() => sessions.value.find((s) => s.id === activeSessionId.value))
+const currentTitle = computed(() => currentSession.value?.title || '新的诊断')
+/* 输入框展示当前会话实际使用的模型 (未显式切换时取向会话快照) */
+const composerStatus = computed<AgentStatus | null>(() => {
+  if (!status.value) return null
+  const sess = currentSession.value
+  if (pickedModel.value || !sess?.model) return status.value
+  return {
+    ...status.value,
+    teamId: sess.teamId ?? status.value.teamId,
+    provider: sess.provider || status.value.provider,
+    model: sess.model,
+    modelName: sess.modelName || sess.model,
+    reasoning: sess.reasoning || '',
+  }
+})
+
+async function scrollBottom() {
+  await nextTick()
+  const el = bodyRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+async function loadMessageList(id: string) {
+  loadingSession.value = true
+  pickedModel.value = null
   try {
-    const r = await fetchFile(path)
-    const content = r.kind === 'image' ? rawUrl(path) : (r.content ?? '')
-    t.kind = r.kind
-    t.content = content
-    t.original = content
-    t.lang = r.lang
-    t.size = fmtSize(r.size)
-  } catch {
-    /* 文件可能正被写入 / 已删除, 忽略 */
+    messages.value = await listMessages(id)
+    resetRun()
+    await scrollBottom()
+  } catch (e) {
+    errorText.value = apiError(e)
+  } finally {
+    loadingSession.value = false
   }
 }
 
-function scheduleReload(path: string) {
-  dirtyPaths.add(path)
-  if (reloadTimer !== null) window.clearTimeout(reloadTimer)
-  reloadTimer = window.setTimeout(() => {
-    reloadTimer = null
-    const paths = Array.from(dirtyPaths)
-    dirtyPaths.clear()
-    for (const p of paths) {
-      const t = tabs.value.find((x) => x.id === p)
-      if (t && t.content === t.original) void reloadTab(t, p)
-    }
-  }, 300)
+async function selectSession(id: string) {
+  if (id === activeSessionId.value || running.value) return
+  activeSessionId.value = id
+  const sess = sessions.value.find((s) => s.id === id)
+  if (sess?.teamId) void refreshStatus(sess.teamId)
+  await loadMessageList(id)
 }
 
-watch(
-  () => fsEvents.value.length,
-  () => {
-    const list = fsEvents.value
-    /* 事件数组被截断(超出上限)后游标越界, 重置重新对齐 */
-    if (fsCursor > list.length) fsCursor = 0
-    for (; fsCursor < list.length; fsCursor++) {
-      const ev = list[fsCursor]
-      if (ev.kind !== 'file') continue
-      const target = ev.src ?? ev.path
-      const t = tabs.value.find((x) => x.id === target)
-      if (!t) continue
-      if (ev.op === 'deleted') {
-        if (t.content === t.original) closeTab(t.id)
-        continue
+/* 历史会话弹窗: 继续任意可见会话 */
+function openHistorySession(s: SessionInfo) {
+  if (running.value) return
+  historyOpen.value = false
+  void selectSession(s.id)
+}
+
+async function refreshSessions() {
+  try {
+    sessions.value = await listSessions()
+    if (!sessions.value.some((s) => s.id === activeSessionId.value)) {
+      const next = sessions.value[0]
+      if (next) {
+        activeSessionId.value = next.id
+        if (next.teamId) void refreshStatus(next.teamId)
+        await loadMessageList(next.id)
+      } else {
+        await addSession()
       }
-      if (ev.op === 'moved') {
-        const name = ev.path.split(/[\\/]/).pop() ?? t.name
-        if (activeTabId.value === t.id) activeTabId.value = ev.path
-        t.id = ev.path
-        t.name = name
-        t.path = ev.path
-      }
-      scheduleReload(t.id)
     }
-  },
+  } catch {
+    /* 忽略 */
+  }
+}
+
+async function addSession() {
+  if (running.value) return
+  try {
+    const s = await createSession('', status.value?.teamId || undefined)
+    sessions.value.unshift(s)
+    activeSessionId.value = s.id
+    messages.value = []
+    pickedModel.value = null
+    resetRun()
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
+}
+
+/* ---------------- 一轮诊断 ---------------- */
+const draft = ref('')
+const running = ref(false)
+const phase = ref('')
+const abortCtl = ref<AbortController | null>(null)
+const runPlan = ref<PlanBlock['entries']>([])
+const runTools = ref<ToolBlock[]>([])
+const streamUsage = reactive({ input: 0, output: 0, total: 0 })
+
+const usageTotals = computed(() => {
+  let input = 0
+  let output = 0
+  let total = 0
+  for (const m of messages.value) {
+    if (m.role !== 'assistant' || !m.usage) continue
+    const u = m.usage as Record<string, unknown>
+    input += numOf(u, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens'])
+    output += numOf(u, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens'])
+    total += numOf(u, ['totalTokens', 'total_tokens'])
+  }
+  if (!total) total = input + output
+  return {
+    input: input + streamUsage.input,
+    output: output + streamUsage.output,
+    total: total + streamUsage.total,
+  }
+})
+
+const modelInfo = computed(() => ({
+  model: modelLabel.value,
+  permission: permissionLabel.value,
+  skills: status.value?.skills.length ?? 0,
+  ...usageTotals.value,
+}))
+
+const todos = computed(() =>
+  runPlan.value.map((e) => ({
+    text: e.content,
+    status: e.status === 'completed' ? ('done' as const) : e.status === 'in_progress' ? ('doing' as const) : ('todo' as const),
+  })),
 )
 
-/* ---------------- 上下文 (由左侧文件树拖入 / 手动移除) ---------------- */
-const attached = ref<Attach[]>([
-  { id: 'f-messages', name: 'messages', path: 'var/log/messages', size: '18.2 MB' },
-  { id: 'f-errorlog', name: 'error.log', path: 'var/log/nginx/error.log', size: '6.8 MB' },
-])
-function detachFile(id: string) {
-  attached.value = attached.value.filter((a) => a.id !== id)
+const inspectorTools = computed(() =>
+  runTools.value.map((t) => ({
+    name: t.title || t.name || '工具',
+    target: (t.input || '').replace(/\s+/g, ' ').slice(0, 80),
+    status: t.status,
+  })),
+)
+
+const todoDone = computed(() => todos.value.filter((t) => t.status === 'done').length)
+
+const runPlanBlock = computed<PlanBlock | null>(() =>
+  runPlan.value.length ? { kind: 'plan', entries: runPlan.value } : null,
+)
+
+function numOf(obj: Record<string, unknown>, keys: string[]): number {
+  for (const k of keys) {
+    const v = obj[k]
+    if (typeof v === 'number') return v
+    if (typeof v === 'string' && v && !Number.isNaN(Number(v))) return Number(v)
+  }
+  return 0
 }
 
-/* 放置区高亮: dragenter / dragleave 计数, 避免掠过子元素时抖动 */
+function resetRun() {
+  runPlan.value = []
+  runTools.value = []
+  streamUsage.input = 0
+  streamUsage.output = 0
+  streamUsage.total = 0
+  phase.value = ''
+}
+
+function appendText(msg: ChatMessage, kind: 'text' | 'thought', text: string) {
+  const last = msg.blocks[msg.blocks.length - 1]
+  if (last && last.kind === kind) {
+    last.text += text
+  } else {
+    msg.blocks.push({ kind, text })
+  }
+}
+
+type RawToolEvent = {
+  id: string
+  name?: string
+  title?: string
+  toolKind?: string
+  status?: string
+  input?: string
+  output?: string
+}
+
+function upsertTool(msg: ChatMessage, data: RawToolEvent) {
+  const statusValue: ToolBlock['status'] =
+    data.status === 'completed' || data.status === 'done'
+      ? 'done'
+      : data.status === 'failed'
+        ? 'failed'
+        : 'running'
+  const block = msg.blocks.find((b): b is ToolBlock => b.kind === 'tool' && b.id === data.id)
+  const normalized: ToolBlock = {
+    kind: 'tool',
+    id: data.id,
+    name: data.name || data.title || '工具',
+    title: data.title || '',
+    toolKind: data.toolKind,
+    status: statusValue,
+    input: data.input || '',
+    output: data.output || '',
+  }
+  if (block) {
+    Object.assign(block, normalized)
+  } else {
+    msg.blocks.push(normalized)
+  }
+  const row = runTools.value.find((t) => t.id === data.id)
+  if (row) Object.assign(row, normalized)
+  else runTools.value.push(normalized)
+}
+
+function addUsage(raw: unknown) {
+  if (!raw || typeof raw !== 'object') return
+  const u = raw as Record<string, unknown>
+  streamUsage.input += numOf(u, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens'])
+  streamUsage.output += numOf(u, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens'])
+  streamUsage.total += numOf(u, ['totalTokens', 'total_tokens'])
+}
+
+function mergeUsage(msg: ChatMessage, raw: unknown) {
+  if (!raw || typeof raw !== 'object') return
+  const u = raw as Record<string, unknown>
+  msg.usage = { ...(msg.usage ?? {}), ...u }
+  // 会话级统计已包含 live 用量, 这里清零避免重复
+  streamUsage.input = 0
+  streamUsage.output = 0
+  streamUsage.total = 0
+}
+
+function fileBlocks(m: ChatMessage) {
+  return m.blocks.filter(
+    (b): b is Extract<MessageBlock, { kind: 'file' }> => b.kind === 'file',
+  )
+}
+
+function textBlocks(m: ChatMessage) {
+  return m.blocks.filter(
+    (b): b is Extract<MessageBlock, { kind: 'text' }> => b.kind === 'text',
+  )
+}
+
+async function send() {
+  const text = draft.value.trim()
+  if (!text || running.value) return
+  if (!ready.value) {
+    errorText.value = status.value?.reason || '请先在团队「大模型」中启用模型'
+    return
+  }
+  const sid = activeSessionId.value
+  if (!sid) return
+
+  const refs = attached.value.map((f) => {
+    const [taskId] = f.id.split('|')
+    return { taskId, name: f.id.split('|').slice(1).join('|') || f.name }
+  })
+
+  messages.value.push({
+    id: `u-${Date.now()}`,
+    role: 'user',
+    blocks: [
+      { kind: 'text', text },
+      ...attached.value.map((f) => ({ kind: 'file' as const, name: f.name, taskId: f.id.split('|')[0] })),
+    ],
+  })
+  const live: ChatMessage = reactive({ id: 'live', role: 'assistant', blocks: [] })
+  messages.value.push(live)
+
+  draft.value = ''
+  resetRun()
+  errorText.value = ''
+  running.value = true
+  phase.value = 'preparing'
+  await scrollBottom()
+
+  const ctl = new AbortController()
+  abortCtl.value = ctl
+  let stopped = false
+
+  try {
+    await sendMessage(sid, text, refs, {
+      onEvent(event, data) {
+        if (event === 'phase') {
+          phase.value = data.phase ?? ''
+        } else if (event === 'text') {
+          appendText(live, 'text', data.text ?? '')
+        } else if (event === 'thought') {
+          appendText(live, 'thought', data.text ?? '')
+        } else if (event === 'tool') {
+          upsertTool(live, data as RawToolEvent)
+        } else if (event === 'plan') {
+          runPlan.value = data.entries ?? []
+          const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
+          if (block) block.entries = runPlan.value
+          else live.blocks.push({ kind: 'plan', entries: runPlan.value })
+        } else if (event === 'usage') {
+          addUsage(data.usage)
+        } else if (event === 'error') {
+          live.error = data.message ?? '诊断失败'
+        } else if (event === 'done') {
+          if (data.messageId) live.id = data.messageId
+          mergeUsage(live, data.usage)
+        }
+        void scrollBottom()
+      },
+    }, ctl.signal, pickedModel.value ?? {})
+  } catch (e) {
+    if ((e as Error)?.name === 'AbortError') {
+      stopped = true
+      live.error = '已停止本轮诊断'
+    } else {
+      const msg = apiError(e)
+      if (!live.error) {
+        live.error = msg
+        errorText.value = msg
+      }
+    }
+  } finally {
+    running.value = false
+    phase.value = ''
+    abortCtl.value = null
+    if (!live.blocks.length && !live.error) {
+      live.error = stopped ? '已停止本轮诊断' : '智能体没有返回内容'
+    }
+    // 刷新会话标题与排序
+    try {
+      sessions.value = await listSessions()
+    } catch {
+      /* 忽略 */
+    }
+    await scrollBottom()
+  }
+}
+
+function stop() {
+  abortCtl.value?.abort()
+}
+
+const examples = [
+  {
+    title: 'CPU 突然飙高',
+    desc: '定位是哪个进程、为什么打满',
+    prompt: '10:05 起 node-01 的 CPU 一直跑到 95%，帮我定位原因',
+  },
+  {
+    title: '服务反复重启',
+    desc: '找出退出原因和重启链路',
+    prompt: '服务从昨晚开始反复重启，日志里能看到什么？',
+  },
+  {
+    title: '磁盘 I/O 报错',
+    desc: '判断是硬件劣化还是文件系统',
+    prompt: '磁盘出现 I/O error，帮我判断是不是硬件故障',
+  },
+]
+function useExample(text: string) {
+  draft.value = text
+}
+
+/* ---------------- 拖拽加入上下文 ---------------- */
 const dropActive = ref(false)
 let dragDepth = 0
 function onDragEnter() {
@@ -282,465 +610,214 @@ function onDrop(e: DragEvent) {
   dragDepth = 0
   dropActive.value = false
   const raw = e.dataTransfer?.getData('text/plain') ?? ''
-  let files: Attach[] = []
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (Array.isArray(parsed)) files = parsed as Attach[]
+    if (Array.isArray(parsed)) {
+      for (const f of parsed as Attach[]) {
+        if (f?.id && !attached.value.some((a) => a.id === f.id)) attached.value.push(f)
+      }
+    }
   } catch {
-    return
-  }
-  for (const f of files) {
-    if (!f?.id || attached.value.some((a) => a.id === f.id)) continue
-    attached.value.push({ id: f.id, name: f.name, path: f.path, size: f.size })
+    /* 不是文件拖拽 */
   }
 }
 
-/* ---------------- 右·对话消息 ---------------- */
-type Block =
-  | { kind: 'text'; text: string }
-  | { kind: 'list'; title?: string; items: string[] }
-  | { kind: 'code'; lang: string; code: string }
-  | { kind: 'tool'; name: string; args: string; status: 'done' | 'running'; ms: number; result?: string }
-
-interface Message {
-  id: number
-  role: 'user' | 'assistant'
-  time: string
-  tokens?: string
-  files?: Attach[]
-  blocks: Block[]
-}
-
-let mid = 0
-const DEMO_CPU: Message[] = [
-  {
-    id: ++mid,
-    role: 'user',
-    time: '10:12',
-    files: [
-      { id: 'f-messages', name: 'messages', path: 'var/log/messages', size: '18.2 MB' },
-      { id: 'f-errorlog', name: 'error.log', path: 'var/log/nginx/error.log', size: '6.8 MB' },
-    ],
-    blocks: [
-      { kind: 'text', text: '北京A 集群从 10:05 开始 CPU 使用率飙到 95%，业务接口 P99 明显变慢。帮我定位下原因。' },
-    ],
-  },
-  {
-    id: ++mid,
-    role: 'assistant',
-    time: '10:12',
-    tokens: '↑1.2k ↓640',
-    blocks: [
-      { kind: 'text', text: '我先做一轮环境采样，确认是日志解析侧还是系统侧的问题。' },
-      { kind: 'tool', name: 'read_log_file', args: '/var/log/messages · 10:00–10:15', status: 'done', ms: 320, result: '命中 12 条 OOM / timeout 相关记录' },
-      { kind: 'tool', name: 'perf_top_snapshot', args: 'node-01 · batch=3', status: 'done', ms: 1240, result: 'loginsight-parser 峰值 480% CPU' },
-      { kind: 'tool', name: 'sar_cpu_report', args: '10:00–10:20 · -u -q', status: 'done', ms: 860, result: 'runq-sz 12, %iowait 1.2 (排除 IO 等待)' },
-      { kind: 'text', text: '采样结论：CPU 集中在 loginsight-parser 进程，且 %iowait 很低，可排除磁盘 IO。' },
-      {
-        kind: 'list',
-        title: '根因初判',
-        items: [
-          '规则引擎在处理「超长单行日志」(>64KB) 时进入正则回溯，CPU 被打满；',
-          '同一任务下 3 个分片并发解析，放大了资源争用；',
-          '慢查询未设置超时，导致任务无法自愈退出。',
-        ],
-      },
-    ],
-  },
-  {
-    id: ++mid,
-    role: 'user',
-    time: '10:16',
-    blocks: [{ kind: 'text', text: '有没有相似的历史案例可以参考？' }],
-  },
-  {
-    id: ++mid,
-    role: 'assistant',
-    time: '10:16',
-    tokens: '↑0.4k ↓210',
-    blocks: [
-      { kind: 'tool', name: 'search_similar_case', args: 'kb://cpu-spike · topk=3', status: 'done', ms: 540, result: '返回 2 条高相似案例 (0.91 / 0.87)' },
-      {
-        kind: 'list',
-        title: '相似案例',
-        items: [
-          'INC-2261 上海B：超长行日志触发回溯，处置方式与本例一致；',
-          'INC-1988 广州C：分片并发过高导致 CPU 抖动，靠降并发缓解。',
-        ],
-      },
-    ],
-  },
-]
-
-const DEMO_NGINX: Message[] = [
-  {
-    id: ++mid,
-    role: 'user',
-    time: '09:26',
-    blocks: [{ kind: 'text', text: 'nginx 从 09:20 开始大量 502，帮忙看下。' }],
-  },
-  {
-    id: ++mid,
-    role: 'assistant',
-    time: '09:26',
-    tokens: '↑0.6k ↓320',
-    blocks: [
-      { kind: 'text', text: '我先看 upstream 连接情况与错误日志。' },
-      {
-        kind: 'tool',
-        name: 'read_log_file',
-        args: '/var/log/nginx/error.log · 09:20–09:26',
-        status: 'done',
-        ms: 280,
-        result: 'upstream 连接超时 128 次',
-      },
-      { kind: 'text', text: '上游连接池被打满，建议扩容 worker 连接数并加超时重试。' },
-    ],
-  },
-]
-
-/* ---------------- 右·会话 (页签 1/2/3, 每个页签一段独立对话) ---------------- */
-interface Session {
-  id: number
-  messages: Message[]
-}
-
-let sid = 0
-const sessions = ref<Session[]>([
-  { id: ++sid, messages: DEMO_CPU },
-  { id: ++sid, messages: DEMO_NGINX },
-  { id: ++sid, messages: [] },
-])
-const activeSession = ref(sessions.value[0].id)
-const messages = computed<Message[]>(
-  () => sessions.value.find((s) => s.id === activeSession.value)?.messages ?? [],
-)
-
-function addSession() {
-  const s: Session = { id: ++sid, messages: [] }
-  sessions.value.push(s)
-  activeSession.value = s.id
-}
-function removeSession(id: number) {
-  if (sessions.value.length <= 1) return
-  const i = sessions.value.findIndex((s) => s.id === id)
-  if (i < 0) return
-  sessions.value.splice(i, 1)
-  if (activeSession.value === id) activeSession.value = sessions.value[Math.max(0, i - 1)].id
-}
-
-const thinking = ref(false)
-const running = ref(false)
-const bodyRef = ref<HTMLElement | null>(null)
-
-async function scrollBottom() {
-  await nextTick()
-  const el = bodyRef.value
-  if (el) el.scrollTop = el.scrollHeight
-}
-onMounted(scrollBottom)
-
-const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms))
-const nowHM = () => new Date().toTimeString().slice(0, 5)
-
-type TextBlock = { kind: 'text'; text: string }
-type ToolBlock = { kind: 'tool'; name: string; args: string; status: 'done' | 'running'; ms: number; result?: string }
-
-/* 逐字流式输出 (逐块修改响应式对象以驱动重渲染) */
-async function streamText(msg: Message, text: string) {
-  const blk = reactive<TextBlock>({ kind: 'text', text: '' })
-  msg.blocks.push(blk)
-  const step = 3
-  for (let i = 0; i < text.length; i += step) {
-    blk.text = text.slice(0, i + step)
-    await sleep(18)
-    await scrollBottom()
+/* ---------------- 启动 ---------------- */
+onMounted(async () => {
+  await refreshStatus()
+  void loadCatalog()
+  void loadFiles()
+  try {
+    sessions.value = await listSessions()
+    if (!sessions.value.length) {
+      const s = await createSession('', status.value?.teamId || undefined)
+      sessions.value = [s]
+    }
+    const first = sessions.value.find((s) => s.userId === rbac.currentUserId) ?? sessions.value[0]
+    activeSessionId.value = first.id
+    if (first.teamId) void refreshStatus(first.teamId)
+    await loadMessageList(activeSessionId.value)
+  } catch (e) {
+    errorText.value = apiError(e)
   }
-  blk.text = text
-}
-
-/* 工具调用: 先"执行中", 结束后回填耗时与结果, 并实时同步侧栏运行状态列表 */
-async function runTool(msg: Message, name: string, args: string, result: string, ms: number) {
-  const blk = reactive<ToolBlock>({ kind: 'tool', name, args, status: 'running', ms: 0 })
-  msg.blocks.push(blk)
-  const row = reactive({
-    name,
-    target: args,
-    status: 'running' as 'running' | 'done',
-    ms: null as number | null,
-  })
-  tools.value.push(row)
-  await scrollBottom()
-  await sleep(ms)
-  blk.status = 'done'
-  blk.ms = ms
-  blk.result = result
-  row.status = 'done'
-  row.ms = ms
-  await scrollBottom()
-}
-
-/* 演示脚本: 接入 agent 后由 SSE / WebSocket 事件驱动, 这里用定时器模拟事件流 */
-async function runAgent(list: Message[]) {
-  running.value = true
-  thinking.value = true
-  await sleep(650)
-  thinking.value = false
-
-  const am = reactive<Message>({ id: ++mid, role: 'assistant', time: nowHM(), blocks: [] })
-  list.push(am)
-
-  await streamText(am, '收到，我先抓取与这次问题相关的日志片段和系统指标。')
-  await runTool(am, 'read_log_file', '/var/log/messages · 最近 30 分钟', '命中 12 条 OOM / timeout 记录', 900)
-  await runTool(am, 'perf_top_snapshot', 'node-01 · batch=3', 'loginsight-parser 峰值 481% CPU', 1100)
-  await streamText(am, '日志与采样一致：CPU 被解析进程占满，%iowait 很低，可先排除磁盘 IO。')
-
-  setTodo('关联日志错误码与调用链', 'done')
-  await runTool(am, 'sar_cpu_report', '10:00–10:20 · -u -q', 'runq-sz 12，%iowait 1.2', 800)
-  await streamText(am, '三组证据指向同一处，给出根因与处置建议：')
-  am.blocks.push({
-    kind: 'list',
-    title: '根因初判',
-    items: [
-      '规则引擎在超长单行日志（>64KB）上触发正则回溯，CPU 被打满；',
-      '同任务 3 个分片并发解析，放大了资源争用；',
-      '慢规则缺少超时保护，任务无法自愈退出。',
-    ],
-  })
-  setTodo('输出根因结论与处置建议', 'done')
-
-  am.tokens = '↑1.1k ↓520'
-  modelInfo.input += 1100
-  modelInfo.output += 520
-  modelInfo.total = modelInfo.input + modelInfo.output
-  modelInfo.usedPct = Math.min(100, Math.round((modelInfo.total / 128000) * 100))
-  running.value = false
-  await scrollBottom()
-}
-
-function send() {
-  const text = draft.value.trim()
-  if (!text || running.value) return
-  const list = messages.value
-  list.push({
-    id: ++mid,
-    role: 'user',
-    time: nowHM(),
-    files: attached.value.length ? attached.value.map((f) => ({ ...f })) : undefined,
-    blocks: [{ kind: 'text', text }],
-  })
-  draft.value = ''
-  attached.value = []
-  scrollBottom()
-  void runAgent(list)
-}
-
-/* ---------------- 右·输入区 ---------------- */
-const draft = ref('')
-const agentMode = ref('agent')
-const AGENT_MODES = [
-  { key: 'agent', label: 'Agent 模式', hint: '自动规划并调用工具' },
-  { key: 'chat', label: '对话模式', hint: '仅大模型问答，不调用工具' },
-  { key: 'deep', label: '深度诊断', hint: '多轮规划 + 并行工具编排' },
-]
-const model = ref('deepseek-v3')
-const MODELS = [
-  { key: 'deepseek-v3', label: 'DeepSeek-V3' },
-  { key: 'doubao-pro', label: '豆包 Pro 32K' },
-  { key: 'qwen-max', label: '通义千问 Max' },
-  { key: 'gpt-4o', label: 'GPT-4o' },
-]
-
-/* ---------------- 左·运行状态 (停靠于侧栏底端, 可折叠最小化) ---------------- */
-const inspectorOpen = ref(true)
-
-const modelInfo = reactive({
-  name: 'DeepSeek-V3',
-  provider: '深度求索',
-  window: '128K',
-  usedPct: 12,
-  input: 12480,
-  output: 3206,
-  total: 15686,
-  cost: '¥0.18',
-  latency: '1.2s',
 })
 
-type TodoStatus = 'done' | 'doing' | 'todo'
-const todos = ref<{ text: string; status: TodoStatus }[]>([
-  { text: '采集系统与解析器 CPU 采样', status: 'done' },
-  { text: '定位高占用进程与线程栈', status: 'done' },
-  { text: '检索相似历史案例', status: 'done' },
-  { text: '关联日志错误码与调用链', status: 'doing' },
-  { text: '输出根因结论与处置建议', status: 'todo' },
-])
-const todoDone = computed(() => todos.value.filter((t) => t.status === 'done').length)
+onBeforeUnmount(() => {
+  stopDrag()
+  abortCtl.value?.abort()
+})
 
-const tools = ref<{ name: string; target: string; status: 'done' | 'running'; ms: number | null }[]>([
-  { name: 'read_log_file', target: '/var/log/messages', status: 'done', ms: 320 },
-  { name: 'perf_top_snapshot', target: 'node-01', status: 'done', ms: 1240 },
-  { name: 'sar_cpu_report', target: '10:00–10:20', status: 'done', ms: 860 },
-  { name: 'search_similar_case', target: 'kb://cpu-spike', status: 'done', ms: 540 },
-  { name: 'correlate_error_code', target: 'E-TIMEOUT-504', status: 'running', ms: null },
-])
-
-function setTodo(text: string, status: TodoStatus) {
-  const t = todos.value.find((x) => x.text === text)
-  if (t) t.status = status
-}
+const phaseText = computed(() => {
+  if (!running.value) return ''
+  if (phase.value === 'connecting') return '正在启动诊断助手…'
+  if (phase.value === 'thinking') return '正在分析…'
+  return '正在准备…'
+})
 </script>
 
 <template>
-  <div ref="rootEl" class="diag">
-    <!-- ============ 左侧栏: 文件资源管理器 + 底端运行状态 ============ -->
-    <aside v-if="!leftCollapsed" class="pane pane--left" :style="{ width: leftW + 'px' }">
+  <div class="diag">
+    <!-- ============ 左: 资料栏 ============ -->
+    <aside v-if="!leftCollapsed" class="sidebar" :style="{ width: leftW + 'px' }">
       <DiagnosisFileTree
-        :root-path="rootPath"
-        :root-seq="rootSeq"
+        ref="treeRef"
+        :nodes="fileNodes"
+        :loading="filesLoading"
         :active-id="activeTabId"
-        :events="fsEvents"
         @open="openFile"
-        @pick-root="pickRoot"
+        @select="onTreeSelect"
       >
         <template #actions>
-          <button class="icon-btn" title="收起左侧栏" @click="leftCollapsed = true; reflow()">«</button>
+          <button class="icon-btn" title="刷新文件列表" @click="loadFiles">
+            <Icon name="refresh" :size="13" />
+          </button>
+        </template>
+        <template #empty>
+          <div class="side-empty">
+            <p class="side-empty-t">还没有可分析的日志</p>
+            <p class="side-empty-s">上传日志后，勾选即可让助手直接读取原文。</p>
+            <router-link class="o-btn o-btn--sm" to="/teams">去上传日志</router-link>
+          </div>
         </template>
       </DiagnosisFileTree>
 
-      <!-- 底端停靠: 运行状态(Todo List / 模型信息 / 工具调用), 可折叠最小化为一条底栏 -->
-      <div class="insp-dock" :class="{ 'is-collapsed': !inspectorOpen }">
-        <div class="insp-head">
-          <span class="pane-title">运行状态</span>
-          <span v-if="!inspectorOpen" class="insp-mini o-mono o-text-3">
-            Todo {{ todoDone }}/{{ todos.length }} · {{ modelInfo.total.toLocaleString('en-US') }} tokens
-          </span>
-          <button
-            class="icon-btn insp-toggle"
-            :title="inspectorOpen ? '折叠运行状态' : '展开运行状态'"
-            @click="inspectorOpen = !inspectorOpen"
-          >
-            {{ inspectorOpen ? '▾' : '▸' }}
-          </button>
+      <div class="side-foot">
+        <button
+          class="side-status"
+          :title="ready ? '查看运行状态' : (status?.reason || '模型不可用')"
+          @click="ready ? (inspectorOpen = !inspectorOpen) : refreshStatus()"
+        >
+          <span class="status-dot" :class="running ? 'is-run' : ready ? 'is-ok' : 'is-warn'"></span>
+          <span class="side-status-text">{{
+            running ? phaseText : ready ? '就绪' : (status?.reason || '模型不可用')
+          }}</span>
+          <span class="spacer"></span>
+          <span v-if="ready" class="o-mono side-tokens">{{ usageTotals.total.toLocaleString('en-US') }} tokens</span>
+          <FoldChevron v-if="ready" :open="inspectorOpen" />
+        </button>
+        <div v-if="inspectorOpen" class="inspector">
+          <DiagnosisInspector
+            :model-info="modelInfo"
+            :todos="todos"
+            :tools="inspectorTools"
+          />
         </div>
-        <DiagnosisInspector
-          v-show="inspectorOpen"
-          :model-info="modelInfo"
-          :todos="todos"
-          :tools="tools"
-        />
       </div>
     </aside>
     <button
       class="rail rail--left"
       :class="{ 'is-collapsed': leftCollapsed }"
-      :title="leftCollapsed ? '展开左侧栏' : '收起左侧栏 · 沿此栏左右拖动可调整宽度'"
+      :title="leftCollapsed ? '展开资料栏' : '收起资料栏 · 沿此栏左右拖动可调整宽度'"
       @mousedown="startDrag('left', $event)"
-      @click="toggleSide('left')"
+      @click="toggleLeft"
     >
-      {{ leftCollapsed ? '›' : '‹' }}
+      <span class="rail-btn">
+        <Icon :name="leftCollapsed ? 'chevron-right' : 'chevron-left'" :size="10" />
+      </span>
     </button>
 
-    <!-- ============ 中间主体: 文件阅读器 ============ -->
-    <section class="pane pane--center">
-      <DiagnosisFileReader
-        :tabs="tabs"
-        :active-id="activeTabId"
-        @activate="activeTabId = $event"
-        @close="closeTab"
-        @edit="onTabEdit"
-        @save="saveTab"
-        @revert="revertTab"
-      />
-    </section>
-
-    <button
-      class="rail rail--right"
-      :class="{ 'is-collapsed': rightCollapsed }"
-      :title="rightCollapsed ? '展开右侧栏' : '收起右侧栏 · 沿此栏左右拖动可调整宽度'"
-      @mousedown="startDrag('right', $event)"
-      @click="toggleSide('right')"
-    >
-      {{ rightCollapsed ? '‹' : '›' }}
-    </button>
-
-    <!-- ============ 右侧栏: 会话页签 + 对话 + 输入区 ============ -->
-    <aside v-if="!rightCollapsed" class="pane pane--right" :style="{ width: rightW + 'px' }">
-      <div class="pane-head chat-tabs">
-        <div class="tab-strip">
-          <button
-            v-for="(s, i) in sessions"
-            :key="s.id"
-            class="chat-tab"
-            :class="{ 'is-active': s.id === activeSession }"
-            :title="'会话 ' + (i + 1)"
-            @click="activeSession = s.id"
-          >
-            <span class="chat-tab-no">{{ i + 1 }}</span>
-            <span
-              v-if="sessions.length > 1"
-              class="chat-tab-x"
-              title="关闭会话"
-              @click.stop="removeSession(s.id)"
-              >✕</span
-            >
+    <!-- ============ 中: 诊断对话 ============ -->
+    <main class="chat">
+      <header class="chat-head">
+        <div class="head-left">
+          <button class="icon-btn" title="历史会话" @click="historyOpen = true">
+            <Icon name="history" :size="14" />
           </button>
-          <button class="chat-tab-add" title="新建会话" @click="addSession">＋</button>
+          <span class="session-title-text" :title="currentTitle">{{ currentTitle }}</span>
+          <span
+            v-if="running || ready"
+            class="pill"
+            :class="running ? 'pill--run' : 'pill--ok'"
+          >
+            {{ running ? '诊断中' : '就绪' }}
+          </span>
         </div>
-        <div class="o-row" style="gap: 8px">
-          <span class="o-badge" :class="running ? 'o-badge--success' : 'o-badge--outline'">{{
-            running ? '● 运行中' : '● 空闲'
-          }}</span>
-          <button class="o-btn o-btn--sm" title="清空当前会话" @click="messages.length = 0">清空</button>
-          <button class="icon-btn" title="收起右侧栏" @click="rightCollapsed = true; reflow()">»</button>
+        <div class="head-actions">
+          <button v-if="tabs.length" class="o-btn o-btn--sm log-btn" @click="reopenDrawer">
+            <Icon name="file" :size="13" />
+            <span class="log-label">日志原文</span>
+            <span class="log-count">({{ tabs.length }})</span>
+          </button>
+          <button class="icon-btn" title="新建会话" @click="addSession">
+            <Icon name="plus" :size="13" />
+          </button>
         </div>
+      </header>
+
+      <div v-if="!ready && status && messages.length" class="notice">
+        <span class="notice-text">{{ status.reason }}</span>
+        <router-link
+          v-if="canConfigureModel"
+          class="o-btn o-btn--sm"
+          :to="status.teamId ? `/teams/${status.teamId}?tab=llm` : '/teams'"
+        >
+          去团队配置
+        </router-link>
+        <span v-else class="o-text-3" style="font-size: 12.5px">请联系团队管理员配置大模型</span>
       </div>
-
       <div ref="bodyRef" class="chat-body">
-        <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
-          <div class="avatar" :class="`avatar--${m.role}`">{{ m.role === 'user' ? '我' : 'AI' }}</div>
-          <div class="bubble">
-            <div class="msg-head">
-              <b>{{ m.role === 'user' ? '我' : '智能诊断助手' }}</b>
-              <span class="o-mono o-text-3">{{ m.time }}</span>
-              <span v-if="m.tokens" class="o-badge o-badge--outline">{{ m.tokens }}</span>
-            </div>
+        <div class="chat-list">
+          <div v-if="loadingSession" class="chat-empty"><p>正在加载会话…</p></div>
 
-            <div v-if="m.files?.length" class="msg-files">
-              <span v-for="f in m.files" :key="f.id" class="msg-file o-mono" :title="f.path">📄 {{ f.name }}</span>
-            </div>
-
-            <template v-for="(b, i) in m.blocks" :key="i">
-              <p v-if="b.kind === 'text'" class="blk-text">{{ b.text }}</p>
-
-              <div v-else-if="b.kind === 'tool'" class="blk-tool">
-                <span class="tool-dot" :class="{ 'is-run': b.status === 'running' }"></span>
-                <span class="o-mono tool-name">{{ b.name }}</span>
-                <span class="o-mono o-text-3 tool-args">{{ b.args }}</span>
-                <span class="o-mono o-text-3 tool-ms">{{ b.ms }}ms</span>
-                <div v-if="b.result" class="tool-result">{{ b.result }}</div>
+          <template v-else>
+          <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
+            <div class="avatar" :class="`avatar--${m.role}`">{{ m.role === 'user' ? '我' : 'AI' }}</div>
+            <div class="bubble">
+              <div class="msg-head">
+                <b>{{ m.role === 'user' ? '我' : '诊断助手' }}</b>
+                <span v-if="running && m.role === 'assistant' && m.id === 'live'" class="pill pill--run">生成中</span>
               </div>
 
-              <ul v-else-if="b.kind === 'list'" class="blk-list">
-                <li v-if="b.title" class="blk-list-title">{{ b.title }}</li>
-                <li v-for="(it, j) in b.items" :key="j">{{ it }}</li>
-              </ul>
+              <div v-if="fileBlocks(m).length" class="msg-files">
+                <span v-for="(b, i) in fileBlocks(m)" :key="i" class="msg-file o-mono">
+                  <Icon name="file" :size="12" />
+                  {{ b.name }}
+                </span>
+              </div>
 
-              <pre v-else class="blk-code"><code>{{ b.code }}</code></pre>
-            </template>
+              <AssistantTurn
+                v-if="m.role === 'assistant'"
+                :message="m"
+                :running="running && m.id === 'live'"
+              />
+              <template v-else>
+                <p v-for="(b, i) in textBlocks(m)" :key="i" class="blk-text">{{ b.text }}</p>
+              </template>
+            </div>
           </div>
-        </div>
 
-        <div v-if="thinking" class="msg msg--assistant">
-          <div class="avatar avatar--assistant">AI</div>
-          <div class="bubble">
-            <div class="typing"><span></span><span></span><span></span> 正在分析…</div>
+          <div v-if="!messages.length && !running" class="welcome">
+            <div class="welcome-ico"><Icon name="activity" :size="34" /></div>
+            <h2>{{ ready || !modelEmpty ? '从一个故障现象开始' : '先由团队管理员配置大模型' }}</h2>
+            <p v-if="ready">说清时间、主机和现象；勾选左侧日志，助手会先取证再给结论。</p>
+            <p v-else-if="modelEmpty">
+              团队还没有启用模型。模型由团队统一配置，成员在输入框里直接选择即可。
+            </p>
+            <p v-else>{{ status?.reason || '当前模型尚不可用，请在输入框切换模型或联系团队管理员。' }}</p>
+            <div v-if="!ready && modelEmpty && canConfigureModel" class="welcome-cta">
+              <router-link
+                class="o-btn o-btn--primary"
+                :to="status?.teamId ? `/teams/${status.teamId}?tab=llm` : '/teams'"
+              >
+                {{ status?.teamId ? '去团队配置大模型' : '去团队页' }}
+              </router-link>
+            </div>
+            <div class="example-grid">
+              <button
+                v-for="e in examples"
+                :key="e.prompt"
+                class="example-card"
+                @click="useExample(e.prompt)"
+              >
+                <b>{{ e.title }}</b>
+                <span>{{ e.desc }}</span>
+              </button>
+            </div>
+            <p v-if="!fileNodes.length" class="welcome-note">
+              还没有日志？<router-link to="/teams">去创建解析任务</router-link>
+            </p>
           </div>
-        </div>
-
-        <div v-if="!messages.length && !thinking" class="chat-empty">
-          <div class="chat-empty-ico">🩺</div>
-          <p>新会话已就绪</p>
-          <span>描述你的诊断问题，或从左侧目录勾选 / 拖拽文件作为分析上下文。</span>
+        </template>
         </div>
       </div>
 
