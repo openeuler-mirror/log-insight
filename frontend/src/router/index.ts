@@ -9,12 +9,11 @@ const routes: RouteRecordRaw[] = [
     redirect: '/dashboard',
     children: [
       { path: 'dashboard', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '工作台', perm: 'dashboard:view', menu: true } },
-      /* 团队不占顶部导航位, 入口在「头像下拉」与「工作台」; hidden 仅隐藏导航项, 仍受平台权限守卫 */
-      { path: 'teams', name: 'teams', component: () => import('@/views/TeamsView.vue'), meta: { title: '团队', perm: 'team:view', menu: true, hidden: true } },
+      { path: 'teams', name: 'teams', component: () => import('@/views/TeamsView.vue'), meta: { title: '团队', perm: 'team:view', menu: true } },
       { path: 'teams/:id', name: 'team-detail', component: () => import('@/views/TeamDetailView.vue'), meta: { title: '团队详情', perm: 'team:view' } },
       { path: 'teams/:id/new-task', name: 'task-new', component: () => import('@/views/TaskWizardView.vue'), meta: { title: '创建解析任务', perm: 'task:create' } },
       { path: 'tasks/:taskId', name: 'task-result', component: () => import('@/views/TaskResultView.vue'), meta: { title: '解析结果', perm: 'task:view' } },
-      { path: 'rules', name: 'rules', component: () => import('@/views/RulesView.vue'), meta: { title: '规则管理', perm: 'dashboard:view', menu: true } },
+      { path: 'rules', name: 'rules', component: () => import('@/views/RulesView.vue'), meta: { title: '平台通用规则', perm: 'rule:manage' } },
       { path: 'perf', name: 'perf', component: () => import('@/views/PerfView.vue'), meta: { title: '性能分析', perm: 'dashboard:view', menu: true } },
       { path: 'metrics', redirect: '/perf' },
       { path: 'inspection', name: 'inspection', component: () => import('@/views/InspectionView.vue'), meta: { title: '智能巡检', perm: 'dashboard:view', menu: true } },
