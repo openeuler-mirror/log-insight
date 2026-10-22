@@ -3,7 +3,7 @@
 export type IconName =
   | 'history' | 'file' | 'folder' | 'folder-open' | 'image' | 'archive'
   | 'bell' | 'pencil' | 'trash' | 'alert' | 'chart' | 'search' | 'clipboard'
-  | 'activity' | 'refresh' | 'chevron-left' | 'chevron-right' | 'plus'
+  | 'activity' | 'refresh' | 'chevron-left' | 'chevron-right' | 'plus' | 'sidebar'
   | 'close' | 'lock' | 'users' | 'play' | 'check' | 'x' | 'disk' | 'bolt'
   | 'hourglass' | 'star' | 'arrow-left' | 'arrow-right'
   | 'caret-down' | 'caret-right' | 'circle'
@@ -73,6 +73,10 @@ const PATHS: Record<IconName, string[]> = {
   ],
   'chevron-left': ['M15 5 8 12l7 7'],
   'chevron-right': ['M9 5l7 7-7 7'],
+  sidebar: [
+    'M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z',
+    'M9 4v16',
+  ],
   plus: ['M12 5v14M5 12h14'],
   close: ['M18 6 6 18M6 6l12 12'],
   lock: [

@@ -225,7 +225,11 @@ function openTeamBrowser() {
       </div>
     </header>
 
-    <main class="main" @click="noticeOpen = false; menuOpen = false; teamMenuOpen = false">
+    <main
+      class="main"
+      :class="{ 'main--flush': route.meta.flush }"
+      @click="noticeOpen = false; menuOpen = false; teamMenuOpen = false"
+    >
       <router-view />
     </main>
 
@@ -528,5 +532,9 @@ function openTeamBrowser() {
   margin: 0 auto;
   padding: 80px 24px 24px;
   min-height: calc(100vh - var(--topbar-h));
+}
+.main--flush {
+  max-width: none;
+  padding: var(--topbar-h) 0 0;
 }
 </style>

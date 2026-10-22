@@ -130,14 +130,6 @@ defineExpose({
 </script>
 
 <template>
-  <div class="pane-sub-head">
-    <span class="pane-title">日志文件</span>
-    <span class="sub-right">
-      <span class="o-mono o-text-3">{{ selectedIds.length ? `已选 ${selectedIds.length}` : '' }}</span>
-      <slot name="actions" />
-    </span>
-  </div>
-
   <div class="tree">
     <div v-if="loading" class="tree-empty">正在加载…</div>
     <slot v-else-if="!nodes.length" name="empty">
@@ -178,7 +170,7 @@ defineExpose({
         <span class="tree-ico">
           <Icon
             :name="r.node.kind === 'dir' ? (expanded[r.node.id] ? 'folder-open' : 'folder') : 'file'"
-            :size="13"
+            :size="14"
           />
         </span>
         <span class="tree-name">{{ r.node.name }}</span>
@@ -186,28 +178,9 @@ defineExpose({
       </div>
     </template>
   </div>
-  <div v-if="nodes.length" class="tree-hint">点击文件在右侧查看 · 勾选后随问题一起交给助手</div>
 </template>
 
 <style scoped>
-.pane-sub-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px 8px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
-}
-.pane-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-.sub-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
 .tree {
   flex: 1 1 auto;
   min-height: 0;
@@ -216,7 +189,7 @@ defineExpose({
 }
 .tree-empty {
   padding: 18px 12px;
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.8;
   color: var(--text-3);
   text-align: center;
@@ -224,11 +197,11 @@ defineExpose({
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 27px;
+  gap: 6px;
+  height: 30px;
   padding-right: 6px;
   border-radius: var(--radius);
-  font-size: 12.5px;
+  font-size: 13px;
   cursor: pointer;
   user-select: none;
 }
@@ -254,8 +227,8 @@ defineExpose({
 }
 .tree-check {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   cursor: pointer;
   accent-color: var(--primary);
 }
@@ -280,15 +253,7 @@ defineExpose({
 }
 .tree-size {
   flex: none;
-  font-size: 10.5px;
-  color: var(--text-4);
-}
-.tree-hint {
-  flex: none;
-  padding: 6px 14px 8px;
-  border-top: 1px dashed var(--border);
   font-size: 11px;
-  line-height: 1.6;
   color: var(--text-4);
 }
 </style>

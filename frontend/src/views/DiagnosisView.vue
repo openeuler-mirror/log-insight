@@ -9,10 +9,9 @@ import ComposerModelMenu from '@/components/diagnosis/ComposerModelMenu.vue'
 import ComposerTaskDock from '@/components/diagnosis/ComposerTaskDock.vue'
 import AssistantTurn from '@/components/diagnosis/AssistantTurn.vue'
 import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
-import SessionHistoryDialog from '@/components/diagnosis/SessionHistoryDialog.vue'
+import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
 import Icon from '@/components/Icon.vue'
 import { useTeamsStore } from '@/stores/teams'
-import { useRbacStore } from '@/stores/rbac'
 import type { Attach, ReaderTab } from '@/components/diagnosisFiles'
 import { apiError } from '@/api/http'
 import {
@@ -43,6 +42,8 @@ const DRAWER_MAX = 760
 
 const leftW = ref(276)
 const leftCollapsed = ref(false)
+const historyOpen = ref(true)
+const filesOpen = ref(true)
 const drawerW = ref(560)
 const drawerVisible = ref(false)
 
@@ -50,15 +51,12 @@ type DragSide = 'left' | 'drawer'
 let dragging: DragSide | null = null
 let dragStartX = 0
 let dragStartW = 0
-let dragged = false
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 function onMove(e: MouseEvent) {
   if (!dragging) return
   const dx = e.clientX - dragStartX
-  if (!dragged && Math.abs(dx) < 4) return
-  dragged = true
   if (dragging === 'left') leftW.value = clamp(dragStartW + dx, LEFT_MIN, LEFT_MAX)
   else drawerW.value = clamp(dragStartW - dx, DRAWER_MIN, DRAWER_MAX)
 }
@@ -70,8 +68,6 @@ function stopDrag() {
   document.body.style.userSelect = ''
 }
 function startDrag(side: DragSide, e: MouseEvent) {
-  dragged = false
-  if (side === 'left' && leftCollapsed.value) return
   dragging = side
   dragStartX = e.clientX
   dragStartW = side === 'left' ? leftW.value : drawerW.value
@@ -81,18 +77,16 @@ function startDrag(side: DragSide, e: MouseEvent) {
   document.body.style.userSelect = 'none'
 }
 function toggleLeft() {
-  if (dragged) return
   leftCollapsed.value = !leftCollapsed.value
 }
 
 /* ---------------- 运行状态 / 团队模型 ---------------- */
-const inspectorOpen = ref(false)
+const statusOpen = ref(false)
 const status = ref<AgentStatus | null>(null)
 const catalog = ref<CatalogTeam[]>([])
 const errorText = ref('')
 
 const teamsStore = useTeamsStore()
-const rbac = useRbacStore()
 const ready = computed(() => !!status.value?.ready)
 const modelLabel = computed(() => status.value?.modelName || status.value?.model || '—')
 const modelEmpty = computed(() => !catalog.value.some((t) => t.models.length))
@@ -238,7 +232,6 @@ const activeSessionId = ref('')
 const messages = ref<ChatMessage[]>([])
 const loadingSession = ref(false)
 const bodyRef = ref<HTMLElement | null>(null)
-const historyOpen = ref(false)
 
 const currentSession = computed(() => sessions.value.find((s) => s.id === activeSessionId.value))
 const currentTitle = computed(() => currentSession.value?.title || '新的诊断')
@@ -283,13 +276,6 @@ async function selectSession(id: string) {
   const sess = sessions.value.find((s) => s.id === id)
   if (sess?.teamId) void refreshStatus(sess.teamId)
   await loadMessageList(id)
-}
-
-/* 历史会话弹窗: 继续任意可见会话 */
-function openHistorySession(s: SessionInfo) {
-  if (running.value) return
-  historyOpen.value = false
-  void selectSession(s.id)
 }
 
 async function refreshSessions() {
@@ -633,7 +619,7 @@ onMounted(async () => {
       const s = await createSession('', status.value?.teamId || undefined)
       sessions.value = [s]
     }
-    const first = sessions.value.find((s) => s.userId === rbac.currentUserId) ?? sessions.value[0]
+    const first = sessions.value[0]
     activeSessionId.value = first.id
     if (first.teamId) void refreshStatus(first.teamId)
     await loadMessageList(activeSessionId.value)
@@ -659,87 +645,103 @@ const phaseText = computed(() => {
   <div class="diag">
     <!-- ============ 左: 资料栏 ============ -->
     <aside v-if="!leftCollapsed" class="sidebar" :style="{ width: leftW + 'px' }">
-      <DiagnosisFileTree
-        ref="treeRef"
-        :nodes="fileNodes"
-        :loading="filesLoading"
-        :active-id="activeTabId"
-        @open="openFile"
-        @select="onTreeSelect"
-      >
-        <template #actions>
-          <button class="icon-btn" title="刷新文件列表" @click="loadFiles">
-            <Icon name="refresh" :size="13" />
+      <!-- 历史会话 -->
+      <section class="side-sec side-sec--history" :class="{ 'is-collapsed': !historyOpen }">
+        <header class="side-sec-head" @click="historyOpen = !historyOpen">
+          <FoldChevron :open="historyOpen" />
+          <span class="side-sec-title">历史会话</span>
+          <span v-if="sessions.length" class="side-count">{{ sessions.length }}</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" title="新建会话" @click.stop="addSession">
+            <Icon name="plus" :size="15" />
           </button>
-        </template>
-        <template #empty>
-          <div class="side-empty">
-            <p class="side-empty-t">还没有可分析的日志</p>
-            <p class="side-empty-s">上传日志后，勾选即可让助手直接读取原文。</p>
-            <router-link class="o-btn o-btn--sm" to="/teams">去上传日志</router-link>
-          </div>
-        </template>
-      </DiagnosisFileTree>
+        </header>
+        <SessionHistoryList
+          v-if="historyOpen"
+          :sessions="sessions"
+          :active-id="activeSessionId"
+          @select="selectSession($event.id)"
+          @changed="refreshSessions"
+        />
+      </section>
 
-      <div class="side-foot">
-        <button
-          class="side-status"
-          :title="ready ? '查看运行状态' : (status?.reason || '模型不可用')"
-          @click="ready ? (inspectorOpen = !inspectorOpen) : refreshStatus()"
+      <!-- 日志文件 -->
+      <section class="side-sec side-sec--files" :class="{ 'is-collapsed': !filesOpen }">
+        <header class="side-sec-head" @click="filesOpen = !filesOpen">
+          <FoldChevron :open="filesOpen" />
+          <span class="side-sec-title">日志文件</span>
+          <span v-if="attached.length" class="side-count">已选 {{ attached.length }}</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" title="刷新文件列表" @click.stop="loadFiles">
+            <Icon name="refresh" :size="15" />
+          </button>
+        </header>
+        <DiagnosisFileTree
+          v-if="filesOpen"
+          ref="treeRef"
+          :nodes="fileNodes"
+          :loading="filesLoading"
+          :active-id="activeTabId"
+          @open="openFile"
+          @select="onTreeSelect"
         >
+          <template #empty>
+            <div class="side-empty">
+              <p class="side-empty-t">还没有可分析的日志</p>
+              <p class="side-empty-s">上传日志后，勾选即可让助手直接读取原文。</p>
+              <router-link class="o-btn o-btn--sm" to="/teams">去上传日志</router-link>
+            </div>
+          </template>
+        </DiagnosisFileTree>
+      </section>
+
+      <!-- 会话统计 / 状态 -->
+      <section class="side-sec" :class="{ 'is-collapsed': !statusOpen }">
+        <header class="side-sec-head" @click="statusOpen = !statusOpen">
+          <FoldChevron :open="statusOpen" />
+          <span class="side-sec-title">会话统计</span>
           <span class="status-dot" :class="running ? 'is-run' : ready ? 'is-ok' : 'is-warn'"></span>
-          <span class="side-status-text">{{
+          <span class="side-state">{{
             running ? phaseText : ready ? '就绪' : (status?.reason || '模型不可用')
           }}</span>
           <span class="spacer"></span>
-          <span v-if="ready" class="o-mono side-tokens">{{ usageTotals.total.toLocaleString('en-US') }} tokens</span>
-          <FoldChevron v-if="ready" :open="inspectorOpen" />
-        </button>
-        <div v-if="inspectorOpen" class="inspector">
-          <DiagnosisInspector
-            :model-info="modelInfo"
-            :todos="todos"
-            :tools="inspectorTools"
-          />
-        </div>
-      </div>
+          <span class="o-mono side-tokens">{{ usageTotals.total.toLocaleString('en-US') }}</span>
+        </header>
+        <DiagnosisInspector
+          v-if="statusOpen"
+          :model-info="modelInfo"
+          :todos="todos"
+          :tools="inspectorTools"
+        />
+      </section>
     </aside>
-    <button
-      class="rail rail--left"
-      :class="{ 'is-collapsed': leftCollapsed }"
-      :title="leftCollapsed ? '展开资料栏' : '收起资料栏 · 沿此栏左右拖动可调整宽度'"
+    <div
+      v-if="!leftCollapsed"
+      class="resizer"
+      title="拖动调整侧栏宽度"
       @mousedown="startDrag('left', $event)"
-      @click="toggleLeft"
-    >
-      <span class="rail-btn">
-        <Icon :name="leftCollapsed ? 'chevron-right' : 'chevron-left'" :size="10" />
-      </span>
-    </button>
+    ></div>
 
     <!-- ============ 中: 诊断对话 ============ -->
     <main class="chat">
       <header class="chat-head">
         <div class="head-left">
-          <button class="icon-btn" title="历史会话" @click="historyOpen = true">
-            <Icon name="history" :size="14" />
+          <button
+            class="icon-btn"
+            :class="{ 'is-on': !leftCollapsed }"
+            :title="leftCollapsed ? '显示侧栏' : '隐藏侧栏'"
+            @click="toggleLeft"
+          >
+            <Icon name="sidebar" :size="15" />
           </button>
           <span class="session-title-text" :title="currentTitle">{{ currentTitle }}</span>
-          <span
-            v-if="running || ready"
-            class="pill"
-            :class="running ? 'pill--run' : 'pill--ok'"
-          >
-            {{ running ? '诊断中' : '就绪' }}
-          </span>
+          <span v-if="running" class="pill pill--run">诊断中</span>
         </div>
         <div class="head-actions">
           <button v-if="tabs.length" class="o-btn o-btn--sm log-btn" @click="reopenDrawer">
             <Icon name="file" :size="13" />
             <span class="log-label">日志原文</span>
             <span class="log-count">({{ tabs.length }})</span>
-          </button>
-          <button class="icon-btn" title="新建会话" @click="addSession">
-            <Icon name="plus" :size="13" />
           </button>
         </div>
       </header>
@@ -763,10 +765,10 @@ const phaseText = computed(() => {
           <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
             <div class="avatar" :class="`avatar--${m.role}`">{{ m.role === 'user' ? '我' : 'AI' }}</div>
             <div class="bubble">
-              <div class="msg-head">
-                <b>{{ m.role === 'user' ? '我' : '诊断助手' }}</b>
-                <span v-if="running && m.role === 'assistant' && m.id === 'live'" class="pill pill--run">生成中</span>
-              </div>
+              <span
+                v-if="running && m.role === 'assistant' && m.id === 'live'"
+                class="pill pill--run msg-live"
+              >生成中</span>
 
               <div v-if="fileBlocks(m).length" class="msg-files">
                 <span v-for="(b, i) in fileBlocks(m)" :key="i" class="msg-file o-mono">
@@ -887,12 +889,12 @@ const phaseText = computed(() => {
     </main>
 
     <!-- ============ 右: 按需展开的日志原文 ============ -->
-    <button
+    <div
       v-if="drawerVisible"
-      class="rail rail--drawer"
+      class="resizer resizer--drawer"
       title="拖动调整日志面板宽度"
       @mousedown="startDrag('drawer', $event)"
-    ></button>
+    ></div>
     <aside v-if="drawerVisible" class="drawer" :style="{ width: drawerW + 'px' }">
       <div class="drawer-head">
         <b>日志原文</b>
@@ -908,48 +910,18 @@ const phaseText = computed(() => {
         @attach="attachFromReader"
       />
     </aside>
-
-    <SessionHistoryDialog
-      :open="historyOpen"
-      :active-id="activeSessionId"
-      :teams="catalog"
-      @close="historyOpen = false"
-      @select="openHistorySession"
-      @changed="refreshSessions"
-    />
   </div>
 </template>
 
 <style scoped>
 .diag {
-  height: calc(100vh - 104px);
+  height: calc(100vh - var(--topbar-h));
   min-height: 380px;
   display: flex;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
   overflow: hidden;
 }
 
-/* ---------- 通用 pane ---------- */
-.pane {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-}
-.pane--left,
-.pane--right {
-  flex: 0 1 auto;
-  min-width: 150px;
-  background: var(--surface-3);
-}
-.pane--center {
-  flex: 1;
-  min-width: 260px;
-  background: var(--surface);
-}
 .icon-btn {
   flex: none;
   width: 24px;
@@ -971,101 +943,119 @@ const phaseText = computed(() => {
   border-color: var(--primary);
   color: var(--primary);
 }
-
-/* ---------- 左侧运行状态 ---------- */
-.pane-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
+.icon-btn.is-on {
+  border-color: transparent;
+  background: var(--primary-soft);
+  color: var(--primary);
 }
-.insp-dock {
-  flex: 0 0 44%;
+
+/* ---------- 侧栏拖拽分隔线 ---------- */
+.resizer {
+  flex: none;
+  width: 5px;
+  position: relative;
+  cursor: col-resize;
+  background: var(--surface-3);
+}
+.resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+  transition: background 0.12s;
+}
+.resizer:hover::after {
+  background: var(--primary);
+}
+
+/* ---------- 侧栏分区 ---------- */
+.sidebar {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.side-sec {
+  flex: 1 1 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border);
-  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
 }
-.insp-dock.is-collapsed {
+.side-sec.is-collapsed {
   flex: 0 0 auto;
 }
-.insp-head {
+.side-sec--history {
+  flex: 0 1 auto;
+  max-height: 38%;
+}
+.side-sec-head {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-bottom: 1px solid var(--border);
+  gap: 7px;
+  height: 38px;
+  padding: 0 8px 0 10px;
+  cursor: pointer;
+  user-select: none;
 }
-.insp-dock.is-collapsed .insp-head {
-  border-bottom: none;
+.side-sec-head:hover {
+  background: var(--surface);
 }
-.insp-head .pane-title {
+.side-sec-head :deep(.o-fold) {
+  width: 20px;
+  height: 20px;
+}
+.side-sec-head :deep(.o-fold svg) {
+  width: 11px;
+  height: 11px;
+}
+.side-sec-title {
   flex: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
 }
-.insp-mini {
-  flex: 1;
+.side-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 17px;
+}
+.side-state {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  text-align: right;
-}
-.insp-head .insp-toggle {
-  margin-left: auto;
-}
-
-/* ---------- 侧栏竖栏 ---------- */
-.rail {
-  flex: none;
-  width: 20px;
-  padding: 0;
-  border: none;
-  cursor: col-resize;
-  background: transparent;
+  font-size: 11.5px;
   color: var(--text-4);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s, color 0.15s;
 }
-.rail-btn {
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.7;
-  transition: opacity 0.15s, border-color 0.15s, color 0.15s;
+.side-tokens {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-4);
 }
-.rail.is-collapsed {
-  cursor: pointer;
+.side-sec-head .icon-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  opacity: 0.75;
 }
-.rail--left {
-  border-right: 1px solid var(--border);
-}
-.rail--right {
-  border-left: 1px solid var(--border);
-}
-.rail:hover {
-  color: var(--primary);
-}
-.rail:hover .rail-btn {
+.side-sec-head .icon-btn:hover {
+  background: var(--surface-3);
   opacity: 1;
-  border-color: var(--primary);
 }
 
-/* ---------- 右侧会话头 ---------- */
-.chat-head {
-  flex: none;
-  padding: 8px 10px 6px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-3);
-}
 .chat-tabs-row {
   display: flex;
   align-items: center;
@@ -1252,15 +1242,8 @@ const phaseText = computed(() => {
   background: var(--primary-soft);
   border-color: var(--primary-tint);
 }
-.msg-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.msg-live {
   margin-bottom: 6px;
-  flex-wrap: wrap;
-}
-.msg-head b {
-  font-size: 12px;
 }
 .msg-files {
   display: flex;
@@ -1596,35 +1579,6 @@ const phaseText = computed(() => {
 
 <style scoped>
 /* ---------- 对话优先布局 ---------- */
-.sidebar {
-  flex: 0 0 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-3);
-  overflow: hidden;
-}
-.side-foot {
-  flex: none;
-  border-top: 1px solid var(--border);
-}
-.side-status {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border: none;
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text-2);
-  cursor: pointer;
-  text-align: left;
-}
-.side-status:hover {
-  background: var(--surface);
-}
 .status-dot {
   flex: none;
   width: 7px;
@@ -1642,26 +1596,9 @@ const phaseText = computed(() => {
   background: var(--warning);
   animation: pulse 1s ease-in-out infinite;
 }
-.side-status-text {
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.side-tokens {
-  flex: none;
-  font-size: 11px;
-  color: var(--text-4);
-}
 .spacer {
   flex: 1;
   min-width: 0;
-}
-.inspector {
-  height: 270px;
-  display: flex;
-  min-height: 0;
-  border-top: 1px solid var(--border);
 }
 .side-empty {
   padding: 22px 16px;
@@ -1695,7 +1632,7 @@ const phaseText = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 9px 18px;
+  padding: 6px 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   position: relative;
@@ -1815,13 +1752,11 @@ const phaseText = computed(() => {
 }
 .chat-list {
   width: 100%;
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 20px 24px 28px;
+  padding: 14px 18px 18px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   min-height: 100%;
 }
 .msg--assistant .bubble {
@@ -1903,9 +1838,7 @@ const phaseText = computed(() => {
 .composer-inner {
   position: relative;
   width: 100%;
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 12px 24px 16px;
+  padding: 10px 18px 12px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -1916,18 +1849,12 @@ const phaseText = computed(() => {
 }
 
 /* ---------- 日志原文抽屉 ---------- */
-.rail--drawer {
-  width: 7px;
-  background: var(--surface-3);
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
+.resizer--drawer {
+  background: var(--surface);
 }
-.rail--drawer::after {
-  content: '';
-  width: 3px;
-  height: 34px;
-  border-radius: 2px;
-  background: var(--border-strong);
+.resizer--drawer::after {
+  left: auto;
+  right: 0;
 }
 .drawer {
   flex: 0 1 auto;
@@ -1936,7 +1863,6 @@ const phaseText = computed(() => {
   flex-direction: column;
   min-height: 0;
   background: var(--surface);
-  border-left: 1px solid var(--border);
 }
 .drawer-head {
   flex: none;
@@ -1978,7 +1904,7 @@ const phaseText = computed(() => {
     border-radius: 0;
     box-shadow: -14px 0 32px rgba(15, 23, 42, 0.16);
   }
-  .rail--drawer {
+  .resizer--drawer {
     display: none;
   }
 }
