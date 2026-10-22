@@ -11,9 +11,13 @@ import { fmtTime, sevBadgeClass, sevLabel, type Severity } from '@/parser/types'
 import { TEAM_ROLES, teamRoleById } from '@/rbac/permissions'
 import { apiError } from '@/api/http'
 import type { EChartsOption } from 'echarts'
+import Icon from '@/components/Icon.vue'
 import ChartBase from '@/components/ChartBase.vue'
 import TeamRolesPanel from '@/components/TeamRolesPanel.vue'
 import TeamAuditPanel from '@/components/TeamAuditPanel.vue'
+import TeamLlmPanel from '@/components/team/TeamLlmPanel.vue'
+import TeamUsagePanel from '@/components/team/TeamUsagePanel.vue'
+import RulesView from '@/views/RulesView.vue'
 
 const route = useRoute()
 const rr = useRouter()
@@ -47,9 +51,22 @@ function parserName(type: string) {
   return PARSER_DEFS[type]?.name ?? type
 }
 
-const TAB_KEYS = ['tasks', 'members', 'roles', 'audit'] as const
+const TAB_KEYS = ['tasks', 'members', 'rules', 'llm', 'usage', 'audit'] as const
 type TabKey = (typeof TAB_KEYS)[number]
 const tab = ref<TabKey>((TAB_KEYS as readonly string[]).includes(route.query.tab as string) ? (route.query.tab as TabKey) : 'tasks')
+
+/* 页签权限：团队加载后将无权限的外部带参页签回落到任务 */
+const TAB_PERM: Partial<Record<TabKey, string>> = {
+  rules: 'rule:view',
+  llm: 'llm:manage',
+  usage: 'llm:usage',
+  audit: 'audit:view',
+}
+watch(team, (t) => {
+  if (!t) return
+  const perm = TAB_PERM[tab.value]
+  if (perm && !can(perm)) tab.value = 'tasks'
+})
 
 /* ---------- 任务 Tab：团队任务（服务端分页） ---------- */
 const typeFilter = ref('')
@@ -208,6 +225,7 @@ async function resolveApply(id: number, accept: boolean) {
   }
 }
 
+const showRoles = ref(false)
 const showInvite = ref(false)
 const inviteForm = ref({ userId: '' as number | '', roleId: 'member' })
 const inviteErr = ref('')
@@ -256,7 +274,7 @@ async function revoke(userId: number, name: string) {
 
 <template>
   <div v-if="loadErr" class="o-empty o-card">
-    <div class="icon">⚠️</div>
+    <div class="icon"><Icon name="alert" :size="28" /></div>
     <div>{{ loadErr }}</div>
   </div>
   <template v-else-if="team">
@@ -277,10 +295,16 @@ async function revoke(userId: number, name: string) {
         任务 <span class="count">{{ team.taskCount }}</span>
       </button>
       <button class="o-page-nav__item" :class="{ active: tab === 'members' }" @click="tab = 'members'">
-        团队 <span class="count">{{ team.memberCount }}</span>
+        成员 <span class="count">{{ team.memberCount }}</span>
       </button>
-      <button class="o-page-nav__item" :class="{ active: tab === 'roles' }" @click="tab = 'roles'">
-        角色 <span class="count">{{ TEAM_ROLES.length }}</span>
+      <button v-if="can('rule:view')" class="o-page-nav__item" :class="{ active: tab === 'rules' }" @click="tab = 'rules'">
+        规则集
+      </button>
+      <button v-if="can('llm:manage')" class="o-page-nav__item" :class="{ active: tab === 'llm' }" @click="tab = 'llm'">
+        大模型
+      </button>
+      <button v-if="can('llm:usage')" class="o-page-nav__item" :class="{ active: tab === 'usage' }" @click="tab = 'usage'">
+        用量
       </button>
       <button v-if="can('audit:view')" class="o-page-nav__item" :class="{ active: tab === 'audit' }" @click="tab = 'audit'">
         审计
@@ -317,7 +341,7 @@ async function revoke(userId: number, name: string) {
       </div>
 
       <div v-if="!pagedTasks.length && !tasksLoading" class="o-empty">
-        <div class="icon">📭</div>
+        <div class="icon"><Icon name="search" :size="28" /></div>
         <div>暂无任务</div>
         <div class="hint">点击右上角按钮创建第一个解析任务</div>
       </div>
@@ -335,7 +359,7 @@ async function revoke(userId: number, name: string) {
               <tr>
                 <td>
                   <button class="o-expand-btn" :title="expanded.includes(t.id) ? '收起明细' : '展开明细'" @click="toggleExpand(t.id)">
-                    {{ expanded.includes(t.id) ? '▾' : '▸' }}
+                    <Icon :name="expanded.includes(t.id) ? 'caret-down' : 'caret-right'" :size="13" />
                   </button>
                 </td>
                 <td>
@@ -382,7 +406,7 @@ async function revoke(userId: number, name: string) {
                       </template>
                       <div v-else class="o-mono o-text-3">暂无错误码统计</div>
                       <router-link class="o-btn o-btn--sm" :to="`/tasks/${t.id}`" style="margin-top: 10px; width: fit-content">
-                        查看完整分析 →
+                        <span class="btn-ico">查看完整分析<Icon name="arrow-right" :size="12" /></span>
                       </router-link>
                     </div>
                   </div>
@@ -406,7 +430,7 @@ async function revoke(userId: number, name: string) {
       <div v-if="pendingApplies.length && isApprover" class="o-card apply-card">
         <div class="o-card__title">
           待审批申请
-          <span class="hint">{{ pendingApplies.length }} 条 · 也可在右上角 🔔 通知中心处理</span>
+          <span class="hint">{{ pendingApplies.length }} 条 · 也可在右上角通知中心处理</span>
         </div>
         <div v-if="memberErr" class="o-badge o-badge--danger" style="margin-bottom: 8px">{{ memberErr }}</div>
         <div v-for="n in pendingApplies" :key="n.id" class="apply-row">
@@ -423,7 +447,8 @@ async function revoke(userId: number, name: string) {
 
       <div class="o-operate-bar">
         <div class="o-operate-left">
-          <span class="o-text-3" style="font-size: 13px">团队内固定两角色：管理员 / 普通用户，详见「角色」页签</span>
+          <span class="o-text-3" style="font-size: 13px">团队内固定两角色：管理员 / 普通用户</span>
+          <button class="o-btn o-btn--sm o-btn--text" @click="showRoles = true">权限说明</button>
         </div>
         <div class="o-operate-right">
           <button v-if="can('team:invite')" class="o-btn o-btn--primary" @click="showInvite = true">+ 邀请成员</button>
@@ -437,7 +462,7 @@ async function revoke(userId: number, name: string) {
           </thead>
           <tbody>
             <tr v-if="!team.members.length">
-              <td colspan="5"><div class="o-empty">📭 团队暂无成员</div></td>
+              <td colspan="5"><div class="o-empty">团队暂无成员</div></td>
             </tr>
             <tr v-for="m in team.members" :key="m.userId">
               <td>
@@ -479,9 +504,19 @@ async function revoke(userId: number, name: string) {
       </div>
     </section>
 
-    <!-- ====== 角色 Tab ====== -->
-    <section v-else-if="tab === 'roles'">
-      <TeamRolesPanel />
+    <!-- ====== 规则集 Tab ====== -->
+    <section v-else-if="tab === 'rules'">
+      <RulesView :team-id="team.id" embedded />
+    </section>
+
+    <!-- ====== 大模型 Tab ====== -->
+    <section v-else-if="tab === 'llm'">
+      <TeamLlmPanel :team-id="team.id" />
+    </section>
+
+    <!-- ====== 用量 Tab ====== -->
+    <section v-else-if="tab === 'usage'">
+      <TeamUsagePanel :team-id="team.id" :can-view-all="can('llm:usage')" />
     </section>
 
     <!-- ====== 审计 Tab ====== -->
@@ -509,6 +544,17 @@ async function revoke(userId: number, name: string) {
       </div>
     </div>
 
+    <!-- 角色权限说明弹窗（成员管理中按需查看） -->
+    <div v-if="showRoles" class="o-modal-mask" @click.self="showRoles = false">
+      <div class="o-modal role-modal">
+        <div class="o-modal__title">团队角色与权限</div>
+        <TeamRolesPanel />
+        <div class="o-modal__foot">
+          <button class="o-btn o-btn--primary" @click="showRoles = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 邀请成员弹窗（发出邀请通知，对方在右上角确认） -->
     <div v-if="showInvite" class="o-modal-mask" @click.self="showInvite = false">
       <div class="o-modal">
@@ -527,7 +573,7 @@ async function revoke(userId: number, name: string) {
           </select>
         </div>
         <div v-if="inviteErr" class="o-badge o-badge--danger">{{ inviteErr }}</div>
-        <div class="o-mono o-text-3" style="font-size: 12px">对方将在右上角 🔔 通知中心收到邀请，确认后加入</div>
+        <div class="o-mono o-text-3" style="font-size: 12px">对方将在右上角通知中心收到邀请，确认后加入</div>
         <div class="o-modal__foot">
           <button class="o-btn" @click="showInvite = false">取消</button>
           <button class="o-btn o-btn--primary" @click="invite">发送邀请</button>
@@ -539,6 +585,11 @@ async function revoke(userId: number, name: string) {
 </template>
 
 <style scoped>
+.btn-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .team-head-bar {
   display: flex;
   align-items: flex-end;
@@ -631,4 +682,8 @@ async function revoke(userId: number, name: string) {
   height: 30px;
   font-size: 13px;
 }
+.role-modal {
+  width: 860px;
+}
+
 </style>
