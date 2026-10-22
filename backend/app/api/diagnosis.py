@@ -619,3 +619,405 @@ async def update_config(body: AgentSelectionIn,
     await db.commit()
     await db.refresh(cfg)
     return _config_status(cfg, cred)
+
+
+# ---------- 会话 ----------
+@router.get("/sessions")
+async def list_sessions(db: Annotated[AsyncSession, Depends(get_db)],
+                        user: Annotated[User, Depends(get_current_user)],
+                        team_id: int | None = None,
+                        mine: bool = False,
+                        limit: int = Query(100, ge=1, le=200)):
+    """历史会话: 我的会话 + 我所在团队 (llm:use) 的会话, 按更新时间倒序."""
+    admin = is_platform_admin(user)
+    roles: dict[int, str] = {}
+    if not admin:
+        roles = {tid: role for tid, role in (await db.execute(
+            select(TeamMember.team_id, TeamMember.role).where(
+                TeamMember.user_id == user.id))).all()}
+    query = select(DiagnosisSession)
+    if not admin:
+        conds = [DiagnosisSession.user_id == user.id]
+        readable = [tid for tid, role in roles.items() if team_role_has_perm(role, "llm:use")]
+        if readable:
+            conds.append(and_(DiagnosisSession.team_id.in_(readable),
+                              DiagnosisSession.team_id.is_not(None)))
+        query = query.where(or_(*conds))
+    if mine:
+        query = query.where(DiagnosisSession.user_id == user.id)
+    if team_id is not None:
+        query = query.where(DiagnosisSession.team_id == team_id)
+    rows = list((await db.execute(
+        query.order_by(DiagnosisSession.updated_at.desc()).limit(limit))).scalars().all())
+    if not rows:
+        return []
+
+    ids = [s.id for s in rows]
+    team_ids = {s.team_id for s in rows if s.team_id}
+    owner_ids = {s.user_id for s in rows}
+    teams = {t.id: t.name for t in (await db.execute(
+        select(Team).where(Team.id.in_(team_ids)))).scalars().all()} if team_ids else {}
+    owners = {u.id: (u.display_name or u.username) for u in (await db.execute(
+        select(User).where(User.id.in_(owner_ids)))).scalars().all()}
+    counts = {sid: n for sid, n in (await db.execute(
+        select(DiagnosisMessage.session_id, func.count(DiagnosisMessage.id))
+        .where(DiagnosisMessage.session_id.in_(ids))
+        .group_by(DiagnosisMessage.session_id))).all()}
+
+    out = []
+    for s in rows:
+        manageable = admin or s.user_id == user.id or (
+            s.team_id is not None
+            and team_role_has_perm(roles.get(s.team_id, ""), "llm:manage"))
+        out.append(_session_info(
+            s, team_name=teams.get(s.team_id or 0, ""),
+            owner_name=owners.get(s.user_id, ""),
+            can_manage=manageable, message_count=counts.get(s.id, 0)))
+    return out
+
+
+@router.post("/sessions")
+async def create_session(body: SessionCreate,
+                         db: Annotated[AsyncSession, Depends(get_db)],
+                         user: Annotated[User, Depends(get_current_user)]):
+    status_info = await _team_status(db, user, body.team_id)
+    team_id = int(status_info.get("teamId") or 0) or None
+    s = DiagnosisSession(
+        user_id=user.id, title=(body.title.strip() or "新的诊断"),
+        team_id=team_id, provider=status_info.get("provider") or "",
+        model=status_info.get("model") or "",
+        model_name=status_info.get("modelName") or "",
+        reasoning=status_info.get("reasoning") or "",
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return _session_info(s)
+
+
+@router.patch("/sessions/{session_id}")
+async def rename_session(session_id: uuid.UUID, body: SessionPatch,
+                         db: Annotated[AsyncSession, Depends(get_db)],
+                         user: Annotated[User, Depends(get_current_user)]):
+    """重命名会话 (创建者/团队管理员)."""
+    s = await _load_session(db, user, session_id, manage=True)
+    s.title = body.title.strip()
+    s.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(s)
+    return _session_info(s)
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: uuid.UUID,
+                         db: Annotated[AsyncSession, Depends(get_db)],
+                         user: Annotated[User, Depends(get_current_user)]):
+    s = await _load_session(db, user, session_id, manage=True)
+    await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id == s.id))
+    await db.delete(s)
+    await db.commit()
+    return {"detail": "会话已删除"}
+
+
+@router.get("/sessions/{session_id}/messages")
+async def list_messages(session_id: uuid.UUID,
+                        db: Annotated[AsyncSession, Depends(get_db)],
+                        user: Annotated[User, Depends(get_current_user)]):
+    await _load_session(db, user, session_id)
+    rows = (await db.execute(
+        select(DiagnosisMessage).where(DiagnosisMessage.session_id == session_id)
+        .order_by(DiagnosisMessage.id.asc()).limit(500))).scalars().all()
+    return [_message_info(m) for m in rows]
+
+
+@router.post("/sessions/{session_id}/messages")
+async def send_message(session_id: uuid.UUID, body: SendMessage,
+                       db: Annotated[AsyncSession, Depends(get_db)],
+                       user: Annotated[User, Depends(get_current_user)]):
+    """发送一轮问题, 以 SSE 流式返回智能体事件."""
+    sess = await _load_session(db, user, session_id)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "问题不能为空")
+
+    attachments = [await _attachment(db, user, ref) for ref in body.files]
+
+    team_id = sess.team_id
+    model_row_id = body.model_row_id
+    if model_row_id:
+        row = await db.get(TeamLlmModel, model_row_id)
+        if row is not None:
+            team_id = row.team_id
+    if model_row_id is None and team_id and sess.model:
+        # 继续历史会话: 未显式换模型时沿用该会话上次的模型
+        row = (await db.execute(select(TeamLlmModel).where(
+            TeamLlmModel.team_id == team_id,
+            TeamLlmModel.model_id == sess.model,
+            TeamLlmModel.enabled.is_(True),
+        ).limit(1))).scalar_one_or_none()
+        if row is not None:
+            model_row_id = row.id
+    if team_id is None:
+        status_info = await _team_status(db, user)
+        team_id = int(status_info.get("teamId") or 0) or None
+    resolved = await resolve_team_model(db, user, team_id, model_row_id) \
+        if team_id else None
+    provider = resolved.provider if resolved and resolved.ok else ""
+    model = resolved.model if resolved and resolved.ok else ""
+    model_name = resolved.model_name if resolved and resolved.ok else ""
+    key = resolved.api_key if resolved and resolved.ok else ""
+    api_base = resolved.api_base if resolved and resolved.ok else ""
+    protocol = resolved.protocol if resolved and resolved.ok else ""
+    provided = (body.reasoning or "").strip().lower()
+    reasoning = provided if provided in THINKING_LEVELS else ""
+    sel = await _team_selection(db, user, team_id) if team_id else None
+    if (not reasoning and resolved and resolved.ok
+            and sess.model == resolved.model and sess.reasoning):
+        reasoning = sess.reasoning   # 继续历史会话: 沿用当时的推理强度
+    if not reasoning and sel is not None:
+        reasoning = sel.reasoning or ""
+    if body.model_row_id and team_id and resolved and resolved.ok:
+        sel = await _team_selection(db, user, team_id)
+        if sel is None:
+            sel = DiagnosisUserTeamSelection(user_id=user.id, team_id=team_id)
+        sel.model_row_id = resolved.model_row_id
+        sel.reasoning = reasoning
+        sel.updated_at = datetime.now(timezone.utc)
+        db.add(sel)
+
+    if sess.title in ("", "新的诊断"):
+        sess.title = text[:24]
+    if resolved and resolved.ok:
+        if sess.team_id and sess.model and sess.model != resolved.model:
+            sess.dsh_session_id = ""
+        sess.team_id = resolved.team_id
+        sess.provider = resolved.provider
+        sess.model = resolved.model
+        sess.model_name = resolved.model_name
+        sess.reasoning = reasoning
+    sess.updated_at = datetime.now(timezone.utc)
+
+    user_msg = DiagnosisMessage(
+        session_id=sess.id, role="user",
+        blocks=[{"kind": "text", "text": text},
+                *[{"kind": "file", "name": a.name, "taskId": a.task_id} for a in attachments]],
+    )
+    db.add(user_msg)
+    session_uuid = sess.id
+    initial_dsh_sid = sess.dsh_session_id
+    await db.commit()
+    await db.refresh(user_msg)
+
+    ready, reason = runtime_ready()
+    if not ready:
+        block_reason = reason
+    elif resolved is None or not resolved.ok:
+        block_reason = resolved.error if resolved else "请先在团队「大模型」中启用模型"
+    elif not key:
+        block_reason = "团队模型凭据不可用, 请团队管理员重新连接供应商"
+    else:
+        block_reason = ""
+    if block_reason:
+        err_msg = DiagnosisMessage(session_id=sess.id, role="assistant", blocks=[],
+                                   error=block_reason)
+        db.add(err_msg)
+        await db.commit()
+        await db.refresh(err_msg)
+
+        async def not_ready():
+            yield {"event": "error", "data": json.dumps({"message": block_reason},
+                                                        ensure_ascii=False)}
+            yield {"event": "done", "data": json.dumps(
+                {"messageId": err_msg.id, "error": block_reason}, ensure_ascii=False)}
+
+        return EventSourceResponse(not_ready())
+
+    async def generator():
+        blocks: list[dict] = []
+        text_block: dict | None = None
+        thought_block: dict | None = None
+        tools: dict[str, dict] = {}
+        plan_block: dict | None = None
+        final_usage: dict = {}
+        metrics: dict = {}
+        dsh_sid = initial_dsh_sid
+        error = ""
+        started = time.monotonic()
+
+        yield {"event": "phase", "data": json.dumps({"phase": "preparing"},
+                                                    ensure_ascii=False)}
+
+        async for ev in stream_prompt(session_id=str(session_uuid), dsh_session_id=dsh_sid,
+                                      text=text, attachments=attachments,
+                                      api_key=key, model=model, provider=provider,
+                                      model_name=model_name,
+                                      api_base=api_base, protocol=protocol,
+                                      reasoning=reasoning):
+            etype = ev.get("type")
+            if etype in ("text", "thought"):
+                target = text_block if etype == "text" else thought_block
+                if target is None:
+                    target = {"kind": etype, "text": ""}
+                    blocks.append(target)
+                    if etype == "text":
+                        text_block = target
+                    else:
+                        thought_block = target
+                target["text"] += ev.get("text", "")
+                yield {"event": etype, "data": json.dumps(
+                    {"text": ev.get("text", "")}, ensure_ascii=False)}
+            elif etype == "tool":
+                tool_id = ev.get("id") or f"t{len(tools) + 1}"
+                block = tools.get(tool_id)
+                if block is None:
+                    block = {"kind": "tool", "id": tool_id, "name": "", "title": "",
+                             "toolKind": "", "status": "running", "input": "", "output": ""}
+                    tools[tool_id] = block
+                    blocks.append(block)
+                for field in ("title", "toolKind", "status", "input", "output"):
+                    if ev.get(field):
+                        block[field] = ev[field]
+                block["name"] = ev.get("title") or block.get("name") or ev.get("toolKind") or "工具"
+                if block["status"] in ("completed", "failed"):
+                    block["status"] = "done" if block["status"] == "completed" else "failed"
+                yield {"event": "tool", "data": json.dumps(block, ensure_ascii=False)}
+            elif etype == "plan":
+                if plan_block is None:
+                    plan_block = {"kind": "plan", "entries": []}
+                    blocks.append(plan_block)
+                plan_block["entries"] = ev.get("entries", [])
+                yield {"event": "plan", "data": json.dumps(plan_block, ensure_ascii=False)}
+            elif etype == "commands":
+                yield {"event": "commands", "data": json.dumps(
+                    {"names": ev.get("names", [])}, ensure_ascii=False)}
+            elif etype == "phase":
+                yield {"event": "phase", "data": json.dumps({"phase": ev.get("phase")},
+                                                            ensure_ascii=False)}
+            elif etype == "session":
+                dsh_sid = ev.get("dshSessionId") or dsh_sid
+                yield {"event": "session", "data": json.dumps(
+                    {"dshSessionId": dsh_sid}, ensure_ascii=False)}
+            elif etype == "usage":
+                final_usage.update(ev.get("usage") or {})
+                yield {"event": "usage", "data": json.dumps(
+                    {"usage": ev.get("usage") or {}}, ensure_ascii=False)}
+            elif etype == "done":
+                dsh_sid = ev.get("dshSessionId") or dsh_sid
+                final_usage.update(ev.get("usage") or {})
+                metrics = ev.get("metrics") or {}
+                break
+            elif etype == "error":
+                error = ev.get("message") or "智能体运行失败"
+                yield {"event": "error", "data": json.dumps(
+                    {"message": error}, ensure_ascii=False)}
+                break
+
+        am = DiagnosisMessage(session_id=session_uuid, role="assistant", blocks=blocks,
+                              usage=final_usage, error=error)
+        async with AsyncSessionLocal() as stream_db:
+            stream_db.add(am)
+            row = await stream_db.get(DiagnosisSession, session_uuid)
+            if row is not None:
+                row.dsh_session_id = dsh_sid
+                row.model = model
+                row.provider = provider
+                row.model_name = model_name
+                row.reasoning = reasoning
+                row.updated_at = datetime.now(timezone.utc)
+            await stream_db.commit()
+            await stream_db.refresh(am)
+            if resolved is not None and resolved.ok:
+                stream_db.add(LlmUsageEvent(
+                    session_id=str(session_uuid), message_id=am.id,
+                    team_id=resolved.team_id, user_id=user.id,
+                    provider=provider, model=model, model_name=model_name,
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    status="error" if error else "ok",
+                    raw={"usage": final_usage, "metrics": metrics},
+                    **normalize_usage(final_usage),
+                ))
+                await stream_db.commit()
+        if dsh_sid:
+            yield {"event": "session", "data": json.dumps(
+                {"dshSessionId": dsh_sid}, ensure_ascii=False)}
+        yield {"event": "usage", "data": json.dumps({"usage": final_usage},
+                                                    ensure_ascii=False)}
+        yield {"event": "done", "data": json.dumps(
+            {"messageId": am.id, "usage": final_usage, "error": error},
+            ensure_ascii=False)}
+
+    return EventSourceResponse(generator())
+
+
+# ---------- 文件 ----------
+@router.get("/files")
+async def file_tree(db: Annotated[AsyncSession, Depends(get_db)],
+                    user: Annotated[User, Depends(get_current_user)]):
+    tasks = await _visible_tasks(db, user)
+    nodes = []
+    for task in tasks:
+        files = _files_of(task)
+        if not files:
+            continue
+        children = [{
+            "id": f"{task.id}|{rel}",
+            "name": path.name,
+            "path": str(path),
+            "size": path.stat().st_size,
+            "kind": "file",
+        } for rel, path in files]
+        created = task.created_at
+        if created is not None and created.tzinfo is not None:
+            created = created.astimezone(ZoneInfo("Asia/Shanghai"))
+        nodes.append({
+            "id": f"task-{task.id}",
+            "name": task.name or task.filename or "未命名任务",
+            "meta": f"{len(children)} 个文件 · {created:%m-%d %H:%M}" if created else "",
+            "kind": "dir",
+            "children": children,
+        })
+    return nodes
+
+
+@router.get("/files/content")
+async def file_content(file_id: str = Query(...),
+                       db: AsyncSession = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    try:
+        task_id, rel = file_id.split("|", 1)
+        task_uuid = uuid.UUID(task_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "非法文件标识")
+    task = (await db.execute(select(Task).where(Task.id == task_uuid))).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    if task.user_id != user.id and not is_platform_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "无权读取该文件")
+    path = _resolve_file(task, rel)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在")
+
+    ext = path.suffix.lower()
+    size = path.stat().st_size
+    if ext in ARCHIVE_EXT:
+        return {"kind": "notice", "lang": "text", "size": size,
+                "content": f"该文件是压缩包（{path.name}），无法直接预览。\n"
+                           f"可先解压后上传具体日志，或直接把整个日志包上传到平台。"}
+    if ext in IMAGE_EXT and size <= 4 * 1024 * 1024:
+        data = base64.b64encode(path.read_bytes()).decode()
+        mime = "image/svg+xml" if ext == ".svg" else f"image/{ext.lstrip('.')}"
+        return {"kind": "image", "content": f"data:{mime};base64,{data}", "size": size}
+
+    limit = settings.AGENT_STREAM_MAX_BYTES
+    with open(path, "rb") as f:
+        raw = f.read(limit)
+    if b"\x00" in raw[:4096]:
+        return {"kind": "notice", "lang": "text", "size": size,
+                "content": f"该文件是二进制文件（{path.name}），无法直接预览。"}
+    content = raw.decode("utf-8", errors="replace")
+    lang = "json" if ext in (".json", ".jsonl") else "log" if ext in (".log", ".out", ".err") else "text"
+    header = ""
+    if size > limit:
+        header = f"# 文件较大，仅显示前 {limit // 1024 // 1024} MB（共 {size // 1024 // 1024} MB）\n"
+    return {"kind": "text", "content": header + content, "lang": lang, "size": size,
+            "truncated": size > limit}
