@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { get } from '@/api/http'
+import { get, apiError } from '@/api/http'
 import { useRbacStore } from '@/stores/rbac'
 import { useTeamsStore } from '@/stores/teams'
-import { teamRoleById } from '@/rbac/permissions'
 import { PARSER_DEFS } from '@/parser/parsers'
 import { fmtTime } from '@/parser/types'
 import type { AnalyzeTask } from '@/stores/tasks'
@@ -20,6 +19,7 @@ const denied = computed(() => (route.query.denied as string) || '')
 
 interface DashboardData {
   tasks: number
+  taskTypes: Record<string, number>
   kpi: { total: number; critical: number; error: number; warning: number }
   recentTasks: AnalyzeTask[]
   topCodes: { name: string; value: number }[]
@@ -28,26 +28,49 @@ interface DashboardData {
 const data = ref<DashboardData | null>(null)
 const loadErr = ref('')
 const loading = ref(false)
+const ready = ref(false)
+
+/* 工作台与顶栏当前团队同作用域 */
+const team = computed(() => teamsStore.activeTeam)
+const teamId = computed(() => teamsStore.activeTeamId)
+const availableTeams = computed(() =>
+  rbac.isPlatformAdmin
+    ? teamsStore.teams
+    : teamsStore.teams.filter((t) => !!teamsStore.myRoleOf(t.id)),
+)
+
+function ensureActiveTeam() {
+  const list = availableTeams.value
+  if (!list.length) {
+    teamsStore.setActiveTeam(null)
+    return
+  }
+  if (!list.some((t) => t.id === teamsStore.activeTeamId)) teamsStore.setActiveTeam(list[0].id)
+}
 
 async function load() {
+  if (!teamId.value) return
   loading.value = true
   loadErr.value = ''
   try {
-    data.value = await get<DashboardData>('/dashboard')
-  } catch (e: any) {
-    loadErr.value = e?.response?.data?.detail || '加载工作台数据失败'
+    data.value = await get<DashboardData>('/dashboard', { team_id: teamId.value })
+  } catch (e) {
+    loadErr.value = apiError(e)
   } finally {
     loading.value = false
   }
 }
-onMounted(() => {
-  load()
-  teamsStore.fetchTeams().catch(() => {})
+
+watch(() => teamsStore.activeTeamId, () => {
+  if (ready.value) load()
 })
 
-/* 我加入的团队 (工作台快捷入口) */
-const myTeams = computed(() => teamsStore.teams.filter((t) => !!teamsStore.myRoleOf(t.id)))
-const roleName = (id: number) => teamRoleById(teamsStore.myRoleOf(id) ?? '')?.name ?? ''
+onMounted(async () => {
+  if (!teamsStore.teams.length) await teamsStore.fetchTeams().catch(() => {})
+  ensureActiveTeam()
+  ready.value = true
+  await load()
+})
 
 const codeChart = computed<EChartsOption>(() => {
   const top = data.value?.topCodes ?? []
@@ -68,8 +91,34 @@ const codeChart = computed<EChartsOption>(() => {
   }
 })
 
-function parserName(type: string) {
-  return PARSER_DEFS[type]?.name ?? type
+function taskTypeLabel(t: AnalyzeTask): string {
+  if (t.type === 'inspection') return '智能巡检'
+  if (t.type === 'diagnosis') return '智能诊断'
+  return PARSER_DEFS[t.parserType]?.name ?? '解析任务'
+}
+function taskTypeBadge(t: AnalyzeTask): string {
+  if (t.type === 'inspection') return 'o-badge--brand'
+  if (t.type === 'diagnosis') return 'o-badge--grey'
+  return 'o-badge--outline'
+}
+function resultLink(t: AnalyzeTask): string {
+  return t.type === 'inspection' ? `/inspection/${t.id}` : `/tasks/${t.id}`
+}
+
+const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending: { label: '排队中', cls: 'o-badge--outline' },
+  running: { label: '执行中', cls: 'o-badge--brand' },
+  done: { label: '已完成', cls: 'o-badge--success' },
+  failed: { label: '失败', cls: 'o-badge--danger' },
+  cancelled: { label: '已取消', cls: 'o-badge--grey' },
+  interrupted: { label: '已中断', cls: 'o-badge--grey' },
+}
+function statusBadge(s: string) {
+  return STATUS_BADGE[s] ?? { label: s, cls: 'o-badge--outline' }
+}
+function statusLabel(t: AnalyzeTask): string {
+  const badge = statusBadge(t.status)
+  return t.status === 'running' ? `${badge.label} ${t.progress}%` : badge.label
 }
 </script>
 
@@ -79,80 +128,66 @@ function parserName(type: string) {
   </div>
 
   <div class="o-page-head">
-    <div>
-      <h2>工作台</h2>
-      <div class="sub">欢迎，{{ rbac.currentUser?.name }} —— 以下是我的团队范围内解析任务的汇总视图</div>
-    </div>
-    <button class="o-btn o-btn--sm" :disabled="loading" @click="load">
+    <h2>
+      工作台
+      <span v-if="team" class="o-badge o-badge--outline">{{ team.name }}</span>
+    </h2>
+    <button class="o-btn o-btn--sm" :disabled="loading || !teamId" @click="load">
       <span class="btn-ico"><Icon name="refresh" :size="13" />{{ loading ? '刷新中…' : '刷新' }}</span>
     </button>
   </div>
 
-  <div v-if="loadErr" class="o-empty o-card">
+  <div v-if="!teamId" class="o-empty o-card">
+    <div class="icon"><Icon name="users" :size="28" /></div>
+    <div>尚未进入团队</div>
+    <button class="o-btn o-btn--primary" @click="teamsStore.openTeamBrowser()">浏览团队</button>
+  </div>
+
+  <div v-else-if="loadErr" class="o-empty o-card">
     <div class="icon"><Icon name="alert" :size="28" /></div>
     <div>{{ loadErr }}</div>
   </div>
 
   <template v-else-if="data">
     <div class="o-kpis" style="margin-bottom: 20px">
-      <div class="o-kpi"><b>{{ data.tasks }}</b><span>解析任务</span></div>
+      <div class="o-kpi">
+        <b>{{ data.tasks }}</b>
+        <span>任务总数 · 巡检 {{ data.taskTypes.inspection ?? 0 }} / 解析 {{ data.taskTypes.analyze ?? 0 }} / 诊断 {{ data.taskTypes.diagnosis ?? 0 }}</span>
+      </div>
       <div class="o-kpi"><b>{{ data.kpi.total }}</b><span>日志事件总量</span></div>
       <div class="o-kpi"><b style="color: var(--danger)">{{ data.kpi.critical }}</b><span>致命事件</span></div>
       <div class="o-kpi"><b style="color: var(--warning)">{{ data.kpi.error }}</b><span>错误事件</span></div>
     </div>
 
-    <div class="o-card" style="margin-bottom: 20px">
-      <div class="o-card__title">
-        我的团队
-        <span class="o-mono o-text-3">{{ myTeams.length }} 个</span>
-        <router-link class="o-btn o-btn--text" to="/teams" style="margin-left: auto">团队管理 →</router-link>
-      </div>
-      <div v-if="myTeams.length" class="team-chips">
-        <router-link v-for="t in myTeams" :key="t.id" class="team-chip" :to="`/teams/${t.id}`">
-          <div class="team-chip__head">
-            <span class="team-chip__name" :title="t.name">{{ t.name }}</span>
-            <span class="o-badge o-badge--brand">{{ roleName(t.id) }}</span>
-          </div>
-          <div class="o-mono o-text-3 team-chip__sub">
-            {{ t.memberCount }} 成员 · {{ t.taskCount }} 任务
-          </div>
-        </router-link>
-      </div>
-      <div v-else class="o-empty" style="padding: 28px 0">
-        <div class="icon">👥</div>
-        <div>你还没有加入任何团队 —— <router-link to="/teams">去创建或申请加入 →</router-link></div>
-      </div>
-    </div>
-
     <div class="grid">
       <div class="o-card">
-        <div class="o-card__title">全局错误码 Top 8<span class="o-mono o-text-3">我的团队合并</span></div>
+        <div class="o-card__title">错误码 Top 8</div>
         <ChartBase v-if="data.topCodes.length" :option="codeChart" height="320px" />
         <div v-else class="o-empty" style="padding: 60px 0">
           <div class="icon"><Icon name="search" :size="28" /></div>
-          <div>暂无事件数据，请先执行解析任务</div>
+          <div>暂无数据</div>
         </div>
       </div>
 
       <div class="o-card">
-        <div class="o-card__title">近期解析任务</div>
+        <div class="o-card__title">近期任务</div>
         <table class="o-table">
           <thead>
-            <tr><th>任务</th><th>类型</th><th>事件数</th><th>时间</th><th></th></tr>
+            <tr><th>任务</th><th>类型</th><th>状态</th><th>事件数</th><th>时间</th></tr>
           </thead>
           <tbody>
             <tr v-if="!data.recentTasks.length">
-              <td colspan="5"><div class="o-empty" style="padding: 36px 0">暂无解析任务</div></td>
+              <td colspan="5"><div class="o-empty" style="padding: 36px 0">暂无任务</div></td>
             </tr>
             <tr v-for="t in data.recentTasks" :key="t.id">
               <td>
-                <router-link :to="`/tasks/${t.id}`">{{ t.name || t.filename }}</router-link>
-                <div class="o-mono o-text-3">{{ t.teamName || '—' }} · {{ t.creatorName }}</div>
+                <router-link :to="resultLink(t)">{{ t.name || t.filename }}</router-link>
+                <div class="o-mono o-text-3">{{ t.creatorName }}</div>
               </td>
-              <td><span class="o-badge o-badge--outline">{{ parserName(t.parserType) }}</span></td>
+              <td><span class="o-badge" :class="taskTypeBadge(t)">{{ taskTypeLabel(t) }}</span></td>
+              <td><span class="o-badge" :class="statusBadge(t.status).cls">{{ statusLabel(t) }}</span></td>
               <td class="o-mono">{{ t.eventCount }}</td>
               <td class="o-mono o-text-3">{{ fmtTime(t.createdAt) }}</td>
-              <td><router-link class="o-btn o-btn--text" :to="`/tasks/${t.id}`">查看结果</router-link></td>
             </tr>
           </tbody>
         </table>
@@ -174,45 +209,5 @@ function parserName(type: string) {
 }
 @media (max-width: 1080px) {
   .grid { grid-template-columns: 1fr; }
-}
-
-/* 我的团队: 可点击进入团队详情 */
-.team-chips {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
-  gap: 12px;
-}
-.team-chip {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
-}
-.team-chip:hover {
-  border-color: var(--primary);
-  box-shadow: var(--shadow-2);
-  transform: translateY(-1px);
-}
-.team-chip__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.team-chip__name {
-  min-width: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.team-chip__sub {
-  font-size: 12px;
 }
 </style>

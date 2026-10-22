@@ -241,6 +241,7 @@ class AuditPage(BaseModel):
 class DashboardResponse(BaseModel):
     teams: int
     tasks: int
+    task_types: dict = Field(default_factory=dict)
     kpi: dict
     recent_tasks: list[TaskInfo] = Field(default_factory=list)
     top_codes: list[dict] = Field(default_factory=list)
