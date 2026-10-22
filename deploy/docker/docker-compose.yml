@@ -36,6 +36,12 @@ services:
       LLM_API_BASE: ${LLM_API_BASE:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      AGENT_MODEL: ${AGENT_MODEL:-deepseek-flash}
+      AGENT_HARNESS_DIR: /srv/app/harness
+      AGENT_PROTOCOL: ${AGENT_PROTOCOL:-messages}
+      AGENT_PERMISSION_MODE: ${AGENT_PERMISSION_MODE:-workspace-write}
     volumes:
       - app_data:/srv/app/data
     depends_on:

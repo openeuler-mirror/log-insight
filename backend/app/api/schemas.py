@@ -241,6 +241,7 @@ class AuditPage(BaseModel):
 class DashboardResponse(BaseModel):
     teams: int
     tasks: int
+    task_types: dict = Field(default_factory=dict)
     kpi: dict
     recent_tasks: list[TaskInfo] = Field(default_factory=list)
     top_codes: list[dict] = Field(default_factory=list)
@@ -275,28 +276,6 @@ class RuleInfo(RuleCreate):
     is_builtin: bool
     team_id: int | None = None   # NULL=平台通用, 非空=团队专属
     created_by: int | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-# ---------- Personal Knowledge ----------
-class NoteCreate(BaseModel):
-    title: str = Field(max_length=200)
-    content: str = ""
-    tags: list[str] = Field(default_factory=list)
-    source_type: str = "manual"
-    source_task_id: str | None = None
-
-
-class NoteUpdate(NoteCreate):
-    pass
-
-
-class NoteInfo(NoteCreate):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    owner_id: int
     created_at: datetime
     updated_at: datetime
 

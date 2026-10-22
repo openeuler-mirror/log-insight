@@ -5,6 +5,7 @@ import { useAuditStore } from '@/stores/audit'
 import { useRbacStore } from '@/stores/rbac'
 import { apiError } from '@/api/http'
 import { fmtTime } from '@/parser/types'
+import Icon from '@/components/Icon.vue'
 
 const props = defineProps<{ teamId: string }>()
 const audit = useAuditStore()
@@ -71,7 +72,7 @@ const isAdmin = computed(() => rbac.isPlatformAdmin)
   <div v-if="loading" class="o-mono o-text-3" style="font-size: 12.5px; margin-bottom: 8px">加载中…</div>
 
   <div v-if="!audit.records.length && !loading" class="o-empty">
-    <div class="icon">📭</div>
+    <div class="icon"><Icon name="search" :size="26" /></div>
     <div>暂无匹配的团队动态</div>
   </div>
 

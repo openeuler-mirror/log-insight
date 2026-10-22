@@ -6,6 +6,7 @@ import { useRbacStore } from '@/stores/rbac'
 import { PARSER_DEFS, parserList } from '@/parser/parsers'
 import { genAppLog, genDmesg, genRedfish, genSel, genSyslog, genWindows } from '@/parser/mock-logs'
 import http, { post, apiError } from '@/api/http'
+import Icon from '@/components/Icon.vue'
 
 const route = useRoute()
 const rr = useRouter()
@@ -19,6 +20,7 @@ const canView = computed(() => teamsStore.can(teamId.value, 'task:view'))
 const canExecute = computed(() => teamsStore.can(teamId.value, 'task:execute'))
 
 onMounted(() => {
+  teamsStore.setActiveTeam(Number(teamId.value))
   teamsStore.fetchTeam(teamId.value).catch(() => {})
 })
 
@@ -167,7 +169,7 @@ async function execute() {
 
 <template>
   <div v-if="!myRole || !canView" class="o-empty o-card">
-    <div class="icon">🔒</div>
+    <div class="icon"><Icon name="lock" :size="30" /></div>
     <div>无权创建解析任务</div>
     <div class="hint">你不属于该团队成员，或团队角色无「创建解析任务」权限（task:view / task:create）</div>
   </div>
@@ -176,7 +178,7 @@ async function execute() {
       <div>
         <h2>创建解析任务</h2>
         <div class="sub">
-          <router-link :to="`/teams/${teamId}?tab=tasks`">{{ team?.name ?? '' }}</router-link>
+          <router-link to="/inspection">{{ team?.name ?? '' }}</router-link>
         </div>
       </div>
       <span class="o-badge o-badge--outline">三步完成：准备日志 → 确认执行 → 查看结果</span>
@@ -187,7 +189,7 @@ async function execute() {
 
     <!-- 步骤条 -->
     <div class="steps">
-      <div class="step" :class="{ active: step >= 1, done: step > 1 }"><i>✓</i>准备日志</div>
+      <div class="step" :class="{ active: step >= 1, done: step > 1 }"><i><Icon name="check" :size="12" /></i>准备日志</div>
       <div class="bar" :class="{ done: step > 1 }" />
       <div class="step" :class="{ active: step >= 2, done: step > 2 }"><i>2</i>确认执行</div>
       <div class="bar" />
@@ -211,7 +213,7 @@ async function execute() {
             :class="{ selected: parserType === t.type }"
             @click="parserType = t.type"
           >
-            <span class="check">✓</span>
+            <span class="check"><Icon name="check" :size="11" /></span>
             <b>{{ t.name }}</b>
             <span class="d">{{ t.desc }}</span>
             <span class="o-mono hint">{{ t.fileHint }}</span>
@@ -229,12 +231,12 @@ async function execute() {
         <!-- 上传模式 -->
         <template v-if="sourceMode === 'upload'">
           <div class="o-upload" @click="pickFile">
-            <div class="icon">📂</div>
+            <div class="icon"><Icon name="folder" :size="30" /></div>
             <div class="t">点击选择日志文件</div>
             <div class="s">支持 {{ parserType ? PARSER_DEFS[parserType].fileHint : 'sel_elist.txt / *.json / *.log 等导出文件' }} · 单文件 ≤ 200MB</div>
           </div>
           <div v-if="fileName" class="o-file-bar">
-            <span style="font-size: 18px">📄</span>
+            <span class="o-file-ico"><Icon name="file" :size="18" /></span>
             <div class="o-grow" style="min-width: 0">
               <div class="name" :title="fileName">{{ fileName }}</div>
               <div class="o-mono o-text-3">{{ contentSizeKb }} KB</div>
@@ -263,23 +265,23 @@ async function execute() {
         </template>
 
         <!-- 预检 -->
-        <div v-if="preChecking" class="precheck">⏳ 解析器预检中…</div>
+        <div v-if="preChecking" class="precheck"><span class="pre-ico"><Icon name="hourglass" :size="13" /></span>解析器预检中…</div>
         <div v-else-if="hasContent && parserType" class="precheck" :class="preCount ? 'ok' : 'bad'">
           <template v-if="preCount">
-            <b>✓ 解析器预检通过</b> — 可解析出 <b>{{ preCount }}</b> 条事件
+            <b class="mark-line"><Icon name="check" :size="13" />解析器预检通过</b> — 可解析出 <b>{{ preCount }}</b> 条事件
             <template v-if="preSample.length">
               · 样例：<span class="o-mono sample">{{ preSample[0] }}</span>
             </template>
           </template>
           <template v-else>
-            <b>✗ 预检失败</b> — 所选解析器无法从当前内容解析出事件，请检查类型是否匹配
+            <b class="mark-line"><Icon name="x" :size="13" />预检失败</b> — 所选解析器无法从当前内容解析出事件，请检查类型是否匹配
           </template>
         </div>
       </div>
 
-      <div v-if="err" class="err">⚠ {{ err }}</div>
+      <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
       <div class="o-row" style="margin-top: 6px">
-        <button class="o-btn" @click="rr.push(`/teams/${teamId}?tab=tasks`)">取消</button>
+        <button class="o-btn" @click="rr.push('/inspection')">取消</button>
         <button class="o-btn o-btn--primary" @click="toStep2">下一步</button>
       </div>
     </div>
@@ -316,11 +318,11 @@ async function execute() {
           <span class="v">时间分布 · 事件类别 · 错误码 TopN · 源 IP 分组</span>
         </div>
       </div>
-      <div v-if="err" class="err">⚠ {{ err }}</div>
+      <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
       <div class="o-row" style="margin-top: 20px">
         <button class="o-btn" :disabled="running" @click="step = 1">上一步</button>
         <button v-if="canExecute" class="o-btn o-btn--primary" :disabled="running" @click="execute">
-          <span v-if="!running">▶ 执行解析</span>
+          <span v-if="!running" class="btn-ico"><Icon name="play" :size="12" />执行解析</span>
           <span v-else class="o-row" style="gap: 8px"><span class="spin" />解析中…</span>
         </button>
         <span v-else class="o-text-3" style="font-size: 13px">当前团队角色无「执行解析」权限（task:execute）</span>
@@ -459,6 +461,11 @@ async function execute() {
   background: var(--danger-soft);
   color: var(--danger-deep);
 }
+.mark-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .precheck .sample {
   max-width: 480px;
   overflow: hidden;
@@ -471,6 +478,18 @@ async function execute() {
   color: var(--danger);
   font-size: 13px;
   margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.o-file-ico,
+.btn-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.o-file-ico {
+  color: var(--text-4);
 }
 .confirm-grid {
   display: grid;

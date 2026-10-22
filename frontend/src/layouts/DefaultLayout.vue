@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { router } from '@/router'
 import { useRbacStore } from '@/stores/rbac'
@@ -8,49 +8,14 @@ import { useTasksStore } from '@/stores/tasks'
 import { teamRoleById } from '@/rbac/permissions'
 import { fmtTime } from '@/parser/types'
 import { apiError } from '@/api/http'
+import Icon from '@/components/Icon.vue'
+import TeamBrowserDialog from '@/components/team/TeamBrowserDialog.vue'
 
-const route = useRoute()
 const rr = useRouter()
+const route = useRoute()
 const rbac = useRbacStore()
 const teamsStore = useTeamsStore()
 const tasksStore = useTasksStore()
-
-/* 动态面包屑：首页 / 团队 / 团队名 / 当前页，中间层级可点击返回 */
-interface Crumb {
-  label: string
-  to?: string
-}
-const cachedTask = computed(() => tasksStore.taskCached(route.params.taskId as string))
-const cachedTeam = computed(() =>
-  cachedTask.value?.teamId ? teamsStore.teamById(cachedTask.value.teamId) : undefined,
-)
-
-const crumbs = computed<Crumb[]>(() => {
-  const items: Crumb[] = []
-  if (route.name !== 'dashboard') items.push({ label: '首页', to: '/dashboard' })
-  if (route.name === 'team-detail' || route.name === 'task-new') {
-    items.push({ label: '团队', to: '/teams' })
-    const t = teamsStore.teamById(route.params.id as string)
-    if (route.name === 'task-new') {
-      items.push({ label: t?.name ?? '团队', to: `/teams/${route.params.id}?tab=tasks` })
-    } else {
-      items.push({ label: t?.name ?? '团队' })
-    }
-  }
-  if (route.name === 'task-result') {
-    items.push({ label: '团队', to: '/teams' })
-    items.push({
-      label: cachedTeam.value?.name ?? cachedTask.value?.teamName ?? '团队',
-      to: cachedTeam.value ? `/teams/${cachedTeam.value.id}?tab=tasks` : '/teams',
-    })
-  }
-  /* 末级标题：仅当最后一级还是可点击链接（或无层级）时追加，避免「团队 / 团队」重复 */
-  const last = items[items.length - 1]
-  if (!last || last.to) {
-    items.push({ label: (route.meta.title as string) ?? '' })
-  }
-  return items
-})
 
 const menus = computed(() =>
   router
@@ -60,8 +25,50 @@ const menus = computed(() =>
 )
 
 const user = computed(() => rbac.currentUser)
-/* 我加入的团队数 (来自 /auth/me team_roles), 用于下拉入口计数 */
-const myTeamCount = computed(() => Object.keys(rbac.myTeamRoles).length)
+/* 我在任一团队中的管理员身份 (本地设计: 头像旁展示团队角色) */
+const myTeamRole = computed(() => {
+  for (const [tid, rid] of Object.entries(rbac.myTeamRoles)) {
+    if (rid === 'team_admin' && teamsStore.teamById(tid)) return '管理员'
+  }
+  return ''
+})
+
+/* ---------- 团队切换 (顶栏右侧) ---------- */
+const teamMenuOpen = ref(false)
+const routeTeamId = computed(() => {
+  if (route.name !== 'team-detail' && route.name !== 'task-new') return ''
+  return String(route.params.id ?? '')
+})
+const currentTeamId = computed(() => routeTeamId.value || String(teamsStore.activeTeamId ?? ''))
+/* 平台管理员可切换全部团队; 普通用户仅能切换已加入的团队 */
+const switchableTeams = computed(() =>
+  rbac.isPlatformAdmin
+    ? teamsStore.teams
+    : teamsStore.teams.filter((t) => !!rbac.myTeamRoles[String(t.id)]),
+)
+const currentTeam = computed(() => {
+  const t = teamsStore.activeTeam
+  return t && switchableTeams.value.some((x) => x.id === t.id) ? t : undefined
+})
+function myRoleName(teamId: number): string {
+  const role = rbac.myTeamRoles[String(teamId)]
+  return role ? teamRoleById(role)?.name ?? '' : ''
+}
+function toggleTeamMenu() {
+  teamMenuOpen.value = !teamMenuOpen.value
+  menuOpen.value = false
+  noticeOpen.value = false
+}
+function selectTeam(t: { id: number }) {
+  teamsStore.setActiveTeam(t.id)
+  teamMenuOpen.value = false
+  if (route.path.startsWith('/teams/')) rr.push('/teams')
+}
+/* 进入团队页面时同步当前团队 (仅已加入/平台管理员) */
+watch(routeTeamId, (id) => {
+  if (!id) return
+  if (rbac.isPlatformAdmin || rbac.myTeamRoles[id]) teamsStore.setActiveTeam(Number(id))
+})
 
 /* ---------- 头像下拉 + 通知中心 ---------- */
 const menuOpen = ref(false)
@@ -71,8 +78,17 @@ const myNotices = computed(() => teamsStore.notices)
 const noticeCount = computed(() => myNotices.value.length)
 const resolveErr = ref('')
 
-onMounted(() => {
+onMounted(async () => {
   teamsStore.fetchNotices().catch(() => {})
+  try {
+    await teamsStore.fetchTeams()
+    const list = switchableTeams.value
+    if (list.length && !list.some((t) => t.id === teamsStore.activeTeamId)) {
+      teamsStore.setActiveTeam(list[0].id)
+    }
+  } catch {
+    /* 团队列表不可用时切换器保持空态 */
+  }
 })
 
 async function resolve(n: { id: number; type: string; fromUserName: string }, accept: boolean) {
@@ -88,19 +104,24 @@ async function resolve(n: { id: number; type: string; fromUserName: string }, ac
 async function logout() {
   menuOpen.value = false
   noticeOpen.value = false
+  teamMenuOpen.value = false
+  teamsStore.setActiveTeam(null)
+  teamsStore.$reset()
+  tasksStore.$reset()
   await rbac.logout()
   rr.push('/login')
 }
 
-/* 团队入口: 顶部导航已不再单列页签, 从下拉进入 */
-function gotoTeams() {
+/* 其他团队弹窗 */
+function openTeamBrowser() {
   menuOpen.value = false
-  rr.push('/teams')
+  teamMenuOpen.value = false
+  teamsStore.openTeamBrowser()
 }
 </script>
 
 <template>
-  <div class="shell" @click="menuOpen = false; noticeOpen = false">
+  <div class="shell" @click="menuOpen = false; noticeOpen = false; teamMenuOpen = false">
     <header class="topbar" @click.stop>
       <div class="left">
         <span class="logo" @click="rr.push('/dashboard')">log-insight</span>
@@ -117,10 +138,38 @@ function gotoTeams() {
         </nav>
       </div>
       <div class="right" @click.stop>
+        <!-- 团队切换 -->
+        <div class="team-wrap">
+          <button class="team-btn" :class="{ active: teamMenuOpen }" title="切换团队" @click="toggleTeamMenu">
+            <Icon name="users" :size="15" />
+            <span class="team-btn__name">{{ currentTeam?.name || '选择团队' }}</span>
+            <Icon name="caret-down" :size="12" />
+          </button>
+          <div v-if="teamMenuOpen" class="team-menu">
+            <div class="team-menu__head">切换团队</div>
+            <div v-if="!switchableTeams.length" class="o-empty" style="padding: 20px 0">暂无可切换的团队</div>
+            <button
+              v-for="t in switchableTeams"
+              :key="t.id"
+              class="team-row"
+              :class="{ active: String(t.id) === currentTeamId }"
+              @click="selectTeam(t)"
+            >
+              <span class="team-row__name">{{ t.name }}</span>
+              <span v-if="myRoleName(t.id)" class="o-badge o-badge--outline">{{ myRoleName(t.id) }}</span>
+              <Icon v-if="String(t.id) === currentTeamId" name="check" :size="13" />
+            </button>
+            <button class="team-row team-row--manage" @click="openTeamBrowser">
+              其他团队
+              <Icon name="arrow-right" :size="12" />
+            </button>
+          </div>
+        </div>
+
         <!-- 通知 -->
         <div class="bell-wrap">
-          <button class="bell" :class="{ 'has': noticeCount }" @click="noticeOpen = !noticeOpen; menuOpen = false">
-            🔔
+          <button class="bell" :class="{ 'has': noticeCount }" title="申请与邀请" @click="noticeOpen = !noticeOpen; menuOpen = false; teamMenuOpen = false">
+            <Icon name="bell" :size="16" />
             <span v-if="noticeCount" class="dot">{{ noticeCount }}</span>
           </button>
           <div v-if="noticeOpen" class="notice-panel">
@@ -128,8 +177,8 @@ function gotoTeams() {
               <b>申请与邀请</b>
               <span class="o-mono o-text-3">{{ noticeCount }} 条待处理</span>
             </div>
-            <div v-if="resolveErr" class="notice-err">⚠ {{ resolveErr }}</div>
-            <div v-if="!myNotices.length" class="o-empty" style="padding: 28px 0">📭 暂无待处理的申请或邀请</div>
+            <div v-if="resolveErr" class="notice-err"><Icon name="alert" :size="13" /> {{ resolveErr }}</div>
+            <div v-if="!myNotices.length" class="o-empty" style="padding: 28px 0">暂无待处理的申请或邀请</div>
             <div v-for="n in myNotices" :key="n.id" class="notice-item">
               <div class="notice-body">
                 <template v-if="n.type === 'invite'">
@@ -153,12 +202,13 @@ function gotoTeams() {
 
         <!-- 头像菜单 -->
         <div class="user-wrap">
-          <button class="user-btn" @click="menuOpen = !menuOpen; noticeOpen = false">
+          <button class="user-btn" @click="menuOpen = !menuOpen; noticeOpen = false; teamMenuOpen = false">
             <span class="avatar" :style="{ background: `hsl(${user?.avatarHue ?? 210}, 65%, 50%)` }">{{
               user?.name.slice(0, 1)
             }}</span>
             <span class="name">{{ user?.name }}</span>
-            <span v-if="user?.dept" class="o-badge o-badge--outline">{{ user?.dept }}</span>
+            <span v-if="myTeamRole" class="o-badge o-badge--brand">{{ myTeamRole }}</span>
+            <span v-else-if="user?.dept" class="o-badge o-badge--outline">{{ user?.dept }}</span>
           </button>
           <div v-if="menuOpen" class="user-menu">
             <div class="user-info">
@@ -166,10 +216,6 @@ function gotoTeams() {
               <span class="o-mono o-text-3">{{ user?.email }}</span>
               <span class="o-mono o-text-3">{{ user?.dept }}{{ user?.title ? ' · ' + user.title : '' }}</span>
             </div>
-            <button class="menu-row" @click="gotoTeams">
-              我的团队
-              <span v-if="myTeamCount" class="o-badge o-badge--outline">{{ myTeamCount }}</span>
-            </button>
             <button class="menu-row" @click="noticeOpen = true; menuOpen = false">
               申请与邀请 <span v-if="noticeCount" class="o-badge o-badge--danger">{{ noticeCount }}</span>
             </button>
@@ -179,17 +225,16 @@ function gotoTeams() {
       </div>
     </header>
 
-    <main class="main" @click="noticeOpen = false; menuOpen = false">
-      <div class="crumb">
-        <template v-for="(c, i) in crumbs" :key="i">
-          <router-link v-if="c.to" :to="c.to">{{ c.label }}</router-link>
-          <span v-else-if="i < crumbs.length - 1" class="mid">{{ c.label }}</span>
-          <span v-else class="current">{{ c.label }}</span>
-          <span v-if="i < crumbs.length - 1" class="sep">/</span>
-        </template>
-      </div>
+    <main
+      class="main"
+      :class="{ 'main--flush': route.meta.flush }"
+      @click="noticeOpen = false; menuOpen = false; teamMenuOpen = false"
+    >
       <router-view />
     </main>
+
+    <!-- 其他团队: 创建 / 进入 / 申请加入 -->
+    <TeamBrowserDialog />
   </div>
 </template>
 
@@ -251,13 +296,97 @@ function gotoTeams() {
   align-items: center;
   gap: 14px;
 }
-.bell-wrap, .user-wrap {
+.team-wrap, .bell-wrap, .user-wrap {
   position: relative;
 }
-.bell {
+.team-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-1);
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 13px;
+}
+.team-btn:hover, .team-btn.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.team-btn__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.team-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  z-index: 200;
+  overflow: hidden;
+}
+.team-menu__head {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+}
+.team-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
   border: none;
   background: transparent;
-  font-size: 17px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: left;
+}
+.team-row:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.team-row.active {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.team-row__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.team-row--manage {
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  justify-content: space-between;
+}
+.bell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
   cursor: pointer;
   position: relative;
   padding: 4px 6px;
@@ -301,6 +430,9 @@ function gotoTeams() {
   font-size: 14px;
 }
 .notice-err {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 18px;
   font-size: 12.5px;
   color: var(--danger);
@@ -401,23 +533,8 @@ function gotoTeams() {
   padding: 80px 24px 24px;
   min-height: calc(100vh - var(--topbar-h));
 }
-.crumb {
-  font-size: 14px;
-  color: var(--text-2);
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.crumb .mid {
-  color: var(--text-2);
-}
-.crumb .current {
-  color: var(--primary);
-  font-weight: 600;
-}
-.crumb .sep {
-  color: var(--text-4);
+.main--flush {
+  max-width: none;
+  padding: var(--topbar-h) 0 0;
 }
 </style>

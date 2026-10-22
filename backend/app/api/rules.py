@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas import RuleCreate, RuleInfo, RuleUpdate
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.deps import get_current_user, get_redis, load_team_role
+from app.core.deps import ensure_team_perm, get_current_user
 from app.models.rule import MatchType, Rule, RuleAuditLog
 from app.models.user import User
 
@@ -143,6 +143,7 @@ async def list_rules(
     if team_id is None:
         query = query.where(Rule.team_id.is_(None))
     else:
+        await ensure_team_perm(db, user, team_id, "rule:view")
         query = query.where(or_(Rule.team_id.is_(None), Rule.team_id == team_id))
     if enabled_only:
         query = query.where(Rule.enabled.is_(True))
@@ -226,12 +227,8 @@ team_router = APIRouter(prefix="/teams/{team_id}/rules", tags=["rules"])
 
 
 async def _ensure_team_rule_admin(db: AsyncSession, user: User, team_id: int) -> None:
-    """团队规则写操作权限: 团队管理员 (平台管理员经 load_team_role 直通 team_admin)."""
-    team, role = await load_team_role(db, user, team_id)
-    if team is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
-    if role != "team_admin":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "需要团队管理员权限")
+    """团队规则写操作权限: 团队角色具备 rule:manage_team (平台管理员直通)."""
+    await ensure_team_perm(db, user, team_id, "rule:manage_team")
 
 
 def _reject_team_script(body: RuleCreate) -> None:
@@ -247,6 +244,7 @@ async def list_team_rules(
     user: Annotated[User, Depends(get_current_user)],
 ):
     """团队规则视图: 平台通用规则(只读) + 本团队专属规则."""
+    await ensure_team_perm(db, user, team_id, "rule:view")
     query = (select(Rule)
              .where(or_(Rule.team_id.is_(None), Rule.team_id == team_id))
              .order_by(Rule.priority, Rule.id))

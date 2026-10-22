@@ -26,5 +26,6 @@ frontend/node_modules/
 # IDE / 系统
 .vscode/
 .idea/
+.trae/
 .DS_Store
 Thumbs.db

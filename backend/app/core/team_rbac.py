@@ -1,4 +1,4 @@
-"""团队级 RBAC 常量: 13 原子权限点 + 团队内双角色权限映射.
+"""团队级 RBAC 常量: 18 原子权限点 + 团队内双角色权限映射.
 
 团队成员只有两种角色: 管理员 / 普通用户 (创建者与管理员权限已合一,
 Team.owner_user_id 仅保留为创建人元数据, 不再作为独立权限角色).
@@ -20,15 +20,21 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("task:delete", "解析任务", "删除任务"),
     ("task:llm", "解析任务", "使用 LLM 分析"),
     ("audit:view", "审计日志", "查看团队审计"),
+    ("rule:view", "规则集", "查看团队规则"),
+    ("rule:manage_team", "规则集", "管理团队规则"),
+    ("llm:use", "大模型", "使用团队模型"),
+    ("llm:manage", "大模型", "管理团队模型"),
+    ("llm:usage", "大模型", "查看团队用量"),
 ]
 
-PERM_GROUPS = ["工作台", "团队", "解析任务", "审计日志"]
+PERM_GROUPS = ["工作台", "团队", "解析任务", "规则集", "大模型", "审计日志"]
 
 # 团队内双角色 -> 权限映射 ('*' 表示全部)
 TEAM_ROLE_PERMS: dict[str, list[str]] = {
     "team_admin": ["*"],
     "member": ["dashboard:view", "team:view",
-               "task:view", "task:create", "task:execute", "task:llm"],
+               "task:view", "task:create", "task:execute", "task:llm",
+               "rule:view", "llm:use"],
 }
 
 

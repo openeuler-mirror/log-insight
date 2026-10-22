@@ -52,8 +52,16 @@ export const useTeamsStore = defineStore('teams', {
     details: {} as Record<string, TeamDetail>,
     notices: [] as TeamNotice[],        // 我的待办: 发给我的邀请 + 我审批的申请
     appliedTeamIds: [] as number[],     // 本会话我已提交的入团申请 (前端防重复提示)
+    /* 顶栏团队切换器选中的团队 (跨页面共享, 刷新后保留) */
+    activeTeamId: (Number(localStorage.getItem('loginsight_active_team')) || null) as number | null,
+    /* 团队列表弹窗 (创建/进入/申请) */
+    browserOpen: false,
   }),
   getters: {
+    activeTeam(state): TeamInfo | TeamDetail | undefined {
+      return state.teams.find((t) => t.id === state.activeTeamId)
+        ?? state.details[String(state.activeTeamId)]
+    },
     teamById(state) {
       return (id: string | number) =>
         state.teams.find((t) => String(t.id) === String(id)) ?? state.details[String(id)]
@@ -82,6 +90,17 @@ export const useTeamsStore = defineStore('teams', {
     },
     async fetchTeams() {
       this.teams = await get<TeamInfo[]>('/teams')
+    },
+    setActiveTeam(id: number | null) {
+      this.activeTeamId = id
+      if (id == null) localStorage.removeItem('loginsight_active_team')
+      else localStorage.setItem('loginsight_active_team', String(id))
+    },
+    openTeamBrowser() {
+      this.browserOpen = true
+    },
+    closeTeamBrowser() {
+      this.browserOpen = false
     },
     async fetchTeam(id: string | number) {
       const detail = await get<TeamDetail>(`/teams/${id}`)

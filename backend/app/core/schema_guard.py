@@ -43,6 +43,13 @@ _GUARDS: list[tuple[str, str]] = [
     ("CREATE INDEX IF NOT EXISTS ix_rules_team_id ON rules (team_id)", "rules.team_id 索引"),
     # 团队角色合并: 创建者 (owner) 与团队管理员合并为 team_admin (幂等)
     ("UPDATE team_members SET role = 'team_admin' WHERE role = 'owner'", "team_members 角色合并 owner -> team_admin"),
+    # diagnosis_sessions 表: 团队归属与模型快照 (团队级模型改造)
+    ("ALTER TABLE diagnosis_sessions ALTER COLUMN model TYPE VARCHAR(128)", "diagnosis_sessions.model 扩长"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL", "diagnosis_sessions.team_id"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS provider VARCHAR(32) NOT NULL DEFAULT ''", "diagnosis_sessions.provider"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS model_name VARCHAR(128) NOT NULL DEFAULT ''", "diagnosis_sessions.model_name"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS reasoning VARCHAR(16) NOT NULL DEFAULT ''", "diagnosis_sessions.reasoning"),
+    ("CREATE INDEX IF NOT EXISTS ix_diagnosis_sessions_team_id ON diagnosis_sessions (team_id)", "diagnosis_sessions.team_id 索引"),
 ]
 
 

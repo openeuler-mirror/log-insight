@@ -9,6 +9,7 @@ import { fmtTime, sevBadgeClass, sevLabel, type Severity } from '@/parser/types'
 import { get, post, apiError, TOKEN_KEY } from '@/api/http'
 import type { EChartsOption } from 'echarts'
 import ChartBase from '@/components/ChartBase.vue'
+import Icon from '@/components/Icon.vue'
 
 const route = useRoute()
 const tasksStore = useTasksStore()
@@ -26,6 +27,7 @@ async function loadTask() {
   loadErr.value = ''
   try {
     task.value = await tasksStore.fetchTask(taskId.value)
+    if (task.value.teamId) teamsStore.setActiveTeam(task.value.teamId)
     noAccess.value = false
     notFound.value = false
   } catch (e: any) {
@@ -339,31 +341,31 @@ async function startLlm() {
 
 <template>
   <div v-if="noAccess" class="o-empty o-card">
-    <div class="icon">🔒</div>
+    <div class="icon"><Icon name="lock" :size="28" /></div>
     <div>无权查看该任务</div>
     <div class="hint">你不属于该任务所属团队的成员，或团队角色无「查看解析任务」权限</div>
   </div>
   <div v-else-if="notFound" class="o-empty o-card">
-    <div class="icon">📭</div>
+    <div class="icon"><Icon name="search" :size="28" /></div>
     <div>任务不存在或已被删除</div>
   </div>
   <div v-else-if="loadErr" class="o-empty o-card">
-    <div class="icon">⚠️</div>
+    <div class="icon"><Icon name="alert" :size="28" /></div>
     <div>{{ loadErr }}</div>
   </div>
   <template v-else-if="task">
     <!-- 信息横幅 + 统计 -->
     <div class="o-banner">
       <div class="banner-left">
-        <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`" class="back-btn">
-          ← 返回{{ task.teamName || '团队' }}
+        <router-link v-if="teamId" to="/inspection" class="back-btn">
+          <Icon name="arrow-left" :size="13" /> 返回智能巡检
         </router-link>
         <h2>
           {{ task.name || task.filename }}
           <span class="o-badge o-badge--outline">{{ parserName }}</span>
         </h2>
         <div class="meta">
-          <router-link v-if="teamId" :to="`/teams/${teamId}?tab=tasks`">{{ task.teamName || '—' }}</router-link>
+          <router-link v-if="teamId" to="/inspection">{{ task.teamName || '—' }}</router-link>
           <span class="o-mono o-text-3">{{ task.filename }}（{{ (task.logSize / 1024).toFixed(1) }} KB）</span>
           <span class="o-text-3">{{ task.creatorName }} · {{ fmtTime(task.createdAt) }}</span>
         </div>
@@ -376,7 +378,9 @@ async function startLlm() {
         <div class="o-banner-stat"><b>{{ kpi.ips }}</b><span>源 IP</span></div>
         <div class="o-banner-stat"><b>{{ kpi.codes }}</b><span>错误码</span></div>
       </div>
-      <button v-if="canLlm && !running" class="o-btn o-btn--primary" @click="tab = 'llm'">✦ AI 分析</button>
+      <button v-if="canLlm && !running" class="o-btn o-btn--primary" @click="tab = 'llm'">
+        <span class="btn-ico"><Icon name="star" :size="13" />AI 分析</span>
+      </button>
     </div>
 
     <!-- 解析中提示 -->
@@ -396,7 +400,9 @@ async function startLlm() {
       <button class="o-tabs__item" :class="{ 'is-active': tab === 'codes' }" @click="tab = 'codes'">错误码分析</button>
       <button class="o-tabs__item" :class="{ 'is-active': tab === 'ips' }" @click="tab = 'ips'">IP 聚合</button>
       <button class="o-tabs__item" :class="{ 'is-active': tab === 'raw' }" @click="tab = 'raw'">原始日志 <span class="o-badge o-badge--outline">{{ kpi.total }}</span></button>
-      <button v-if="canLlm" class="o-tabs__item" :class="{ 'is-active': tab === 'llm' }" @click="tab = 'llm'">✦ LLM 分析</button>
+      <button v-if="canLlm" class="o-tabs__item" :class="{ 'is-active': tab === 'llm' }" @click="tab = 'llm'">
+        <span class="btn-ico"><Icon name="star" :size="12" />LLM 分析</span>
+      </button>
     </div>
 
     <!-- 总览 -->
@@ -404,12 +410,12 @@ async function startLlm() {
       <div class="o-card">
         <div class="o-card__title">事件时序分布<span class="hint">滚轮 / 滑块缩放时间窗</span></div>
         <ChartBase v-if="stats?.timeBuckets?.length" :option="timeChart" height="340px" />
-        <div v-else class="o-empty" style="padding: 80px 0"><div class="icon">📊</div><div>暂无统计数据</div></div>
+        <div v-else class="o-empty" style="padding: 80px 0"><div class="icon"><Icon name="chart" :size="28" /></div><div>暂无统计数据</div></div>
       </div>
       <div class="o-card">
         <div class="o-card__title">事件类别占比<span class="hint">点击扇区筛选日志</span></div>
         <ChartBase v-if="stats?.categories?.length" :option="pieChart" height="340px" @chart-click="onPieClick" />
-        <div v-else class="o-empty" style="padding: 80px 0"><div class="icon">📊</div><div>暂无统计数据</div></div>
+        <div v-else class="o-empty" style="padding: 80px 0"><div class="icon"><Icon name="chart" :size="28" /></div><div>暂无统计数据</div></div>
       </div>
     </div>
 
@@ -418,7 +424,7 @@ async function startLlm() {
       <div class="o-card">
         <div class="o-card__title">错误码 Top 10<span class="hint">点击柱条筛选日志</span></div>
         <ChartBase v-if="codeStats.length" :option="codeChart" height="340px" @chart-click="onCodeClick" />
-        <div v-else class="o-empty" style="padding: 80px 0"><div class="icon">📊</div><div>暂无统计数据</div></div>
+        <div v-else class="o-empty" style="padding: 80px 0"><div class="icon"><Icon name="chart" :size="28" /></div><div>暂无统计数据</div></div>
       </div>
       <div class="o-table-wrap has-vscroll">
         <table class="o-table">
@@ -431,7 +437,7 @@ async function startLlm() {
               <td class="o-mono num">{{ c.value }}</td>
               <td class="o-mono num">{{ kpi.total ? ((c.value / kpi.total) * 100).toFixed(1) : '0' }}%</td>
             </tr>
-            <tr v-if="!codeStats.length"><td colspan="5"><div class="o-empty" style="padding: 36px 0">📭 暂无错误码数据</div></td></tr>
+            <tr v-if="!codeStats.length"><td colspan="5"><div class="o-empty" style="padding: 36px 0">暂无错误码数据</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -442,7 +448,7 @@ async function startLlm() {
       <div class="o-card" style="margin-bottom: 16px">
         <div class="o-card__title">源 IP 事件量 Top 10<span class="hint">点击柱条或表格行筛选日志</span></div>
         <ChartBase v-if="ipStats.length" :option="ipChart" height="320px" @chart-click="onIpClick" />
-        <div v-else class="o-empty" style="padding: 60px 0"><div class="icon">📊</div><div>暂无统计数据</div></div>
+        <div v-else class="o-empty" style="padding: 60px 0"><div class="icon"><Icon name="chart" :size="28" /></div><div>暂无统计数据</div></div>
       </div>
       <div class="o-table-wrap has-vscroll">
         <table class="o-table">
@@ -458,7 +464,7 @@ async function startLlm() {
               <td class="o-mono">{{ s.topCode }} × {{ s.topCodeCount }}</td>
               <td><span class="o-btn o-btn--sm">筛选日志</span></td>
             </tr>
-            <tr v-if="!ipStats.length"><td colspan="8"><div class="o-empty" style="padding: 36px 0">📭 暂无 IP 数据</div></td></tr>
+            <tr v-if="!ipStats.length"><td colspan="8"><div class="o-empty" style="padding: 36px 0">暂无 IP 数据</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -495,7 +501,7 @@ async function startLlm() {
           </select>
         </div>
         <div class="row-2">
-          <input v-model="kwFilter" class="o-input" style="width: 320px" placeholder="🔍 搜索原始日志 / 解析字段..." />
+          <input v-model="kwFilter" class="o-input" style="width: 320px" placeholder="搜索原始日志 / 解析字段..." />
           <span v-if="hasAnyFilter" class="o-btn o-btn--sm o-btn--text" style="color: var(--danger)" @click="clearAll">清空全部筛选</span>
           <div class="o-grow" />
           <span class="o-mono o-text-3">
@@ -515,7 +521,7 @@ async function startLlm() {
           <thead><tr><th style="width: 165px">时间</th><th>源 IP</th><th>级别</th><th>类别</th><th>错误码</th><th>解析字段</th></tr></thead>
           <tbody>
             <tr v-if="!logs.length && !logsLoading">
-              <td colspan="6"><div class="o-empty" style="padding: 36px 0">📭 当前筛选条件下无匹配日志</div></td>
+              <td colspan="6"><div class="o-empty" style="padding: 36px 0">当前筛选条件下无匹配日志</div></td>
             </tr>
             <tr v-for="e in logs" :key="e.id">
               <td class="o-mono o-text-3">{{ fmtTime(e.ts) }}</td>
@@ -550,15 +556,21 @@ async function startLlm() {
       <div v-else-if="running" class="o-empty o-card">任务解析完成后才能生成 AI 分析报告</div>
       <div v-else class="o-card llm">
         <div class="llm-head">
-          <span class="o-badge o-badge--primary">✦ LLM 智能诊断</span>
+          <span class="o-badge o-badge--primary badge-ico"><Icon name="star" :size="12" />LLM 智能诊断</span>
           <span class="o-mono o-text-3">基于 {{ kpi.total }} 条事件聚合特征 · 后端规则报告 + LLM 增强</span>
           <div class="o-grow" />
-          <button v-if="!llmStarted" class="o-btn o-btn--primary" @click="startLlm">▶ 开始分析</button>
-          <button v-else class="o-btn" :disabled="llmStreaming" @click="startLlm">{{ llmStreaming ? `生成中 ${llmProgress}%` : '↻ 重新分析' }}</button>
+          <button v-if="!llmStarted" class="o-btn o-btn--primary" @click="startLlm">
+            <span class="btn-ico"><Icon name="play" :size="12" />开始分析</span>
+          </button>
+          <button v-else class="o-btn" :disabled="llmStreaming" @click="startLlm">
+            <span class="btn-ico">
+              <Icon name="refresh" :size="12" />{{ llmStreaming ? `生成中 ${llmProgress}%` : '重新分析' }}
+            </span>
+          </button>
         </div>
-        <div v-if="llmErr" class="o-badge o-badge--danger" style="margin-bottom: 12px">⚠ {{ llmErr }}</div>
+        <div v-if="llmErr" class="o-badge o-badge--danger" style="margin-bottom: 12px">{{ llmErr }}</div>
         <div v-if="!llmStarted" class="o-empty">
-          <div class="icon">🤖</div>
+          <div class="icon"><Icon name="activity" :size="28" /></div>
           <div>点击「开始分析」，AI 将输出诊断报告</div>
           <div class="hint">总体概况 → 异常聚类 → 根因推断 → 处置建议 → 置信度（未配置 LLM 时输出规则引擎报告）</div>
         </div>
@@ -575,6 +587,12 @@ async function startLlm() {
 </template>
 
 <style scoped>
+.btn-ico,
+.badge-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .grid-2 {
   display: grid;
   grid-template-columns: 3fr 2fr;
@@ -584,7 +602,9 @@ async function startLlm() {
   .grid-2 { grid-template-columns: 1fr; }
 }
 .banner-left .back-btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 13px;
   color: var(--primary);
   background: var(--primary-soft);

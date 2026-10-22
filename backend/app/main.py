@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.api import api_router
 from app.core.config import get_settings
@@ -161,10 +161,14 @@ async def seed_builtin_rules() -> None:
 async def seed_demo_tasks() -> None:
     """演示解析任务 (幂等): 生成样例日志 → 解析 → 事件入库 → 五段报告.
 
-    给工作台 KPI/团队任务列表/结果页演示提供真实数据 (不经过队列, 直接成品).
+    给工作台 KPI/团队任务列表/结果页/智能诊断演示提供真实数据 (不经过队列, 直接成品).
     """
     from datetime import timedelta
+    from pathlib import Path
 
+    import re
+
+    from app.core.config import get_settings
     from app.models.analyze import ParsedEventRecord
     from app.modules.analyze import ANALYZE_PARSERS
     from app.modules.analyze.demo_logs import DEMO_LOG_GENS
@@ -181,11 +185,21 @@ async def seed_demo_tasks() -> None:
         ("上海B", "内核超时日志排查", "dmesg", "zhangshenpi", 240, 29,
          ["10.2.8.101", "10.2.8.102", "10.2.8.103", "10.2.9.10"]),
     ]
+    data_dir = Path(get_settings().DATA_DIR)
+
+    def _write_demo_log(task_id, text: str, filename: str) -> str:
+        """把演示日志落到上传目录, 让智能诊断文件树可直接读取 (幂等)."""
+        folder = data_dir / "uploads" / str(task_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / filename
+        if not path.exists():
+            path.write_text(text, encoding="utf-8")
+        return str(path)
 
     async with AsyncSessionLocal() as db:
         for team_name, task_name, parser_type, username, count, seed, ips in DEMO_TASKS:
-            if (await db.execute(select(Task).where(Task.name == task_name))).scalar_one_or_none():
-                continue  # 幂等
+            existing = (await db.execute(
+                select(Task).where(Task.name == task_name))).scalar_one_or_none()
             team = (await db.execute(select(Team).where(Team.name == team_name))).scalar_one_or_none()
             creator = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
             if team is None or creator is None:
@@ -193,14 +207,26 @@ async def seed_demo_tasks() -> None:
 
             text = DEMO_LOG_GENS[parser_type]({"count": count, "seed": seed, "ipPool": ips})
             parser = ANALYZE_PARSERS[parser_type]
+            filename = parser.def_.file_hint.replace("*", str(seed))
+            filename = re.sub(r"[^\w.\-]+", "_", filename)
+
+            if existing is not None:
+                # 存量演示任务补齐日志文件 (旧版本只写了元数据)
+                if not existing.storage_path:
+                    existing.storage_path = _write_demo_log(existing.id, text, filename)
+                continue
+
+            import uuid as _uuid
+            task_id = _uuid.uuid4()
             events = parser.parse(text)
             now_dt = datetime.now()
 
             task = Task(
-                type=TaskType.analyze, status=TaskStatus.done,
+                id=task_id, type=TaskType.analyze, status=TaskStatus.done,
                 user_id=creator.id,
-                filename=parser.def_.file_hint.replace("*", str(seed)),
-                storage_path="", params={},
+                filename=filename,
+                storage_path=_write_demo_log(task_id, text, filename),
+                params={},
                 name=task_name, parser_type=parser_type, team_id=team.id,
                 log_size=len(text.encode("utf-8")), event_count=len(events),
                 progress=100,
@@ -289,8 +315,36 @@ async def lifespan(app: FastAPI):
     # 存量表结构守卫 (幂等, 先于 create_all; 单独事务提交)
     await run_schema_guard(engine)
     # 建表 (开发模式; 生产用 alembic 迁移)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # 多 worker 同时启动时用 advisory lock 串行化 DDL, 避免 CREATE TABLE 竞争
+    async with engine.connect() as lock_conn:
+        await lock_conn.execute(text("SELECT pg_advisory_lock(823713)"))
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                # create_all 不会给已有表加列: 用户模型显示名称 / 推理强度 (幂等)
+                await conn.execute(text(
+                    "ALTER TABLE diagnosis_user_configs "
+                    "ADD COLUMN IF NOT EXISTS model_name VARCHAR(128) NOT NULL DEFAULT ''"))
+                await conn.execute(text(
+                    "ALTER TABLE diagnosis_user_configs "
+                    "ADD COLUMN IF NOT EXISTS reasoning VARCHAR(16) NOT NULL DEFAULT ''"))
+                # 旧的单供应商密钥迁移为按供应商的连接记录 (保留原行, 仅兼容回退)
+                await conn.execute(text(
+                    "INSERT INTO diagnosis_user_providers "
+                    "(user_id, provider, api_key_enc, key_hint, api_base, protocol) "
+                    "SELECT user_id, provider, api_key_enc, key_hint, api_base, protocol "
+                    "FROM diagnosis_user_configs WHERE api_key_enc <> '' "
+                    "ON CONFLICT (user_id, provider) DO NOTHING"))
+                # 把当前选择回填为按供应商记忆, 升级后切走再切回不丢模型/显示名
+                await conn.execute(text(
+                    "INSERT INTO diagnosis_user_selections "
+                    "(user_id, provider, model, model_name, reasoning) "
+                    "SELECT user_id, provider, model, model_name, reasoning "
+                    "FROM diagnosis_user_configs WHERE model <> '' "
+                    "ON CONFLICT (user_id, provider) DO NOTHING"))
+        finally:
+            await lock_conn.execute(text("SELECT pg_advisory_unlock(823713)"))
+            await lock_conn.commit()
     await seed_initial_data()
     yield
     await redis.aclose()

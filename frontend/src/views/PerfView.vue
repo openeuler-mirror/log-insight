@@ -6,13 +6,14 @@ import PerfSarPanel from '@/components/PerfSarPanel.vue'
 import PerfNetcap from '@/components/PerfNetcap.vue'
 import PerfBlktrace from '@/components/PerfBlktrace.vue'
 import PerfInterrupts from '@/components/PerfInterrupts.vue'
+import Icon, { type IconName } from '@/components/Icon.vue'
 
 type TabKey = 'sar' | 'netcap' | 'blktrace' | 'interrupt'
-const TABS: { key: TabKey; label: string; icon: string }[] = [
-  { key: 'sar', label: 'sar 性能分析', icon: '📈' },
-  { key: 'netcap', label: '网络抓包分析', icon: '🔎' },
-  { key: 'blktrace', label: 'blktrace 分析', icon: '💽' },
-  { key: 'interrupt', label: '中断计数变化', icon: '⚡' },
+const TABS: { key: TabKey; label: string; icon: IconName }[] = [
+  { key: 'sar', label: 'sar 性能分析', icon: 'chart' },
+  { key: 'netcap', label: '网络抓包分析', icon: 'search' },
+  { key: 'blktrace', label: 'blktrace 分析', icon: 'disk' },
+  { key: 'interrupt', label: '中断计数变化', icon: 'bolt' },
 ]
 
 const route = useRoute()
@@ -39,7 +40,7 @@ watch(tab, (v) => {
       :class="{ 'is-active': tab === t.key }"
       @click="tab = t.key"
     >
-      <span class="ico">{{ t.icon }}</span>{{ t.label }}
+      <span class="ico"><Icon :name="t.icon" :size="15" /></span>{{ t.label }}
     </button>
   </div>
 
@@ -79,6 +80,7 @@ watch(tab, (v) => {
   font-weight: 600;
 }
 .ico {
-  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
 }
 </style>

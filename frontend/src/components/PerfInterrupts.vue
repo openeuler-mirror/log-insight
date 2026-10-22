@@ -6,6 +6,7 @@ import { computed, ref } from 'vue'
 import type { EChartsOption } from 'echarts'
 import { post, apiError } from '@/api/http'
 import ChartBase from '@/components/ChartBase.vue'
+import Icon from '@/components/Icon.vue'
 
 /* 响应经 http.ts 深度驼峰化, 此处字段均为 camelCase */
 interface IrqItem {
@@ -164,7 +165,7 @@ const cpuOption = computed<EChartsOption>(() => ({
   </div>
 
   <div v-if="err" class="o-card" style="border-color: var(--danger)">
-    <span class="o-mono" style="color: var(--danger)">⚠ {{ err }}</span>
+    <span class="o-mono err-line"><Icon name="alert" :size="13" /> {{ err }}</span>
   </div>
 
   <template v-if="result">
@@ -268,13 +269,19 @@ const cpuOption = computed<EChartsOption>(() => ({
 
   <div v-else-if="!loading && !err" class="o-card">
     <div class="o-empty" style="padding: 80px 0">
-      <div class="icon">⚡</div>
+      <div class="icon"><Icon name="bolt" :size="30" /></div>
       <div>选择中断文件开始分析 — 支持 /proc/interrupts 多次快照与 sar -I 输出；解析结果不落库，仅本次展示</div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.err-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger);
+}
 .kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

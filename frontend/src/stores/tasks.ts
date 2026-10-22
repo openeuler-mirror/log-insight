@@ -28,6 +28,7 @@ export interface TaskListPage {
 
 export interface TaskListQuery {
   statusFilter?: string
+  taskType?: string       // analyze / inspection / diagnosis
   parserType?: string
   kw?: string
   page?: number
@@ -52,6 +53,7 @@ export const useTasksStore = defineStore('tasks', {
       try {
         const page = await get<TaskListPage>(`/teams/${teamId}/tasks`, {
           status_filter: q.statusFilter || undefined,
+          task_type: q.taskType || undefined,
           parser_type: q.parserType || undefined,
           kw: q.kw || undefined,
           page: q.page ?? 1,

@@ -1,0 +1,12 @@
+# DSH 配置覆盖层：LogInsight 智能诊断
+# 复制到 $DSH_HOME/profiles/loginsight/ 后由 dsh 加载。
+# 模型凭证请用环境变量 DEEPSEEK_API_KEY，不要写进本文件。
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+- id: ui-chat
+  name: "@deepseek-ai/dsh-client-ui-chat"
+  config:
+    transcriptView: standard

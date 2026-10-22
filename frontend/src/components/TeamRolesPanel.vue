@@ -2,6 +2,7 @@
 /* 团队双角色：卡片可点击切换，权限对照表联动高亮选中角色列 */
 import { computed, ref } from 'vue'
 import { PERMISSIONS, PERM_GROUPS, TEAM_ROLES, teamRoleHasPerm } from '@/rbac/permissions'
+import Icon from '@/components/Icon.vue'
 
 const selectedId = ref('team_admin')
 const selected = computed(() => TEAM_ROLES.find((r) => r.id === selectedId.value) ?? TEAM_ROLES[0])
@@ -47,7 +48,7 @@ function permCountOf(r: { perms: string[] }): number {
         :class="{ selected: selectedId === r.id, ['role-' + r.id]: true }"
         @click="select(r.id)"
       >
-        <span class="check">✓</span>
+        <span class="check"><Icon name="check" :size="12" /></span>
         <div class="role-name">
           <span class="o-badge" :class="ROLE_BADGE[r.id]">{{ r.name }}</span>
         </div>
@@ -62,7 +63,7 @@ function permCountOf(r: { perms: string[] }): number {
   <div class="o-card">
     <div class="o-card__title">
       权限对照表
-      <span class="hint">高亮列为「{{ selected.name }}」· ✓ 拥有 · — 无</span>
+      <span class="hint">高亮列为「{{ selected.name }}」· 勾选表示拥有 · — 无</span>
     </div>
     <div class="o-table-wrap">
       <table class="o-table role-table">
@@ -77,7 +78,7 @@ function permCountOf(r: { perms: string[] }): number {
               @click="select(r.id)"
             >
               {{ r.name }}
-              <span class="col-arrow">{{ selectedId === r.id ? '▾' : '' }}</span>
+              <span class="col-arrow"><Icon v-if="selectedId === r.id" name="caret-down" :size="12" /></span>
             </th>
           </tr>
         </thead>
@@ -95,7 +96,7 @@ function permCountOf(r: { perms: string[] }): number {
                 class="check-cell"
                 :class="{ 'col-active': selectedId === r.id }"
               >
-                <span v-if="teamRoleHasPerm(r.id, row.permKey)" class="yes">✓</span>
+                <span v-if="teamRoleHasPerm(r.id, row.permKey)" class="yes"><Icon name="check" :size="13" /></span>
                 <span v-else class="no">—</span>
               </td>
             </template>
@@ -181,7 +182,9 @@ function permCountOf(r: { perms: string[] }): number {
   border-bottom-color: var(--primary);
 }
 .col-arrow {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
 }
 .role-table .check-cell {
   text-align: center;

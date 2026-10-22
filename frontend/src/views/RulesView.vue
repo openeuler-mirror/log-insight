@@ -8,6 +8,11 @@ import { get, post, put, del, apiError, apiStatus } from '@/api/http'
 import { fmtTime } from '@/parser/types'
 import { useRbacStore } from '@/stores/rbac'
 import { useTeamsStore } from '@/stores/teams'
+import { teamRoleHasPerm } from '@/rbac/permissions'
+import Icon from '@/components/Icon.vue'
+
+/* embedded: 作为团队详情页的「规则集」Tab, 作用域固定为该团队 */
+const props = defineProps<{ teamId?: number | null; embedded?: boolean }>()
 
 const rbac = useRbacStore()
 const teamsStore = useTeamsStore()
@@ -54,15 +59,19 @@ const loading = ref(false)
 const loadErr = ref('')
 const scriptOptions = ref<{ path: string; doc: string }[]>([])
 
-/* ---------- 作用域: null=平台通用规则; 数字=某团队 ---------- */
-const scopeTeamId = ref<number | null>(null)
-const isTeamScope = computed(() => scopeTeamId.value != null)
-/* 可选团队: 平台管理员全部可见, 否则仅我所属团队 */
-const myTeams = computed(() => teamsStore.teams.filter(
-  t => rbac.isPlatformAdmin || teamsStore.myRoleOf(t.id)))
-/* 当前作用域是否具备团队规则写权限 (团队管理员 或平台管理员) */
-const canManageTeam = computed(() => isTeamScope.value &&
-  (rbac.isPlatformAdmin || teamsStore.myRoleOf(scopeTeamId.value!) === 'team_admin'))
+/* ---------- 作用域: 独立页固定平台通用规则; 嵌入团队页固定为该团队 ---------- */
+const isTeamScope = computed(() => props.teamId != null)
+/* 从团队规则集进入平台规则页时带上团队, 用于返回 */
+const fromTeamId = computed(() => (typeof route.query.team === 'string' ? route.query.team : ''))
+const backTo = computed(() => (fromTeamId.value ? `/teams/${fromTeamId.value}?tab=rules` : '/teams'))
+const backLabel = computed(() => (fromTeamId.value ? '返回团队规则集' : '返回团队'))
+/* 当前作用域是否具备团队规则写权限 (rule:manage_team 或平台管理员) */
+const canManageTeam = computed(() => {
+  if (!isTeamScope.value) return false
+  if (rbac.isPlatformAdmin) return true
+  const role = teamsStore.myRoleOf(props.teamId!) ?? ''
+  return teamRoleHasPerm(role, 'rule:manage_team')
+})
 const canCreate = computed(() => (isTeamScope.value ? canManageTeam.value : canManage.value))
 /* 团队作用域不开放脚本类型 */
 const MATCH_TYPES = computed(() => {
@@ -73,21 +82,21 @@ const MATCH_TYPES = computed(() => {
 function teamName(id: number | null): string {
   return id == null ? '通用' : (teamsStore.teamById(id)?.name ?? `团队#${id}`)
 }
-/* 行可编辑: 通用规则仅在平台作用域可编辑; 团队规则需本团队管理权限 */
+/* 行可编辑: 通用规则仅在平台页可编辑; 团队规则需本团队管理权限 */
 function canEditRow(row: RuleRow): boolean {
   if (row.teamId == null) return !isTeamScope.value && canManage.value
-  return canManageTeam.value && row.teamId === scopeTeamId.value
+  return canManageTeam.value && row.teamId === props.teamId
 }
 /* 当前作用域下的规则接口前缀 */
 function ruleBase(): string {
-  return isTeamScope.value ? `/teams/${scopeTeamId.value}/rules` : '/rules'
+  return isTeamScope.value ? `/teams/${props.teamId}/rules` : '/rules'
 }
 
 async function load() {
   loading.value = true
   loadErr.value = ''
   try {
-    const q = scopeTeamId.value != null ? `?team_id=${scopeTeamId.value}` : ''
+    const q = props.teamId != null ? `?team_id=${props.teamId}` : ''
     rules.value = await get<RuleRow[]>(`/rules${q}`)
   } catch (e) {
     loadErr.value = apiError(e)
@@ -95,7 +104,7 @@ async function load() {
     loading.value = false
   }
 }
-watch(scopeTeamId, () => load())
+watch(() => props.teamId, () => load())
 onMounted(() => {
   load()
   teamsStore.fetchTeams().catch(() => { /* 团队列表不可用时仅展示通用规则 */ })
@@ -104,7 +113,7 @@ onMounted(() => {
       .then(l => { scriptOptions.value = l })
       .catch(() => { /* 脚本目录为空或不可用时保持空建议 */ })
   }
-  applyPrefill()
+  if (!props.embedded) applyPrefill()
 })
 
 /* ---------- 编辑弹窗 ---------- */
@@ -155,7 +164,6 @@ function applyPrefill() {
   const q = route.query
   if (q.prefill !== '1' || !canManage.value) return
   const severity = String(q.severity ?? 'warn')
-  scopeTeamId.value = null   // 规则推荐接纳 → 落到平台通用规则
   saveErr.value = ''
   editingId.value = null
   Object.assign(form, emptyForm(), {
@@ -300,6 +308,8 @@ function editFromDetail() {
 </script>
 
 <template>
+  <router-link v-if="!embedded" class="back-link" :to="backTo"><Icon name="arrow-left" :size="13" />{{ backLabel }}</router-link>
+
   <div class="o-operate-bar">
     <div class="o-operate-left">
       <h2>巡检 / 诊断规则</h2>
@@ -308,15 +318,12 @@ function editFromDetail() {
       </span>
     </div>
     <div class="o-operate-right">
-      <select v-model="scopeTeamId" class="o-select" style="width: 200px">
-        <option :value="null">通用规则（平台）</option>
-        <option v-for="t in myTeams" :key="t.id" :value="t.id">{{ t.name }}</option>
-      </select>
+      <router-link v-if="embedded && canManage" class="o-btn" :to="`/rules?team=${teamId}`">平台通用规则</router-link>
       <button v-if="canCreate" class="o-btn o-btn--primary" @click="openEdit()">＋ 新增规则</button>
     </div>
   </div>
 
-  <div v-if="loadErr" class="o-mono" style="color: var(--danger); margin-bottom: 12px">⚠ {{ loadErr }}</div>
+  <div v-if="loadErr" class="o-mono err-line"><Icon name="alert" :size="13" /> {{ loadErr }}</div>
 
   <div class="o-card">
     <div class="o-table-wrap">
@@ -329,7 +336,7 @@ function editFromDetail() {
         </thead>
         <tbody>
           <tr v-if="!rules.length && !loading">
-            <td colspan="10"><div class="o-empty" style="padding: 48px 0">📭 暂无规则</div></td>
+            <td colspan="10"><div class="o-empty" style="padding: 48px 0">暂无规则</div></td>
           </tr>
           <tr v-for="r in rules" :key="r.id">
             <td>
@@ -393,7 +400,7 @@ function editFromDetail() {
       <div class="o-modal__title">
         {{ editingId ? '编辑规则' : '新增规则' }}
         <span class="o-badge" :class="isTeamScope ? 'o-badge--brand' : 'o-badge--outline'" style="margin-left: 6px">
-          {{ isTeamScope ? teamName(scopeTeamId) : '平台通用' }}
+          {{ isTeamScope ? teamName(teamId ?? null) : '平台通用' }}
         </span>
       </div>
       <div class="o-form-item">
@@ -487,7 +494,7 @@ function editFromDetail() {
           <span>{{ form.enabled ? '启用中' : '已停用' }}</span>
         </label>
       </div>
-      <div v-if="saveErr" class="o-mono" style="color: var(--danger); font-size: 12.5px">⚠ {{ saveErr }}</div>
+      <div v-if="saveErr" class="o-mono err-line err-line--sm"><Icon name="alert" :size="13" /> {{ saveErr }}</div>
       <div class="o-modal__foot">
         <button class="o-btn" @click="showEdit = false">取消</button>
         <button class="o-btn o-btn--primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -557,7 +564,7 @@ function editFromDetail() {
           <span class="o-mono">{{ JSON.stringify(detailRule.scriptParams) }}</span>
         </div>
         <div v-if="scriptLoading" class="o-text-3" style="padding: 12px 0; font-size: 13px">脚本内容加载中…</div>
-        <div v-else-if="scriptErr" class="o-mono" style="color: var(--danger); font-size: 12.5px">⚠ {{ scriptErr }}</div>
+        <div v-else-if="scriptErr" class="o-mono err-line err-line--sm"><Icon name="alert" :size="13" /> {{ scriptErr }}</div>
         <pre v-else class="code-block code-scroll">{{ scriptContent || '（脚本内容为空）' }}</pre>
       </template>
 
@@ -570,6 +577,28 @@ function editFromDetail() {
 </template>
 
 <style scoped>
+.err-line {
+  color: var(--danger);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.err-line--sm {
+  font-size: 12.5px;
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  text-decoration: none;
+}
+.back-link:hover {
+  color: var(--primary);
+}
 .desc {
   font-size: 12px;
   max-width: 260px;

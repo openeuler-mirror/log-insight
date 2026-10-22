@@ -4,6 +4,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { get, post, apiError, TOKEN_KEY } from '@/api/http'
 import { fmtTime } from '@/parser/types'
+import { useTeamsStore } from '@/stores/teams'
+import Icon from '@/components/Icon.vue'
 
 interface InspectionTask {
   id: string
@@ -16,6 +18,7 @@ interface InspectionTask {
   createdAt: string
   finishedAt?: string | null
   logSize: number
+  teamId?: number | null
   creatorName: string
 }
 
@@ -87,6 +90,7 @@ const SEV_BADGE: Record<string, { label: string; cls: string }> = {
 
 const route = useRoute()
 const taskId = computed(() => route.params.taskId as string)
+const teamsStore = useTeamsStore()
 
 const task = ref<InspectionTask | null>(null)
 const report = ref<InspectionReport | null>(null)
@@ -102,6 +106,7 @@ async function loadTask() {
   loadErr.value = ''
   try {
     task.value = await get<InspectionTask>(`/tasks/${taskId.value}`)
+    if (task.value.teamId) teamsStore.setActiveTeam(task.value.teamId)
     noAccess.value = false
     notFound.value = false
   } catch (e: any) {
@@ -283,23 +288,25 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="noAccess" class="o-empty o-card">
-    <div class="icon">🔒</div>
+    <div class="icon"><Icon name="lock" :size="28" /></div>
     <div>无权查看该巡检任务</div>
     <div class="hint">仅任务创建者、平台管理员或所属团队成员可查看</div>
   </div>
   <div v-else-if="notFound" class="o-empty o-card">
-    <div class="icon">📭</div>
+    <div class="icon"><Icon name="search" :size="28" /></div>
     <div>任务不存在或已被删除</div>
   </div>
   <div v-else-if="loadErr" class="o-empty o-card">
-    <div class="icon">⚠️</div>
+    <div class="icon"><Icon name="alert" :size="28" /></div>
     <div>{{ loadErr }}</div>
   </div>
   <template v-else-if="task">
     <!-- 信息横幅 + 结论概览 -->
     <div class="o-banner">
       <div class="banner-left">
-        <router-link to="/inspection" class="back-btn">← 返回智能巡检</router-link>
+        <router-link to="/inspection" class="back-btn">
+          <Icon name="arrow-left" :size="13" /> 返回智能巡检
+        </router-link>
         <h2>
           {{ task.name || task.filename }}
           <span class="o-badge" :class="STATUS_BADGE[task.status].cls">{{ STATUS_BADGE[task.status].label }}</span>
@@ -366,14 +373,14 @@ onBeforeUnmount(() => {
             <tr v-if="!findings.length">
               <td colspan="5">
                 <div class="o-empty" style="padding: 40px 0">
-                  <div class="icon">📋</div>
+                  <div class="icon"><Icon name="clipboard" :size="24" /></div>
                   <div>{{ reportPending || running ? '巡检结果生成中…' : '暂无检查项结果' }}</div>
                 </div>
               </td>
             </tr>
             <template v-for="f in findings" :key="f.checker">
               <tr class="row-clickable" @click="toggleRow(f.checker)">
-                <td><span class="caret" :class="{ open: expanded[f.checker] }">▸</span></td>
+                <td><span class="caret" :class="{ open: expanded[f.checker] }"><Icon name="caret-right" :size="12" /></span></td>
                 <td class="o-mono"><b>{{ f.checker }}</b></td>
                 <td>
                   <span class="o-badge" :class="f.passed ? 'o-badge--success' : 'o-badge--danger'">
@@ -441,7 +448,8 @@ onBeforeUnmount(() => {
       </div>
       <div class="o-row" style="gap: 10px; margin-bottom: 12px; align-items: center; flex-wrap: wrap">
         <button v-if="!sugStreaming" class="o-btn o-btn--primary" @click="startSuggestion">
-          {{ sugLoaded ? '↻ 重新评估' : '▶ 智能巡检规则推荐' }}
+          <span class="btn-ico" v-if="sugLoaded"><Icon name="refresh" :size="12" />重新评估</span>
+          <span class="btn-ico" v-else><Icon name="play" :size="12" />智能巡检规则推荐</span>
         </button>
         <button v-else class="o-btn" disabled>评估中 {{ sugProgress }}%</button>
         <span v-if="sugStreaming" class="spin" />
@@ -450,7 +458,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <div v-if="sugErr" class="o-mono" style="color: var(--danger); font-size: 12.5px; margin-bottom: 10px">⚠ {{ sugErr }}</div>
+      <div v-if="sugErr" class="o-mono" style="color: var(--danger); font-size: 12.5px; margin-bottom: 10px">{{ sugErr }}</div>
 
       <template v-if="sugAssessment || sugItems.length">
         <div class="o-form-item">
@@ -515,8 +523,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.btn-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .banner-left .back-btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 13px;
   color: var(--primary);
   background: var(--primary-soft);
@@ -575,10 +590,10 @@ onBeforeUnmount(() => {
   background: var(--primary-soft, #f2f6ff);
 }
 .caret {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   color: var(--text-3);
   transition: transform 0.15s;
-  font-size: 12px;
 }
 .caret.open {
   transform: rotate(90deg);
