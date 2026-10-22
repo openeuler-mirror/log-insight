@@ -94,18 +94,6 @@ const fmtNum = (n: number) => (n || 0).toLocaleString('en-US')
   display: flex;
   flex-direction: column;
   gap: 12px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
-.rp-scroll::-webkit-scrollbar {
-  width: 7px;
-}
-.rp-scroll::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 4px;
-}
-.rp-scroll::-webkit-scrollbar-track {
-  background: transparent;
 }
 .rp-card {
   background: var(--surface);
