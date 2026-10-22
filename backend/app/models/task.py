@@ -14,6 +14,7 @@ class TaskType(str, enum.Enum):
     diagnosis = "diagnosis"      # 故障诊断日志分析
     inspection = "inspection"    # 智能巡检
     analyze = "analyze"          # 解析任务 (witty: 指定解析器的事件化分析)
+    perf = "perf"                # 性能分析 (解压压缩包并识别 sar/抓包/blktrace/中断 数据源)
 
 
 class TaskStatus(str, enum.Enum):

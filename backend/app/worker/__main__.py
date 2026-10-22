@@ -28,6 +28,7 @@ from app.modules.analyze.pipeline import run_analyze
 from app.modules.diagnosis.pipeline import run_diagnosis
 from app.modules.inspection.pipeline import run_inspection
 from app.modules.inspection.rule_suggest import run_rule_suggest
+from app.modules.perf.pipeline import run_perf
 from app.queue.task_queue import TaskQueue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -38,6 +39,7 @@ PIPELINES = {
     "diagnosis": run_diagnosis,
     "inspection": run_inspection,
     "analyze": run_analyze,
+    "perf": run_perf,
 }
 
 shutdown = asyncio.Event()

@@ -60,7 +60,7 @@ def safe_extract(archive_path: Path, dest: Path) -> list[Path]:
                 if not str(target).startswith(str(dest.resolve())):  # 路径穿越防护
                     continue
                 total += info.file_size
-                if not info.is_file():
+                if info.is_dir():  # zipfile.ZipInfo 无 is_file(), 只有 is_dir()
                     continue
                 zf.extract(info, dest)
                 extracted.append(target)

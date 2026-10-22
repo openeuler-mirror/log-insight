@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _GUARDS: list[tuple[str, str]] = [
     # tasks 表: analyze 任务扩展列 (witty 解析任务)
     ("ALTER TYPE tasktype ADD VALUE IF NOT EXISTS 'analyze'", "tasktype 枚举加 analyze"),
+    ("ALTER TYPE tasktype ADD VALUE IF NOT EXISTS 'perf'", "tasktype 枚举加 perf (性能分析任务)"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name VARCHAR(128) DEFAULT ''", "tasks.name"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parser_type VARCHAR(32) DEFAULT ''", "tasks.parser_type"),
     ("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id)", "tasks.team_id"),

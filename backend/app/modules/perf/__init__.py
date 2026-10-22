@@ -7,8 +7,18 @@
 - 解析失败以 exceptions 抛出友好信息(继承 PerfAnalysisError), 由 API 层转 400
 """
 from app.modules.perf.blktrace import analyze_blktrace
+from app.modules.perf.detect import PERF_KINDS
 from app.modules.perf.interrupts import analyze_interrupts
 from app.modules.perf.netcap import analyze_netcap
 from app.modules.perf.sar import analyze_sar
 
-__all__ = ["analyze_netcap", "analyze_blktrace", "analyze_sar", "analyze_interrupts"]
+# 数据源类型 -> 解析器 (api 建任务与 worker 流水线共用)
+ANALYZERS = {
+    "netcap": analyze_netcap,
+    "blktrace": analyze_blktrace,
+    "sar": analyze_sar,
+    "interrupts": analyze_interrupts,
+}
+
+__all__ = ["analyze_netcap", "analyze_blktrace", "analyze_sar", "analyze_interrupts",
+           "ANALYZERS", "PERF_KINDS"]
