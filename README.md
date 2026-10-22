@@ -21,7 +21,6 @@
 - **智能巡检规则推荐**：对已完成巡检任务评估规则覆盖度并推荐可新增规则项，用户可编辑并一键接纳
 - **规则管理**：关键字 / 正则 / 阈值 / 脚本四类规则的增删改查；正则灾难性回溯防护、规则改动免重启即生效、变更审计
 - **性能分析**：上传文件即解析的 ECharts 时序图表，支持 sar 系统性能（CPU / 内存 / 磁盘）/ blktrace 块设备 IO / netcap 网络抓包 / 中断计数变化（`/proc/interrupts` 多次快照或 `sar -I`）；解析在请求内完成，结果不落库仅本次展示
-- **个人知识库**：用户私有笔记 CRUD 与关键词 / 标签检索，严格 owner 隔离
 - **审计日志**：团队级操作审计（任务 / 成员 / 规则变更），支持按动作与关键字检索
 
 ## 界面预览
@@ -200,7 +199,7 @@ docker compose up -d       # 拉起 postgres / redis / api / worker / web
 
 ## 使用说明
 
-登录后顶部导航按页面权限渲染，主要页面：工作台 / 性能分析 / 智能巡检 / 智能诊断 / 个人知识库；团队入口位于头像下拉与工作台「我的团队」区块。
+登录后顶部导航按页面权限渲染，主要页面：工作台 / 性能分析 / 智能巡检 / 智能诊断 / 团队管理；团队切换位于顶栏右侧，「团队管理」直接展示当前团队详情，创建团队、进入已加入团队与申请加入统一在顶栏「其他团队」弹窗中完成。
 
 ### 智能诊断工作台（三栏）
 
@@ -224,7 +223,7 @@ log-insight/
 │   ├── app/
 │   │   ├── api/            # auth / users / teams / notices / audit / dashboard /
 │   │   │                   # tasks / analysis(聚合+LLM+SSE) / rules / metrics / perf /
-│   │   │                   # rule_suggest / knowledge(个人知识库) / fs(本地文件浏览+watchdog 监听)
+│   │   │                   # rule_suggest / fs(本地文件浏览+watchdog 监听)
 │   │   ├── core/           # 配置 / 安全(JWT) / 数据库 / 双级 RBAC 依赖注入 / 审计 / 表结构守卫
 │   │   ├── models/         # 用户-角色-权限 / 团队-成员-通知 / 任务 / 解析事件 /
 │   │   │                   # 规则 / 指标 / 用户偏好 / 审计 / 规则推荐
@@ -249,8 +248,8 @@ log-insight/
 │       ├── api/http.ts     # axios 封装：Bearer + 驼峰化 + 401 刷新重放
 │       ├── api/fs.ts       # 本地文件浏览接口封装（tree/list/read/raw + EventSource watch url）
 │       ├── stores/         # rbac / teams / tasks / audit
-│       ├── views/          # 登录 / 工作台 / 团队×2 / 任务向导 / 解析结果 / 规则 / 性能 /
-│       │                   # 巡检×2 / 智能诊断 / 个人知识库
+│       ├── views/          # 登录 / 工作台 / 团队 / 智能巡检 / 任务向导 / 解析结果 / 规则 / 性能 /
+│       │                   # 巡检详情 / 智能诊断
 │       ├── components/     # ChartBase / 团队面板 / 性能分析面板（sar / netcap / blktrace / 中断计数变化）/
 │       │                   # DiagnosisFileTree(目录文件树+勾选拖拽) / DiagnosisFileReader(多页签阅读器) /
 │       │                   # DiagnosisPathPicker(服务端路径选择) / DiagnosisInspector(运行状态)
