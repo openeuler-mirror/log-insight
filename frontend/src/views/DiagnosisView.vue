@@ -829,54 +829,101 @@ const phaseText = computed(() => {
         @dragleave="onDragLeave"
         @drop.prevent="onDrop"
       >
-        <div v-if="dropActive" class="drop-mask">松开鼠标，将文件加入本次提问上下文</div>
-        <div v-if="attached.length" class="ctx">
-          <div class="ctx-head">
-            <span class="ctx-label">上下文 {{ attached.length }}</span>
-            <button class="o-btn o-btn--text ctx-clear" @click="attached = []">清空</button>
-          </div>
-          <div class="ctx-chips">
-            <span v-for="f in attached" :key="f.id" class="ctx-chip o-mono" :title="f.path">
+        <div class="composer-inner">
+          <div v-if="dropActive" class="drop-mask">松开鼠标，把文件加入本次提问</div>
+          <ComposerTaskDock :plan="runPlanBlock" :tools="runTools" :running="running" />
+          <div v-if="attached.length" class="ctx-chips">
+            <span class="ctx-label">已选 {{ attached.length }} 份日志</span>
+            <span v-for="f in attached" :key="f.id" class="ctx-chip" :title="f.path">
               {{ f.name }}
               <button class="ctx-x" title="移除" @click="detachFile(f.id)">×</button>
             </span>
+            <button class="o-btn o-btn--text ctx-clear" @click="clearAttached">清空</button>
           </div>
-        </div>
-        <textarea
-          v-model="draft"
-          class="o-textarea composer-text"
-          rows="3"
-          placeholder="描述你的诊断问题，或直接粘贴日志片段…（Enter 发送 / Shift+Enter 换行）"
-          @keydown.enter.exact.prevent="send"
-        ></textarea>
-        <div class="composer-bar">
-          <div class="o-row" style="gap: 8px">
-            <label class="pick">
-              <span class="pick-label">模式</span>
-              <select v-model="agentMode" class="o-select pick-select">
-                <option v-for="a in AGENT_MODES" :key="a.key" :value="a.key">{{ a.label }}</option>
-              </select>
-            </label>
-            <label class="pick">
-              <span class="pick-label">模型</span>
-              <select v-model="model" class="o-select pick-select">
-                <option v-for="mm in MODELS" :key="mm.key" :value="mm.key">{{ mm.label }}</option>
-              </select>
-            </label>
+          <textarea
+            v-model="draft"
+            class="o-textarea composer-text"
+            rows="3"
+            :placeholder="
+              attached.length
+                ? '描述故障现象，助手会直接读取已选日志…'
+                : '描述故障现象，或直接粘贴日志片段…（Enter 发送 / Shift+Enter 换行）'
+            "
+            @keydown.enter.exact.prevent="send"
+          ></textarea>
+          <div class="composer-bar">
+            <div class="composer-left">
+              <ComposerModelMenu
+                :catalog="catalog"
+                :status="composerStatus"
+                :disabled="running"
+                @change="onModelChange"
+              />
+              <span class="composer-hint o-text-3">
+                {{
+                  !ready
+                    ? (status?.reason || '模型不可用')
+                    : attached.length
+                      ? `将结合 ${attached.length} 份日志分析`
+                      : '勾选左侧日志可让助手直接读取原文'
+                }}
+              </span>
+            </div>
+            <div class="o-row" style="gap: 8px">
+              <button v-if="running" class="o-btn" @click="stop">停止</button>
+              <button
+                v-else
+                class="o-btn o-btn--primary"
+                :disabled="!draft.trim() || !activeSessionId || !ready"
+                @click="send"
+              >
+                开始诊断
+              </button>
+            </div>
           </div>
-          <button class="o-btn o-btn--primary" :disabled="!draft.trim() || running" @click="send">
-            {{ running ? '分析中…' : '发送 ➤' }}
-          </button>
+          <p v-if="errorText" class="composer-error">{{ errorText }}</p>
         </div>
       </div>
+    </main>
+
+    <!-- ============ 右: 按需展开的日志原文 ============ -->
+    <button
+      v-if="drawerVisible"
+      class="rail rail--drawer"
+      title="拖动调整日志面板宽度"
+      @mousedown="startDrag('drawer', $event)"
+    ></button>
+    <aside v-if="drawerVisible" class="drawer" :style="{ width: drawerW + 'px' }">
+      <div class="drawer-head">
+        <b>日志原文</b>
+        <span class="o-text-3">只读</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="关闭日志原文" @click="closeDrawer"><Icon name="close" :size="13" /></button>
+      </div>
+      <DiagnosisFileReader
+        :tabs="tabs"
+        :active-id="activeTabId"
+        @activate="activeTabId = $event"
+        @close="closeTab"
+        @attach="attachFromReader"
+      />
     </aside>
+
+    <SessionHistoryDialog
+      :open="historyOpen"
+      :active-id="activeSessionId"
+      :teams="catalog"
+      @close="historyOpen = false"
+      @select="openHistorySession"
+      @changed="refreshSessions"
+    />
   </div>
 </template>
 
 <style scoped>
 .diag {
-  height: calc(100vh - 142px);
-  min-height: 520px;
+  height: calc(100vh - 104px);
+  min-height: 380px;
   display: flex;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -894,38 +941,48 @@ const phaseText = computed(() => {
 }
 .pane--left,
 .pane--right {
-  /* 宽度由内联样式给出(已按容器动态收敛); 三栏同属一个 flex 容器,
-     左右栏变化时由主体栏吸收, 故正常情况下无需压缩 */
   flex: 0 1 auto;
-  min-width: 140px;
+  min-width: 150px;
   background: var(--surface-3);
 }
 .pane--center {
-  flex: 1 1 0;         /* 占满左右栏之外的剩余宽度: 左右栏变宽则主体栏变窄 */
-  min-width: 240px;    /* 与 CENTER_MIN 一致: 主体栏保底宽度 */
+  flex: 1;
+  min-width: 260px;
   background: var(--surface);
 }
-.pane-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
+.icon-btn {
   flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.icon-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
-/* ---------- 左·底端运行状态停靠面板 ---------- */
+/* ---------- 左侧运行状态 ---------- */
 .pane-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-1);
 }
 .insp-dock {
-  flex: 0 0 46%;
+  flex: 0 0 44%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
   border-top: 1px solid var(--border);
   background: var(--surface-3);
 }
@@ -959,43 +1016,31 @@ const phaseText = computed(() => {
   margin-left: auto;
 }
 
-/* ---------- 右上角图标按钮 ---------- */
-.icon-btn {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text-2);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
-}
-.icon-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-/* ---------- 侧栏竖栏: 单击收起/展开, 沿栏左右拖动调宽 ---------- */
+/* ---------- 侧栏竖栏 ---------- */
 .rail {
   flex: none;
-  width: 26px;
+  width: 20px;
   padding: 0;
   border: none;
   cursor: col-resize;
-  background: var(--surface-3);
-  color: var(--text-3);
-  font-size: 14px;
-  line-height: 1;
+  background: transparent;
+  color: var(--text-4);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition: background 0.15s, color 0.15s;
+}
+.rail-btn {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  transition: opacity 0.15s, border-color 0.15s, color 0.15s;
 }
 .rail.is-collapsed {
   cursor: pointer;
@@ -1007,15 +1052,28 @@ const phaseText = computed(() => {
   border-left: 1px solid var(--border);
 }
 .rail:hover {
-  background: var(--primary-soft);
   color: var(--primary);
 }
+.rail:hover .rail-btn {
+  opacity: 1;
+  border-color: var(--primary);
+}
 
-/* ---------- 右·会话页签 ---------- */
-.chat-tabs {
-  gap: 10px;
+/* ---------- 右侧会话头 ---------- */
+.chat-head {
+  flex: none;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-3);
+}
+.chat-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 .tab-strip {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1024,11 +1082,11 @@ const phaseText = computed(() => {
 }
 .chat-tab {
   flex: none;
+  max-width: 170px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 26px;
-  min-width: 30px;
   padding: 0 6px 0 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1036,6 +1094,7 @@ const phaseText = computed(() => {
   color: var(--text-2);
   cursor: pointer;
   font: inherit;
+  font-size: 12px;
   transition: all 0.15s;
 }
 .chat-tab:hover {
@@ -1047,10 +1106,10 @@ const phaseText = computed(() => {
   border-color: var(--primary);
   color: var(--primary);
 }
-.chat-tab-no {
-  font-size: 12.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.chat-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-tab-x {
   width: 14px;
@@ -1062,13 +1121,11 @@ const phaseText = computed(() => {
   font-size: 9px;
   color: var(--text-4);
   opacity: 0;
-  pointer-events: none;
   transition: all 0.15s;
 }
 .chat-tab:hover .chat-tab-x,
 .chat-tab.is-active .chat-tab-x {
   opacity: 1;
-  pointer-events: auto;
 }
 .chat-tab-x:hover {
   background: var(--danger-soft);
@@ -1086,38 +1143,67 @@ const phaseText = computed(() => {
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  transition: all 0.15s;
 }
 .chat-tab-add:hover {
   border-color: var(--primary);
   color: var(--primary);
 }
-.chat-empty {
-  flex: 1;
+.chat-fold {
+  margin-left: 0;
+}
+.chat-sub {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  text-align: center;
-  color: var(--text-3);
-  padding: 24px 20px;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
 }
-.chat-empty-ico {
-  font-size: 30px;
+.chat-spacer {
+  flex: 1;
 }
-.chat-empty p {
-  font-size: 13px;
+.chat-model {
+  font-size: 11px;
+}
+.chat-session {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-2);
 }
-.chat-empty span {
+.pill--ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.pill--run {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.pill--warn {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.notice-bar {
+  flex: none;
+  padding: 7px 12px;
+  background: var(--warning-soft);
+  color: var(--text-2);
   font-size: 12px;
-  line-height: 1.7;
-  max-width: 260px;
+  line-height: 1.6;
+  border-bottom: 1px solid var(--border);
 }
 
-/* ---------- 右·消息 ---------- */
+/* ---------- 消息 ---------- */
 .chat-body {
   flex: 1;
   min-height: 0;
@@ -1155,7 +1241,7 @@ const phaseText = computed(() => {
   background: hsl(212, 60%, 48%);
 }
 .bubble {
-  max-width: 84%;
+  max-width: 86%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1183,6 +1269,9 @@ const phaseText = computed(() => {
   margin-bottom: 6px;
 }
 .msg-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1191,26 +1280,44 @@ const phaseText = computed(() => {
   color: var(--text-2);
 }
 .blk-text {
-  font-size: 12.5px;
-  line-height: 1.7;
+  font-size: 13.5px;
+  line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .blk-text + .blk-text {
   margin-top: 8px;
 }
+.blk-thought {
+  margin: 6px 0;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  background: var(--surface-3);
+  font-size: 12px;
+  color: var(--text-3);
+}
+.blk-thought summary {
+  cursor: pointer;
+  color: var(--text-3);
+}
+.blk-thought p {
+  margin-top: 6px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
 .blk-tool {
-  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
   margin: 6px 0;
-  padding: 7px 9px 7px 11px;
+  padding: 7px 9px;
   background: var(--surface-3);
   border: 1px solid var(--border);
   border-left: 2px solid var(--primary);
   border-radius: var(--radius);
+  font-size: 12px;
 }
 .tool-dot {
   flex: none;
@@ -1223,14 +1330,21 @@ const phaseText = computed(() => {
   background: var(--warning);
   animation: pulse 1s ease-in-out infinite;
 }
+.tool-dot.is-fail {
+  background: var(--danger);
+}
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
 .tool-name {
   font-weight: 600;
-  color: var(--primary);
-  font-size: 12px;
+  color: var(--text-1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .tool-args {
   flex: 1;
@@ -1238,41 +1352,76 @@ const phaseText = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: 11px;
 }
-.tool-ms {
+.tool-state {
   flex: none;
-  font-size: 11.5px;
+  font-size: 11px;
 }
-.tool-result {
+.tool-detail {
   flex-basis: 100%;
   font-size: 11.5px;
   color: var(--text-2);
-  padding-left: 13px;
 }
-.blk-list {
+.tool-detail summary {
+  cursor: pointer;
+  color: var(--text-3);
+}
+.tool-detail pre {
   margin: 6px 0 0;
-  padding-left: 16px;
-  font-size: 12.5px;
-  line-height: 1.75;
-}
-.blk-list-title {
-  list-style: none;
-  margin-left: -16px;
-  font-weight: 600;
-  font-size: 12px;
-  margin-bottom: 2px;
-}
-.blk-code {
-  margin: 8px 0;
-  padding: 10px 12px;
-  background: #1f2a3a;
-  color: #d7e3f4;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.7;
+  max-height: 220px;
   overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.blk-plan {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+}
+.blk-plan-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.plan-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+.plan-mark {
+  flex: none;
+  width: 12px;
+  color: var(--text-4);
+}
+.plan--completed .plan-mark {
+  color: var(--success);
+}
+.plan--completed {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+.plan--in_progress .plan-mark,
+.plan--in_progress {
+  color: var(--primary);
+  font-weight: 600;
+}
+.blk-error {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .typing {
   display: flex;
@@ -1294,18 +1443,65 @@ const phaseText = computed(() => {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-4px); opacity: 1; }
 }
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--text-3);
+  padding: 24px 16px;
+}
+.chat-empty-ico {
+  font-size: 30px;
+}
+.chat-empty p {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.chat-empty span {
+  font-size: 12px;
+  line-height: 1.7;
+  max-width: 300px;
+}
+.examples {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  width: 100%;
+}
+.example {
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-2);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  line-height: 1.5;
+}
+.example:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
 
-/* ---------- 右·输入区 ---------- */
+/* ---------- 输入区 ---------- */
 .composer {
   flex: none;
   position: relative;
   border-top: 1px solid var(--border);
-  padding: 10px 14px 12px;
+  padding: 10px 12px 12px;
   background: var(--surface);
 }
 .composer.is-drop {
   background: var(--primary-soft);
-  box-shadow: inset 0 0 0 2px var(--primary);
 }
 .drop-mask {
   position: absolute;
@@ -1320,25 +1516,12 @@ const phaseText = computed(() => {
   font-weight: 600;
   pointer-events: none;
 }
-.ctx {
-  margin-bottom: 8px;
-}
-/* 上下文较多时: 标题与「清空」固定在头部, 标签区限高可滚动, 避免按钮被挤出可视区 */
-.ctx-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
 .ctx-chips {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  max-height: 84px;
-  overflow-y: auto;
-  padding-right: 2px;
+  margin-bottom: 8px;
 }
 .ctx-label {
   font-size: 12px;
@@ -1348,11 +1531,15 @@ const phaseText = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 180px;
   background: var(--primary-soft);
   color: var(--primary);
   border-radius: var(--radius);
   padding: 2px 6px 2px 8px;
   font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ctx-x {
   border: none;
@@ -1362,10 +1549,13 @@ const phaseText = computed(() => {
   font-size: 12px;
   line-height: 1;
   padding: 0;
-  opacity: 0.6;
+  opacity: 0.7;
 }
 .ctx-x:hover {
   opacity: 1;
+}
+.ctx-clear {
+  margin-left: auto;
 }
 .composer-text {
   min-height: 62px;
@@ -1378,21 +1568,418 @@ const phaseText = computed(() => {
   justify-content: space-between;
   gap: 10px;
   margin-top: 8px;
-  flex-wrap: wrap;
 }
-.pick {
+.composer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.composer-hint {
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-error {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.6;
+}
+</style>
+
+<style scoped>
+/* ---------- 对话优先布局 ---------- */
+.sidebar {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.side-foot {
+  flex: none;
+  border-top: 1px solid var(--border);
+}
+.side-status {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+}
+.side-status:hover {
+  background: var(--surface);
+}
+.status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+.status-dot.is-ok {
+  background: var(--success);
+}
+.status-dot.is-warn {
+  background: var(--warning);
+}
+.status-dot.is-run {
+  background: var(--warning);
+  animation: pulse 1s ease-in-out infinite;
+}
+.side-status-text {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-tokens {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-4);
+}
+.spacer {
+  flex: 1;
+  min-width: 0;
+}
+.inspector {
+  height: 270px;
+  display: flex;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.side-empty {
+  padding: 22px 16px;
+  text-align: center;
+}
+.side-empty-t {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.side-empty-s {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+  margin-bottom: 14px;
+}
+
+.chat {
+  flex: 1;
+  min-width: 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  container-type: inline-size;
+}
+.chat-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 20;
+}
+.head-left,
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.head-left {
+  flex: 1;
+  overflow: hidden;
+}
+.head-actions {
+  flex: none;
+}
+.session-title-text {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.model-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.pick-label {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
   font-size: 12px;
+  cursor: pointer;
+}
+.model-chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.model-chip.is-warn {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning-deep);
+}
+.model-chip.is-warn:hover {
+  border-color: var(--warning-deep);
+  color: var(--warning-deep);
+}
+.model-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.model-dot.is-warn {
+  background: var(--warning);
+}
+.model-gear {
+  color: var(--text-4);
+  font-size: 11px;
+}
+.log-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.log-ico {
+  font-size: 11px;
+}
+.log-count {
   color: var(--text-3);
 }
-.pick-select {
-  width: auto;
-  height: 30px;
+@container (max-width: 660px) {
+  .chat-head .pill,
+  .model-name:not(.is-cta),
+  .log-label {
+    display: none;
+  }
+  .chat-head {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .session-title-text {
+    max-width: 220px;
+  }
+}
+.notice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  background: var(--warning-soft);
+  border-bottom: 1px solid var(--border);
   font-size: 12.5px;
-  padding: 0 8px;
+  color: var(--text-2);
+}
+.notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 对话主体 ---------- */
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+  display: block;
+}
+.chat-list {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px 24px 28px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 100%;
+}
+.msg--assistant .bubble {
+  max-width: 94%;
+}
+.msg--user .bubble {
+  max-width: 78%;
+}
+.welcome {
+  margin: auto;
+  width: 100%;
+  max-width: 760px;
+  padding: 10px;
+  text-align: center;
+}
+.welcome-ico {
+  font-size: 38px;
+}
+.welcome h2 {
+  margin-top: 8px;
+  font-size: 20px;
+  color: var(--text-1);
+}
+.welcome > p {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-3);
+}
+.welcome-cta {
+  margin-top: 14px;
+}
+.example-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+}
+.example-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.example-card:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.example-card b {
+  font-size: 13px;
+  color: var(--text-1);
+}
+.example-card span {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.welcome-note {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-4);
+}
+.welcome-note a {
+  color: var(--primary);
+  cursor: pointer;
+}
+
+/* ---------- 输入区 ---------- */
+.composer {
+  padding: 0;
+}
+.composer-inner {
+  position: relative;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 12px 24px 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.composer-text {
+  min-height: 76px;
+}
+
+/* ---------- 日志原文抽屉 ---------- */
+.rail--drawer {
+  width: 7px;
+  background: var(--surface-3);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.rail--drawer::after {
+  content: '';
+  width: 3px;
+  height: 34px;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.drawer {
+  flex: 0 1 auto;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+}
+.drawer-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-3);
+}
+.drawer-head b {
+  font-size: 13px;
+}
+.drawer-head .icon-btn {
+  margin-left: auto;
+}
+.drawer :deep(.rd) {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+@media (max-width: 1100px) {
+  .example-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 1280px) {
+  .diag {
+    position: relative;
+  }
+  .drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    max-width: 80%;
+    border-radius: 0;
+    box-shadow: -14px 0 32px rgba(15, 23, 42, 0.16);
+  }
+  .rail--drawer {
+    display: none;
+  }
 }
 </style>
