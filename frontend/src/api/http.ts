@@ -93,6 +93,12 @@ export async function put<T = any>(url: string, body?: unknown): Promise<T> {
   return camelize(res.data) as T
 }
 
+/** 发起 PATCH 请求并自动驼峰化响应体 */
+export async function patch<T = any>(url: string, body?: unknown): Promise<T> {
+  const res = await http.patch(url, body)
+  return camelize(res.data) as T
+}
+
 /** 发起 DELETE 请求并自动驼峰化响应体 */
 export async function del<T = any>(url: string): Promise<T> {
   const res = await http.delete(url)
