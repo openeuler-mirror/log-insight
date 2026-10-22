@@ -7,6 +7,10 @@ from app.models.audit import AuditLog
 from app.models.analyze import ParsedEventRecord
 from app.models.rule_suggestion import RuleSuggestion
 from app.models.knowledge import KnowledgeNote
+from app.models.diagnosis import (DiagnosisMessage, DiagnosisSession,
+                                  DiagnosisUserConfig)
+from app.models.llm import (DiagnosisUserTeamSelection, LlmUsageEvent,
+                            TeamLlmModel, TeamLlmProvider)
 
 __all__ = [
     "User", "Role", "Permission",
@@ -15,4 +19,6 @@ __all__ = [
     "MetricPoint", "UserPreference",
     "Team", "TeamMember", "TeamNotice",
     "AuditLog", "ParsedEventRecord", "RuleSuggestion", "KnowledgeNote",
+    "DiagnosisSession", "DiagnosisMessage", "DiagnosisUserConfig",
+    "TeamLlmProvider", "TeamLlmModel", "LlmUsageEvent", "DiagnosisUserTeamSelection",
 ]
