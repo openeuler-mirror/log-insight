@@ -15,20 +15,19 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
-from sqlalchemy import and_, delete as sa_delete, func, or_, select, update as sa_update
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.database import AsyncSessionLocal, get_db
-from app.core.deps import get_current_user, is_platform_admin, load_team_role
-from app.core.team_rbac import team_role_has_perm
+from app.core.deps import get_current_user, is_platform_admin
 from app.models.diagnosis import (DiagnosisMessage, DiagnosisSession,
                                   DiagnosisUserConfig, DiagnosisUserProvider,
                                   DiagnosisUserSelection)
 from app.models.llm import (DiagnosisUserTeamSelection, LlmUsageEvent,
                             TeamLlmModel, TeamLlmProvider)
-from app.models.team import Team, TeamMember
+from app.models.team import Team
 from app.models.task import Task
 from app.models.user import User
 from app.modules.agent.discovery import discover_models
@@ -333,23 +332,13 @@ def _valid_base(value: str) -> str:
     return value
 
 
-async def _session_access(db: AsyncSession, user: User,
-                          sess: DiagnosisSession) -> tuple[bool, bool]:
+def _session_access(user: User, sess: DiagnosisSession) -> tuple[bool, bool]:
     """会话数据域: 返回 (可读, 可管理).
 
-    - 创建者与平台管理员: 读写;
-    - 团队成员 (llm:use): 可读可继续本团队会话;
-    - 团队管理员 (llm:manage): 可重命名/删除;
-    - 未归属团队的历史会话: 仅创建者可读.
+    历史会话只属于创建者, 其他用户不可见; 平台管理员保留排障访问.
     """
     if is_platform_admin(user) or sess.user_id == user.id:
         return True, True
-    if sess.team_id:
-        _team, role = await load_team_role(db, user, sess.team_id)
-        if role is None:
-            return False, False
-        return (team_role_has_perm(role, "llm:use"),
-                team_role_has_perm(role, "llm:manage"))
     return False, False
 
 
@@ -359,11 +348,11 @@ async def _load_session(db: AsyncSession, user: User, session_id: uuid.UUID, *,
         DiagnosisSession.id == session_id))).scalar_one_or_none()
     if s is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "诊断会话不存在")
-    readable, manageable = await _session_access(db, user, s)
+    readable, manageable = _session_access(user, s)
     if not readable:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "无权查看该会话")
     if manage and not manageable:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "只有创建者或团队管理员可以管理该会话")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "只有创建者可以管理该会话")
     return s
 
 
@@ -626,25 +615,9 @@ async def update_config(body: AgentSelectionIn,
 async def list_sessions(db: Annotated[AsyncSession, Depends(get_db)],
                         user: Annotated[User, Depends(get_current_user)],
                         team_id: int | None = None,
-                        mine: bool = False,
                         limit: int = Query(100, ge=1, le=200)):
-    """历史会话: 我的会话 + 我所在团队 (llm:use) 的会话, 按更新时间倒序."""
-    admin = is_platform_admin(user)
-    roles: dict[int, str] = {}
-    if not admin:
-        roles = {tid: role for tid, role in (await db.execute(
-            select(TeamMember.team_id, TeamMember.role).where(
-                TeamMember.user_id == user.id))).all()}
-    query = select(DiagnosisSession)
-    if not admin:
-        conds = [DiagnosisSession.user_id == user.id]
-        readable = [tid for tid, role in roles.items() if team_role_has_perm(role, "llm:use")]
-        if readable:
-            conds.append(and_(DiagnosisSession.team_id.in_(readable),
-                              DiagnosisSession.team_id.is_not(None)))
-        query = query.where(or_(*conds))
-    if mine:
-        query = query.where(DiagnosisSession.user_id == user.id)
+    """历史会话: 仅当前用户自己的会话, 按更新时间倒序."""
+    query = select(DiagnosisSession).where(DiagnosisSession.user_id == user.id)
     if team_id is not None:
         query = query.where(DiagnosisSession.team_id == team_id)
     rows = list((await db.execute(
@@ -654,26 +627,16 @@ async def list_sessions(db: Annotated[AsyncSession, Depends(get_db)],
 
     ids = [s.id for s in rows]
     team_ids = {s.team_id for s in rows if s.team_id}
-    owner_ids = {s.user_id for s in rows}
     teams = {t.id: t.name for t in (await db.execute(
         select(Team).where(Team.id.in_(team_ids)))).scalars().all()} if team_ids else {}
-    owners = {u.id: (u.display_name or u.username) for u in (await db.execute(
-        select(User).where(User.id.in_(owner_ids)))).scalars().all()}
     counts = {sid: n for sid, n in (await db.execute(
         select(DiagnosisMessage.session_id, func.count(DiagnosisMessage.id))
         .where(DiagnosisMessage.session_id.in_(ids))
         .group_by(DiagnosisMessage.session_id))).all()}
 
-    out = []
-    for s in rows:
-        manageable = admin or s.user_id == user.id or (
-            s.team_id is not None
-            and team_role_has_perm(roles.get(s.team_id, ""), "llm:manage"))
-        out.append(_session_info(
-            s, team_name=teams.get(s.team_id or 0, ""),
-            owner_name=owners.get(s.user_id, ""),
-            can_manage=manageable, message_count=counts.get(s.id, 0)))
-    return out
+    return [_session_info(
+        s, team_name=teams.get(s.team_id or 0, ""), can_manage=True,
+        message_count=counts.get(s.id, 0)) for s in rows]
 
 
 @router.post("/sessions")

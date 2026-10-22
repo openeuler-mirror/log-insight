@@ -198,12 +198,8 @@ export const fetchAgentModels = (body: ModelQueryPayload) =>
   post<AgentConfigTestResult>('/diagnosis/config/models', body)
 export const fetchAgentReasoning = (body: { provider: string; model: string }) =>
   post<AgentReasoningResult>('/diagnosis/config/reasoning', body)
-export const listSessions = (teamId?: number, mine?: boolean) => {
-  const params: Record<string, string | number | boolean> = {}
-  if (teamId) params.team_id = teamId
-  if (mine) params.mine = true
-  return get<SessionInfo[]>('/diagnosis/sessions', Object.keys(params).length ? params : undefined)
-}
+export const listSessions = (teamId?: number) =>
+  get<SessionInfo[]>('/diagnosis/sessions', teamId ? { team_id: teamId } : undefined)
 export const createSession = (title = '', teamId?: number) =>
   post<SessionInfo>('/diagnosis/sessions', { title, team_id: teamId })
 export const renameSession = (id: string, title: string) =>
