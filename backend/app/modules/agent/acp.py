@@ -226,8 +226,14 @@ class AcpConnection:
                 logger.debug("ACP 非 JSON 输出: %s", line[:200])
                 continue
             await self._dispatch(msg)
-        # 进程退出: 结束所有等待中的请求
-        code = self.proc.returncode if self.proc else None
+        # 进程退出: 结束所有等待中的请求 (先回收真实退出码, 否则恒为 None)
+        proc = self.proc
+        if proc is not None and proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+        code = proc.returncode if proc else None
         detail = "；".join(list(self._stderr_tail)[-3:])
         for fut in self._pending.values():
             if not fut.done():
@@ -360,6 +366,13 @@ def build_env(base_dir: Path, *, api_key: str, model: str,
         "NO_COLOR": "1",
         "TERM": "dumb",
     }
+    if os.name == "nt":
+        # Windows: node 及其批处理垫片依赖 %SystemRoot%/windir, 缺失时子进程静默秒退
+        # (无 stdout/stderr), 表现为「智能体进程已退出 (code=None)」。
+        for name in ("SystemRoot", "windir"):
+            value = os.environ.get(name)
+            if value:
+                env[name] = value
     label = display_name(spec.id, model, model_name)
     if spec.native == "deepseek":
         env.update({
