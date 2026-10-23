@@ -17,6 +17,13 @@ export interface ReaderTab extends Attach {
   lang?: string
 }
 
+/* 由数据源(本地磁盘)读取到的文件内容 */
+export interface FilePayload {
+  kind: FileKind
+  content: string
+  lang?: string
+}
+
 export function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
