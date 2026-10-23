@@ -618,8 +618,10 @@ async function send() {
   if (!sid) return
 
   const refs = attached.value.map((f) => {
-    const [taskId] = f.id.split('|')
-    return { taskId, name: f.id.split('|').slice(1).join('|') || f.name }
+    // 日志文件 id 形如 "{taskId}|{rel}"; 本地文件 id 即绝对路径
+    const cut = f.id.indexOf('|')
+    if (cut > 0) return { taskId: f.id.slice(0, cut), name: f.id.slice(cut + 1) || f.name }
+    return { path: f.path || f.id, name: f.name }
   })
 
   messages.value.push({

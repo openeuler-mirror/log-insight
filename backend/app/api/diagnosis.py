@@ -13,7 +13,7 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,8 +59,16 @@ class SessionPatch(BaseModel):
 
 
 class FileRef(BaseModel):
-    task_id: uuid.UUID
+    """附件引用: 任务日志传 task_id, 本地磁盘文件传 path, 二者至少一个."""
+    task_id: uuid.UUID | None = None
+    path: str = ""
     name: str = ""
+
+    @model_validator(mode="after")
+    def _require_source(self) -> FileRef:
+        if self.task_id is None and not self.path:
+            raise ValueError("task_id 与 path 至少提供一个")
+        return self
 
 
 class SendMessage(BaseModel):
@@ -388,7 +396,18 @@ def _resolve_file(task: Task, rel: str) -> Path:
     return target
 
 
+def _local_attachment(ref: FileRef) -> Attachment:
+    """本地磁盘附件 (本地目录数据源): 用户自选路径, 仅校验存在性."""
+    path = Path(ref.path)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "本地文件不存在")
+    return Attachment(task_id="local", task_name="本地文件", name=path.name,
+                      abs_path=path, size=path.stat().st_size)
+
+
 async def _attachment(db: AsyncSession, user: User, ref: FileRef) -> Attachment:
+    if ref.task_id is None:
+        return _local_attachment(ref)
     task = (await db.execute(select(Task).where(Task.id == ref.task_id))).scalar_one_or_none()
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "日志任务不存在")

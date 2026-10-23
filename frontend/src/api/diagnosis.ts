@@ -177,7 +177,8 @@ export interface FileContent {
 }
 
 export interface FileRef {
-  taskId: string
+  taskId?: string
+  path?: string
   name: string
 }
 
@@ -233,7 +234,9 @@ export async function sendMessage(
     },
     body: JSON.stringify({
       text,
-      files: files.map((f) => ({ task_id: f.taskId, name: f.name })),
+      files: files.map((f) => (f.taskId
+        ? { task_id: f.taskId, name: f.name }
+        : { path: f.path ?? '', name: f.name })),
       model_row_id: selection?.modelRowId,
       reasoning: selection?.reasoning || '',
     }),
