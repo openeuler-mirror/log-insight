@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* 智能诊断: 对话优先
    左: 资料栏(日志树 + 运行状态)   中: 诊断对话   右: 按需展开的日志原文 */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
@@ -12,8 +12,9 @@ import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
 import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
 import Icon from '@/components/Icon.vue'
 import { useTeamsStore } from '@/stores/teams'
-import type { Attach, ReaderTab } from '@/components/diagnosisFiles'
+import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosisFiles'
 import { apiError } from '@/api/http'
+import { fetchFile as fetchFsFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
 import {
   agentStatus,
   createSession,
@@ -165,6 +166,139 @@ function clearAttached() {
   treeRef.value?.clear()
 }
 
+/* ---------------- 文件树数据源: 任务日志 / 本地目录 ----------------
+   本地目录由后端 /api/fs 提供, watchdog 递归监听所选目录并经 SSE 推送变更;
+   前端据此刷新受影响的已加载目录, 并对已打开且无未保存编辑的文件自动重载最新内容。 */
+const sourceMode = ref<'log' | 'local'>('log')
+const rootPath = ref('')
+const rootSeq = ref(0)
+const fsEvents = ref<FsChange[]>([])
+let fsSource: EventSource | null = null
+let fsCursor = 0
+
+/* 事件缓存上限: 超出后丢弃最旧的一段, 防止长时间运行无界增长 */
+const FS_EVENTS_MAX = 2000
+
+function startWatch(path: string) {
+  fsSource?.close()
+  fsSource = null
+  if (!path) return
+  const es = new EventSource(watchUrl(path))
+  es.addEventListener('change', (e) => {
+    try {
+      fsEvents.value.push(JSON.parse((e as MessageEvent).data) as FsChange)
+      if (fsEvents.value.length > FS_EVENTS_MAX) fsEvents.value.splice(0, fsEvents.value.length - FS_EVENTS_MAX)
+    } catch {
+      /* 忽略异常事件包 */
+    }
+  })
+  fsSource = es
+}
+
+/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效) */
+function pickRoot(path: string) {
+  rootPath.value = path
+  rootSeq.value++
+  fsEvents.value = []
+  fsCursor = 0
+  dirtyPaths.clear()
+  if (reloadTimer !== null) {
+    window.clearTimeout(reloadTimer)
+    reloadTimer = null
+  }
+  startWatch(path)
+}
+
+/* 释放本地目录数据源的全部瞬时状态并断开监听 */
+function resetLocal() {
+  fsSource?.close()
+  fsSource = null
+  fsEvents.value = []
+  fsCursor = 0
+  dirtyPaths.clear()
+  if (reloadTimer !== null) {
+    window.clearTimeout(reloadTimer)
+    reloadTimer = null
+  }
+  rootPath.value = ''
+  rootSeq.value++
+}
+
+/* 切换数据源: 清空另一侧的瞬时状态并断开旧的 EventSource */
+function setSource(mode: 'log' | 'local') {
+  if (mode === sourceMode.value) return
+  clearAttached()
+  if (mode === 'local') {
+    sourceMode.value = 'local'
+  } else {
+    resetLocal()
+    sourceMode.value = 'log'
+  }
+}
+
+/* 已打开文件随磁盘变化自动重载(有未保存编辑时不覆盖); 同名批量事件做去抖合并 */
+const dirtyPaths = new Set<string>()
+let reloadTimer: number | null = null
+
+async function reloadTab(t: ReaderTab, path: string) {
+  try {
+    const r = await fetchFsFile(path)
+    const content = r.kind === 'image' ? rawUrl(path) : (r.content ?? '')
+    t.kind = r.kind
+    t.content = content
+    t.original = content
+    t.lang = r.lang
+    t.size = fmtSize(r.size)
+  } catch {
+    /* 文件可能正被写入 / 已删除, 忽略 */
+  }
+}
+
+function scheduleReload(path: string) {
+  dirtyPaths.add(path)
+  if (reloadTimer !== null) window.clearTimeout(reloadTimer)
+  reloadTimer = window.setTimeout(() => {
+    reloadTimer = null
+    const paths = Array.from(dirtyPaths)
+    dirtyPaths.clear()
+    for (const p of paths) {
+      const t = tabs.value.find((x) => x.id === p)
+      if (t && t.content === t.original) void reloadTab(t, p)
+    }
+  }, 300)
+}
+
+watch(
+  () => fsEvents.value.length,
+  () => {
+    const list = fsEvents.value
+    /* 事件数组被截断(超出上限)后游标越界, 重置重新对齐 */
+    if (fsCursor > list.length) fsCursor = 0
+    for (; fsCursor < list.length; fsCursor++) {
+      const ev = list[fsCursor]
+      if (ev.kind !== 'file') continue
+      const target = ev.src ?? ev.path
+      const t = tabs.value.find((x) => x.id === target)
+      if (!t) continue
+      if (ev.op === 'deleted') {
+        if (t.content === t.original) closeTab(t.id)
+        continue
+      }
+      if (ev.op === 'moved') {
+        const oldId = t.id
+        const name = ev.path.split(/[\\/]/).pop() ?? t.name
+        if (activeTabId.value === oldId) activeTabId.value = ev.path
+        t.id = ev.path
+        t.name = name
+        t.path = ev.path
+        fileCache.delete(oldId)
+        fileCache.set(ev.path, t)
+      }
+      scheduleReload(t.id)
+    }
+  },
+)
+
 /* ---------------- 中间阅读器 ---------------- */
 const tabs = ref<ReaderTab[]>([])
 const activeTabId = ref('')
@@ -178,7 +312,7 @@ function fmtSize(bytes?: number) {
   return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
 }
 
-async function openFile(f: Attach) {
+async function openFile(f: Attach, payload?: FilePayload) {
   drawerVisible.value = true
   const cached = fileCache.get(f.id)
   if (cached) {
@@ -187,14 +321,26 @@ async function openFile(f: Attach) {
     return
   }
   try {
-    const payload = await fetchFileContent(f.id)
-    const tab: ReaderTab = {
-      ...f,
-      size: fmtSize(payload.size) || f.size,
-      kind: payload.kind,
-      content: payload.content,
-      original: payload.content,
-      lang: payload.lang,
+    let tab: ReaderTab
+    if (payload) {
+      /* 本地磁盘文件: 内容由文件树读取后传入 */
+      tab = {
+        ...f,
+        kind: payload.kind,
+        content: payload.content,
+        original: payload.content,
+        lang: payload.lang,
+      }
+    } else {
+      const p = await fetchFileContent(f.id)
+      tab = {
+        ...f,
+        size: fmtSize(p.size) || f.size,
+        kind: p.kind,
+        content: p.content,
+        original: p.content,
+        lang: p.lang,
+      }
     }
     fileCache.set(f.id, tab)
     tabs.value.push(tab)
@@ -631,6 +777,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopDrag()
   abortCtl.value?.abort()
+  fsSource?.close()
+  fsSource = null
+  if (reloadTimer !== null) window.clearTimeout(reloadTimer)
 })
 
 const phaseText = computed(() => {
@@ -665,25 +814,51 @@ const phaseText = computed(() => {
         />
       </section>
 
-      <!-- 日志文件 -->
+      <!-- 日志文件 / 本地目录 -->
       <section class="side-sec side-sec--files" :class="{ 'is-collapsed': !filesOpen }">
         <header class="side-sec-head" @click="filesOpen = !filesOpen">
           <FoldChevron :open="filesOpen" />
-          <span class="side-sec-title">日志文件</span>
+          <span class="side-sec-title">文件</span>
           <span v-if="attached.length" class="side-count">已选 {{ attached.length }}</span>
           <span class="spacer"></span>
-          <button class="icon-btn" title="刷新文件列表" @click.stop="loadFiles">
+          <div class="src-switch" @click.stop>
+            <button
+              class="src-btn"
+              :class="{ 'is-on': sourceMode === 'log' }"
+              @click="setSource('log')"
+            >
+              任务日志
+            </button>
+            <button
+              class="src-btn"
+              :class="{ 'is-on': sourceMode === 'local' }"
+              @click="setSource('local')"
+            >
+              本地目录
+            </button>
+          </div>
+          <button
+            v-if="sourceMode === 'log'"
+            class="icon-btn"
+            title="刷新文件列表"
+            @click.stop="loadFiles"
+          >
             <Icon name="refresh" :size="15" />
           </button>
         </header>
         <DiagnosisFileTree
           v-if="filesOpen"
           ref="treeRef"
+          :source="sourceMode"
           :nodes="fileNodes"
           :loading="filesLoading"
+          :root-path="rootPath"
+          :root-seq="rootSeq"
+          :events="fsEvents"
           :active-id="activeTabId"
           @open="openFile"
           @select="onTreeSelect"
+          @pick-root="pickRoot"
         >
           <template #empty>
             <div class="side-empty">
@@ -1595,6 +1770,36 @@ const phaseText = computed(() => {
 .status-dot.is-run {
   background: var(--warning);
   animation: pulse 1s ease-in-out infinite;
+}
+
+/* 文件树数据源切换 */
+.src-switch {
+  flex: none;
+  display: inline-flex;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+}
+.src-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.7;
+  padding: 1px 6px;
+  border-radius: calc(var(--radius) - 1px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.src-btn:hover {
+  color: var(--primary);
+}
+.src-btn.is-on {
+  background: var(--surface);
+  color: var(--primary);
+  font-weight: 600;
 }
 .spacer {
   flex: 1;
