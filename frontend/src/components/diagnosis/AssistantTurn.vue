@@ -3,7 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import FoldChevron from './FoldChevron.vue'
 import FoldSection from './FoldSection.vue'
-import type { ChatMessage, PlanBlock, ToolBlock } from '@/api/diagnosis'
+import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis'
 import Icon, { type IconName } from '@/components/Icon.vue'
 
 const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
@@ -11,6 +11,7 @@ const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: '
 const props = defineProps<{ message: ChatMessage; running?: boolean }>()
 
 const expanded = ref(false)
+const kbOpen = ref(false)
 watch(() => props.running, (running) => {
   if (running) expanded.value = true
 }, { immediate: true })
@@ -31,6 +32,9 @@ const tools = computed(() =>
 )
 const plans = computed(() =>
   props.message.blocks.filter((b): b is PlanBlock => b.kind === 'plan'),
+)
+const kbBlock = computed(() =>
+  props.message.blocks.find((b): b is KbBlock => b.kind === 'kb'),
 )
 const processCount = computed(() => thoughts.value.length + tools.value.length + plans.value.length)
 const openState = computed(() => expanded.value || !!props.running)
@@ -59,6 +63,27 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 
 <template>
   <div class="turn">
+    <div v-if="kbBlock && (kbBlock.citations?.length || kbBlock.note)" class="kb">
+      <button type="button" class="kb-head" @click="kbOpen = !kbOpen">
+        <FoldChevron :open="kbOpen" />
+        <span>
+          知识库引用
+          <template v-if="kbBlock.citations?.length"> · {{ kbBlock.citations.length }} 条</template>
+        </span>
+      </button>
+      <div v-if="kbOpen" class="kb-body">
+        <p v-if="kbBlock.note" class="kb-note">{{ kbBlock.note }}</p>
+        <details v-for="c in kbBlock.citations" :key="c.chunkId || c.index" class="cite">
+          <summary>
+            <b>[{{ c.index }}]</b>
+            {{ c.title }}
+            <span class="meta">{{ c.kbName }}</span>
+          </summary>
+          <pre>{{ c.content }}</pre>
+        </details>
+      </div>
+    </div>
+
     <div v-if="processCount" class="process">
       <button class="p-head" type="button" @click="expanded = !expanded">
         <FoldChevron :open="openState" />
@@ -116,6 +141,26 @@ const fmt = (n: number) => n.toLocaleString('en-US')
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.kb {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--primary-soft);
+  overflow: hidden;
+}
+.kb-head {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  padding: 5px 10px 5px 6px; border: none; background: transparent;
+  font: inherit; font-size: 12px; color: var(--primary); cursor: pointer; text-align: left;
+}
+.kb-body { border-top: 1px solid var(--primary-tint); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.kb-note { margin: 0; font-size: 12px; color: var(--text-2); }
+.cite { font-size: 12px; background: var(--surface); border-radius: var(--radius); padding: 6px 8px; }
+.cite summary { cursor: pointer; color: var(--text-1); }
+.cite .meta { color: var(--text-3); margin-left: 6px; }
+.cite pre {
+  margin: 6px 0 0; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px; color: var(--text-2); max-height: 160px; overflow: auto;
 }
 .process {
   border: 1px solid var(--border);

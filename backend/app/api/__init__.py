@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import (analysis, audit, auth, dashboard, diagnosis, fs,
+from app.api import (analysis, audit, auth, dashboard, diagnosis, fs, kb,
                      metrics, notices, perf, rules, rule_suggest, sse, tasks,
                      team_llm, teams, users)
 
@@ -9,6 +9,8 @@ api_router.include_router(auth.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(teams.router)
 api_router.include_router(team_llm.router)
+api_router.include_router(kb.router)
+api_router.include_router(kb.search_router)
 api_router.include_router(notices.router)
 api_router.include_router(users.router)
 api_router.include_router(audit.router)

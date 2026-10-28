@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     FS_LIST_MAX: int = 2000            # 单层列表返回条数上限(懒加载)
     FS_MAX_TEXT_MB: float = 50          # 文本文件读取上限(MB), 超出只提示不加载
 
+    # 团队知识库 (docs/知识库设计.md)
+    KB_ENABLED: bool = True
+    KB_DEFAULT_TOP_K: int = 10
+    KB_DEFAULT_QUERY_COUNT: int = 8
+    KB_SEARCH_RECALL_PER_QUERY: int = 30
+    KB_CONTEXT_MAX_CHARS: int = 24000
+    KB_CHUNK_SIZE: int = 512
+    KB_CHUNK_OVERLAP: int = 64
+    KB_MAX_UPLOAD_MB: int = 20
+
 
 @lru_cache
 def get_settings() -> Settings:

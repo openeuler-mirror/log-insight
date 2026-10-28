@@ -4,11 +4,14 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { apiError } from '@/api/http'
 import {
   deleteTeamProvider,
+  getTeamRerank,
   listTeamModels,
   listTeamProviders,
   saveTeamProvider,
+  saveTeamRerank,
   type TeamModel,
   type TeamProvider,
+  type TeamRerankConfig,
 } from '@/api/teamLlm'
 import TeamModelDialog from './TeamModelDialog.vue'
 
@@ -24,6 +27,15 @@ const message = ref('')
 const failed = ref(false)
 const models = ref<TeamModel[]>([])
 const dialogOpen = ref(false)
+
+const rerank = ref<TeamRerankConfig | null>(null)
+const rrEnabled = ref(false)
+const rrModel = ref('')
+const rrBase = ref('')
+const rrKey = ref('')
+const rrBusy = ref(false)
+const rrMsg = ref('')
+const rrFailed = ref(false)
 
 const current = computed(() => providers.value.find((p) => p.id === provider.value))
 const connected = computed(() => !!current.value?.connected)
@@ -69,11 +81,49 @@ watch(provider, () => {
   failed.value = false
   void loadModels()
 })
-watch(() => props.teamId, () => { void loadProviders() })
+async function loadRerank() {
+  try {
+    rerank.value = await getTeamRerank(props.teamId)
+    rrEnabled.value = !!rerank.value.enabled
+    rrModel.value = rerank.value.model || ''
+    rrBase.value = rerank.value.apiBase || ''
+    rrKey.value = ''
+    rrMsg.value = ''
+  } catch {
+    rerank.value = null
+  }
+}
+
+async function saveRerank() {
+  rrBusy.value = true
+  rrMsg.value = ''
+  rrFailed.value = false
+  try {
+    rerank.value = await saveTeamRerank(props.teamId, {
+      enabled: rrEnabled.value,
+      model: rrModel.value.trim(),
+      apiBase: rrBase.value.trim(),
+      apiKey: rrKey.value.trim() || undefined,
+    })
+    rrKey.value = ''
+    rrMsg.value = 'Rerank 配置已保存'
+  } catch (e) {
+    rrMsg.value = apiError(e)
+    rrFailed.value = true
+  } finally {
+    rrBusy.value = false
+  }
+}
+
+watch(() => props.teamId, () => {
+  void loadProviders()
+  void loadRerank()
+})
 onMounted(async () => {
   try {
     await loadProviders()
     applyFields()
+    await loadRerank()
   } catch (e) {
     message.value = apiError(e)
     failed.value = true
@@ -221,6 +271,41 @@ function onModelsChanged() {
       </div>
 
       <div v-if="message" class="msg" :class="{ err: failed }">{{ message }}</div>
+    </div>
+
+    <div class="llm-card">
+      <div class="form-row">
+        <label>知识库 Rerank</label>
+        <p class="hint" style="margin:0 0 8px">各知识库召回合并后统一打分；未配置时使用融合分。权限同大模型管理。</p>
+        <label class="row" style="gap:8px;margin-bottom:8px">
+          <input v-model="rrEnabled" type="checkbox" />
+          <span>启用团队 Rerank</span>
+        </label>
+        <div class="form-row" style="margin:0">
+          <label>模型 ID</label>
+          <input v-model="rrModel" class="o-input" placeholder="如 rerank-v3 / bge-reranker" />
+        </div>
+        <div class="form-row" style="margin:8px 0 0">
+          <label>接口地址</label>
+          <input v-model="rrBase" class="o-input" placeholder="https://api.example.com/v1" />
+        </div>
+        <div class="form-row" style="margin:8px 0 0">
+          <label>API Key</label>
+          <div class="row">
+            <input
+              v-model="rrKey"
+              class="o-input"
+              type="password"
+              autocomplete="off"
+              :placeholder="rerank?.hasKey ? `留空保持 ${rerank.keyHint}` : 'sk-...'"
+            />
+            <button class="o-btn" :disabled="rrBusy" @click="saveRerank">
+              {{ rrBusy ? '保存中…' : '保存 Rerank' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="rrMsg" class="msg" :class="{ err: rrFailed }">{{ rrMsg }}</div>
+      </div>
     </div>
 
     <TeamModelDialog

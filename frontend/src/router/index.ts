@@ -13,6 +13,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'metrics', redirect: '/perf' },
       { path: 'inspection', name: 'inspection', component: () => import('@/views/InspectionView.vue'), meta: { title: '智能巡检', perm: 'dashboard:view', menu: true } },
       { path: 'diagnosis', name: 'diagnosis', component: () => import('@/views/DiagnosisView.vue'), meta: { title: '智能诊断', perm: 'dashboard:view', menu: true, flush: true } },
+      { path: 'knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { title: '知识库', perm: 'dashboard:view', menu: true } },
+      { path: 'knowledge/:kbId', name: 'knowledge-detail', component: () => import('@/views/KnowledgeDetailView.vue'), meta: { title: '知识库详情', perm: 'dashboard:view' } },
       { path: 'teams', name: 'teams', component: () => import('@/views/TeamDetailView.vue'), meta: { title: '团队管理', perm: 'team:view', menu: true } },
       { path: 'teams/:id', name: 'team-detail', component: () => import('@/views/TeamDetailView.vue'), meta: { title: '团队详情', perm: 'team:view' } },
       { path: 'teams/:id/new-task', name: 'task-new', component: () => import('@/views/TaskWizardView.vue'), meta: { title: '创建解析任务', perm: 'task:create' } },

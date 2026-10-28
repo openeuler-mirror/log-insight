@@ -51,6 +51,10 @@ _GUARDS: list[tuple[str, str]] = [
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS model_name VARCHAR(128) NOT NULL DEFAULT ''", "diagnosis_sessions.model_name"),
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS reasoning VARCHAR(16) NOT NULL DEFAULT ''", "diagnosis_sessions.reasoning"),
     ("CREATE INDEX IF NOT EXISTS ix_diagnosis_sessions_team_id ON diagnosis_sessions (team_id)", "diagnosis_sessions.team_id 索引"),
+    # 知识库: 团队 Rerank + 诊断会话勾选
+    ("ALTER TABLE teams ADD COLUMN IF NOT EXISTS kb_rerank_config JSONB DEFAULT '{}'::jsonb", "teams.kb_rerank_config"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS selected_kb_ids JSONB DEFAULT '[]'::jsonb", "diagnosis_sessions.selected_kb_ids"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS kb_top_k INTEGER DEFAULT 10", "diagnosis_sessions.kb_top_k"),
 ]
 
 

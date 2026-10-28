@@ -23,18 +23,22 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("rule:view", "规则集", "查看团队规则"),
     ("rule:manage_team", "规则集", "管理团队规则"),
     ("llm:use", "大模型", "使用团队模型"),
-    ("llm:manage", "大模型", "管理团队模型"),
+    ("llm:manage", "大模型", "管理团队模型（含知识库 Rerank）"),
     ("llm:usage", "大模型", "查看团队用量"),
+    ("kb:view", "知识库", "查看知识库"),
+    ("kb:search", "知识库", "诊断中检索知识库"),
+    ("kb:manage", "知识库", "管理知识库（建库/导入/软删）"),
 ]
 
-PERM_GROUPS = ["工作台", "团队", "解析任务", "规则集", "大模型", "审计日志"]
+PERM_GROUPS = ["工作台", "团队", "解析任务", "规则集", "大模型", "知识库", "审计日志"]
 
 # 团队内双角色 -> 权限映射 ('*' 表示全部)
 TEAM_ROLE_PERMS: dict[str, list[str]] = {
     "team_admin": ["*"],
     "member": ["dashboard:view", "team:view",
                "task:view", "task:create", "task:execute", "task:llm",
-               "rule:view", "llm:use"],
+               "rule:view", "llm:use",
+               "kb:view", "kb:search"],
 }
 
 

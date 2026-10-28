@@ -6,12 +6,14 @@ import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
 import ComposerModelMenu from '@/components/diagnosis/ComposerModelMenu.vue'
+import ComposerKbMenu from '@/components/diagnosis/ComposerKbMenu.vue'
 import ComposerTaskDock from '@/components/diagnosis/ComposerTaskDock.vue'
 import AssistantTurn from '@/components/diagnosis/AssistantTurn.vue'
 import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
 import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
 import Icon from '@/components/Icon.vue'
 import { useTeamsStore } from '@/stores/teams'
+import { useRbacStore } from '@/stores/rbac'
 import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosisFiles'
 import { apiError } from '@/api/http'
 import { fetchFile as fetchFsFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
@@ -22,6 +24,7 @@ import {
   listFiles,
   listMessages,
   listSessions,
+  patchSession,
   readFile as fetchFileContent,
   saveTeamSelection,
   sendMessage,
@@ -29,6 +32,7 @@ import {
   type CatalogTeam,
   type ChatMessage,
   type FileNode,
+  type KbBlock,
   type MessageBlock,
   type PlanBlock,
   type SessionInfo,
@@ -88,6 +92,7 @@ const catalog = ref<CatalogTeam[]>([])
 const errorText = ref('')
 
 const teamsStore = useTeamsStore()
+const rbac = useRbacStore()
 const ready = computed(() => !!status.value?.ready)
 const modelLabel = computed(() => status.value?.modelName || status.value?.model || '—')
 const modelEmpty = computed(() => !catalog.value.some((t) => t.models.length))
@@ -381,6 +386,29 @@ const bodyRef = ref<HTMLElement | null>(null)
 
 const currentSession = computed(() => sessions.value.find((s) => s.id === activeSessionId.value))
 const currentTitle = computed(() => currentSession.value?.title || '新的诊断')
+const sessionTeamId = computed(() => currentSession.value?.teamId ?? status.value?.teamId ?? null)
+const canKbSearch = computed(() => {
+  const tid = sessionTeamId.value
+  return !!tid && (rbac.isPlatformAdmin || teamsStore.can(tid, 'kb:search'))
+})
+const sessionKbIds = computed(() => currentSession.value?.selectedKbIds ?? [])
+const sessionKbTopK = computed(() => currentSession.value?.kbTopK ?? 10)
+
+async function onKbChange(payload: { selectedIds: number[]; topK: number }) {
+  const sid = activeSessionId.value
+  if (!sid) return
+  try {
+    const updated = await patchSession(sid, {
+      selectedKbIds: payload.selectedIds,
+      kbTopK: payload.topK,
+    })
+    const idx = sessions.value.findIndex((s) => s.id === sid)
+    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
+}
+
 /* 输入框展示当前会话实际使用的模型 (未显式切换时取向会话快照) */
 const composerStatus = computed<AgentStatus | null>(() => {
   if (!status.value) return null
@@ -530,6 +558,25 @@ function resetRun() {
   phase.value = ''
 }
 
+function normalizeKbBlock(data: Record<string, unknown>): KbBlock {
+  const raw = (data.citations as Record<string, unknown>[] | undefined) || []
+  return {
+    kind: 'kb',
+    citations: raw.map((c) => ({
+      index: Number(c.index ?? 0),
+      chunkId: Number(c.chunkId ?? c.chunk_id ?? 0),
+      documentId: Number(c.documentId ?? c.document_id ?? 0),
+      kbId: Number(c.kbId ?? c.kb_id ?? 0),
+      kbName: String(c.kbName ?? c.kb_name ?? ''),
+      title: String(c.title ?? ''),
+      content: String(c.content ?? ''),
+      score: Number(c.score ?? 0),
+    })),
+    queries: (data.queries as string[] | undefined) || [],
+    note: String(data.note ?? ''),
+  }
+}
+
 function appendText(msg: ChatMessage, kind: 'text' | 'thought', text: string) {
   const last = msg.blocks[msg.blocks.length - 1]
   if (last && last.kind === kind) {
@@ -651,6 +698,11 @@ async function send() {
       onEvent(event, data) {
         if (event === 'phase') {
           phase.value = data.phase ?? ''
+        } else if (event === 'kb') {
+          const block = normalizeKbBlock(data)
+          const existing = live.blocks.find((b): b is KbBlock => b.kind === 'kb')
+          if (existing) Object.assign(existing, block)
+          else live.blocks.unshift(block)
         } else if (event === 'text') {
           appendText(live, 'text', data.text ?? '')
         } else if (event === 'thought') {
@@ -1037,6 +1089,14 @@ const phaseText = computed(() => {
                 :status="composerStatus"
                 :disabled="running"
                 @change="onModelChange"
+              />
+              <ComposerKbMenu
+                :team-id="sessionTeamId"
+                :selected-ids="sessionKbIds"
+                :top-k="sessionKbTopK"
+                :can-search="canKbSearch"
+                :disabled="running"
+                @change="onKbChange"
               />
               <span class="composer-hint o-text-3">
                 {{

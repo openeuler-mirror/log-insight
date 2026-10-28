@@ -10,12 +10,14 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5180,
+    host: '0.0.0.0',
+    port: 33480, // 本机 8000/5180 易冲突或外网不通，开发用高端口
     open: false,
+    allowedHosts: true,
     proxy: {
-      // 后端 API (uvicorn :8000); SSE 需关闭缓冲保证流式输出
+      // 后端 API (uvicorn :8001); 本机 8000 已被占用
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8001',
         changeOrigin: true,
         // SSE: 响应直通, 不缓冲 (EventSource / llm 打字机依赖)
         configure: (proxy) => {
