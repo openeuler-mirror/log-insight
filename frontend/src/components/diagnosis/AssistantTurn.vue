@@ -5,6 +5,7 @@ import FoldChevron from './FoldChevron.vue'
 import FoldSection from './FoldSection.vue'
 import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis'
 import Icon, { type IconName } from '@/components/Icon.vue'
+import MarkdownView from '@/components/MarkdownView.vue'
 
 const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
 
@@ -20,7 +21,7 @@ const text = computed(() =>
   props.message.blocks
     .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
     .map((b) => b.text)
-    .join(''),
+    .join('\n\n'),
 )
 const thoughts = computed(() =>
   props.message.blocks
@@ -79,7 +80,7 @@ const fmt = (n: number) => n.toLocaleString('en-US')
             {{ c.title }}
             <span class="meta">{{ c.kbName }}</span>
           </summary>
-          <pre>{{ c.content }}</pre>
+          <MarkdownView class="cite-md" :text="c.content" />
         </details>
       </div>
     </div>
@@ -121,7 +122,7 @@ const fmt = (n: number) => n.toLocaleString('en-US')
       </div>
     </div>
 
-    <div v-if="text" class="text">{{ text }}</div>
+    <MarkdownView v-if="text" class="text" :text="text" />
     <div v-else-if="running && !processCount" class="typing">正在思考…</div>
 
     <div v-if="message.error" class="err">{{ message.error }}</div>
@@ -158,9 +159,11 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 .cite { font-size: 12px; background: var(--surface); border-radius: var(--radius); padding: 6px 8px; }
 .cite summary { cursor: pointer; color: var(--text-1); }
 .cite .meta { color: var(--text-3); margin-left: 6px; }
-.cite pre {
-  margin: 6px 0 0; white-space: pre-wrap; word-break: break-word;
-  font-size: 12px; color: var(--text-2); max-height: 160px; overflow: auto;
+.cite .cite-md {
+  margin-top: 6px;
+  font-size: 12px;
+  max-height: 160px;
+  overflow: auto;
 }
 .process {
   border: 1px solid var(--border);
@@ -288,8 +291,6 @@ const fmt = (n: number) => n.toLocaleString('en-US')
   color: var(--text-3);
 }
 .text {
-  white-space: pre-wrap;
-  line-height: 1.75;
   font-size: 13.5px;
   color: var(--text-1);
 }
