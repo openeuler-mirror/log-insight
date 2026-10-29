@@ -10,6 +10,7 @@ import {
   type KbDocument, type KbIngestBatch, type KnowledgeBase,
 } from '@/api/kb'
 import Icon from '@/components/Icon.vue'
+import MarkdownView from '@/components/MarkdownView.vue'
 
 const ACCEPT = '.txt,.md,.pdf,.docx,.xlsx,.xls,.csv'
 const ACCEPT_SET = new Set(['.txt', '.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv'])
@@ -299,7 +300,7 @@ onMounted(reload)
             <button v-if="canManage" class="link danger" @click="onDeleteDoc(activeDocId!)">删除</button>
           </div>
           <pre v-if="docLoading" class="body muted">加载中…</pre>
-          <pre v-else class="body">{{ docContent }}</pre>
+          <MarkdownView v-else class="body" :text="docContent" />
         </template>
       </section>
     </div>
@@ -396,7 +397,7 @@ onMounted(reload)
               </span>
             </label>
             <p v-if="it.errorMessage" class="err sm">{{ it.errorMessage }}</p>
-            <pre v-if="it.previewMarkdown" class="preview-md">{{ it.previewMarkdown }}</pre>
+            <MarkdownView v-if="it.previewMarkdown" class="preview-md" :text="it.previewMarkdown" />
           </article>
         </div>
         <div v-if="previewErr" class="err sm">{{ previewErr }}</div>
@@ -457,12 +458,15 @@ onMounted(reload)
 .doc-item.active { background: var(--primary-soft); }
 .doc-title { font-size: 13px; color: var(--text-1); font-weight: 500; }
 .doc-meta { font-size: 12px; color: var(--text-3); margin-top: 2px; }
-.reader { padding: 14px 16px; display: flex; flex-direction: column; min-height: calc(100vh - 180px); }
+.reader {
+  padding: 14px 16px; display: flex; flex-direction: column;
+  min-height: calc(100vh - 180px); max-height: calc(100vh - 180px); overflow: hidden;
+}
 .reader-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
 .reader-head h2 { margin: 0; font-size: 16px; color: var(--text-1); }
 .body {
-  flex: 1; margin: 0; padding: 12px; background: var(--surface-3); border-radius: var(--radius);
-  font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  flex: 1; min-height: 0; margin: 0; padding: 12px; background: var(--surface-3); border-radius: var(--radius);
+  font-size: 13px; word-break: break-word;
   color: var(--text-1); overflow: auto;
 }
 .btn { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius); padding: 6px 12px; cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
@@ -507,7 +511,7 @@ onMounted(reload)
 .row-check .tag.ok { background: var(--success-soft); color: var(--success-deep); }
 .preview-md {
   margin: 8px 0 0; padding: 8px; background: var(--surface); border-radius: var(--radius);
-  font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px;
   max-height: 180px; overflow: auto; color: var(--text-1);
 }
 
