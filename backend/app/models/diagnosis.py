@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,9 @@ class DiagnosisSession(Base):
     provider: Mapped[str] = mapped_column(String(32), default="")
     model_name: Mapped[str] = mapped_column(String(128), default="")
     reasoning: Mapped[str] = mapped_column(String(16), default="")
+    # 知识库: 空列表=本会话不启用; top_k 诊断页可配
+    selected_kb_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    kb_top_k: Mapped[int] = mapped_column(Integer, default=10)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)

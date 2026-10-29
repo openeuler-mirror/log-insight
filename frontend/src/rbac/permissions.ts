@@ -23,11 +23,14 @@ export const PERMISSIONS: PermDef[] = [
   { key: 'rule:view', group: '规则集', label: '查看团队规则' },
   { key: 'rule:manage_team', group: '规则集', label: '管理团队规则' },
   { key: 'llm:use', group: '大模型', label: '使用团队模型' },
-  { key: 'llm:manage', group: '大模型', label: '管理团队模型' },
+  { key: 'llm:manage', group: '大模型', label: '管理团队模型（含知识库 Rerank）' },
   { key: 'llm:usage', group: '大模型', label: '查看团队用量' },
+  { key: 'kb:view', group: '知识库', label: '查看知识库' },
+  { key: 'kb:search', group: '知识库', label: '诊断中检索知识库' },
+  { key: 'kb:manage', group: '知识库', label: '管理知识库（建库/导入/软删）' },
 ]
 
-export const PERM_GROUPS = ['工作台', '团队', '解析任务', '规则集', '大模型', '审计日志']
+export const PERM_GROUPS = ['工作台', '团队', '解析任务', '规则集', '大模型', '知识库', '审计日志']
 
 /* ---------- 团队内固定双角色 (创建者与管理员权限已合一) ---------- */
 export interface TeamRole {
@@ -50,7 +53,7 @@ export const TEAM_ROLES: TeamRole[] = [
     desc: '查看团队任务与规则，使用团队模型执行诊断',
     perms: [
       'dashboard:view', 'team:view', 'task:view', 'task:create', 'task:execute', 'task:llm',
-      'rule:view', 'llm:use',
+      'rule:view', 'llm:use', 'kb:view', 'kb:search',
     ],
   },
 ]

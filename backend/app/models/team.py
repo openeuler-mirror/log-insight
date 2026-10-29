@@ -5,6 +5,7 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -18,6 +19,8 @@ class Team(Base):
     name: Mapped[str] = mapped_column(String(64), unique=True)
     desc: Mapped[str] = mapped_column(String(255), default="")
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # 团队级知识库 Rerank (各库共用); 空=检索时降级融合分
+    kb_rerank_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

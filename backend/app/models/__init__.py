@@ -10,6 +10,8 @@ from app.models.diagnosis import (DiagnosisMessage, DiagnosisSession,
                                   DiagnosisUserConfig)
 from app.models.llm import (DiagnosisUserTeamSelection, LlmUsageEvent,
                             TeamLlmModel, TeamLlmProvider)
+from app.models.kb import (KnowledgeBase, KbChunk, KbDocument,
+                           KbIngestBatch, KbIngestItem)
 
 __all__ = [
     "User", "Role", "Permission",
@@ -20,4 +22,5 @@ __all__ = [
     "AuditLog", "ParsedEventRecord", "RuleSuggestion",
     "DiagnosisSession", "DiagnosisMessage", "DiagnosisUserConfig",
     "TeamLlmProvider", "TeamLlmModel", "LlmUsageEvent", "DiagnosisUserTeamSelection",
+    "KnowledgeBase", "KbDocument", "KbChunk", "KbIngestBatch", "KbIngestItem",
 ]

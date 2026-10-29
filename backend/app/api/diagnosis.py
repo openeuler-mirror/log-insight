@@ -55,7 +55,9 @@ class SessionCreate(BaseModel):
 
 
 class SessionPatch(BaseModel):
-    title: str = Field(min_length=1, max_length=80)
+    title: str | None = Field(default=None, max_length=80)
+    selected_kb_ids: list[int] | None = None
+    kb_top_k: int | None = Field(default=None, ge=1, le=50)
 
 
 class FileRef(BaseModel):
@@ -122,6 +124,8 @@ def _session_info(s: DiagnosisSession, *, team_name: str = "", owner_name: str =
     return {"id": str(s.id), "title": s.title, "model": s.model,
             "team_id": s.team_id, "provider": s.provider,
             "model_name": s.model_name, "reasoning": s.reasoning,
+            "selected_kb_ids": list(s.selected_kb_ids or []),
+            "kb_top_k": int(s.kb_top_k or 10),
             "user_id": s.user_id, "owner_name": owner_name,
             "team_name": team_name, "can_manage": can_manage,
             "message_count": message_count,
@@ -678,12 +682,34 @@ async def create_session(body: SessionCreate,
 
 
 @router.patch("/sessions/{session_id}")
-async def rename_session(session_id: uuid.UUID, body: SessionPatch,
-                         db: Annotated[AsyncSession, Depends(get_db)],
-                         user: Annotated[User, Depends(get_current_user)]):
-    """重命名会话 (创建者/团队管理员)."""
+async def patch_session(session_id: uuid.UUID, body: SessionPatch,
+                        db: Annotated[AsyncSession, Depends(get_db)],
+                        user: Annotated[User, Depends(get_current_user)]):
+    """更新会话标题 / 知识库选择 / TopK."""
     s = await _load_session(db, user, session_id, manage=True)
-    s.title = body.title.strip()
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "标题不能为空")
+        s.title = title
+    if body.kb_top_k is not None:
+        s.kb_top_k = body.kb_top_k
+    if body.selected_kb_ids is not None:
+        ids = list(dict.fromkeys(int(x) for x in body.selected_kb_ids))
+        if ids and s.team_id:
+            from app.models.kb import KnowledgeBase
+            valid = (await db.execute(select(KnowledgeBase.id).where(
+                KnowledgeBase.team_id == s.team_id,
+                KnowledgeBase.id.in_(ids),
+                KnowledgeBase.deleted_at.is_(None),
+                KnowledgeBase.status == "active",
+            ))).scalars().all()
+            ids = [i for i in ids if i in set(valid)]
+        elif ids and not s.team_id:
+            ids = []
+        s.selected_kb_ids = ids
+    if (body.title is None and body.selected_kb_ids is None and body.kb_top_k is None):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "无更新字段")
     s.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(s)
@@ -814,6 +840,11 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
 
         return EventSourceResponse(not_ready())
 
+    # 快照知识库选择（generator 内不再依赖 ORM 会话对象）
+    kb_ids = list(sess.selected_kb_ids or [])
+    kb_top_k = int(sess.kb_top_k or 10)
+    retrieve_team_id = int(team_id or sess.team_id or 0)
+
     async def generator():
         blocks: list[dict] = []
         text_block: dict | None = None
@@ -828,6 +859,54 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
 
         yield {"event": "phase", "data": json.dumps({"phase": "preparing"},
                                                     ensure_ascii=False)}
+
+        # R1: 发消息前若已选库则自动检索并写入 kb_context.md
+        if kb_ids and retrieve_team_id:
+            try:
+                from app.modules.kb.retrieve import citations_as_dicts, retrieve_for_diagnosis
+                from app.modules.diagnosis.team_models import default_model_row
+                chat = None
+                async with AsyncSessionLocal() as kb_db:
+                    default = await default_model_row(kb_db, retrieve_team_id)
+                    if default is not None:
+                        mrow, prow = default
+                        ckey = decrypt_secret(prow.api_key_enc) if prow.api_key_enc else ""
+                        ckey = ckey or (_global_key() if prow.provider == "deepseek" else "")
+                        if ckey:
+                            chat = {
+                                "api_base": prow.api_base or "",
+                                "api_key": ckey,
+                                "model": mrow.model_id,
+                                "protocol": prow.protocol or "messages",
+                            }
+                    r = await retrieve_for_diagnosis(
+                        kb_db,
+                        team_id=retrieve_team_id,
+                        session_id=str(session_uuid),
+                        selected_kb_ids=kb_ids,
+                        user_text=text,
+                        top_k=kb_top_k,
+                        chat=chat,
+                    )
+                if r.citations:
+                    kb_block = {
+                        "kind": "kb",
+                        "citations": citations_as_dicts(r.citations),
+                        "queries": r.queries,
+                        "note": r.note,
+                    }
+                    blocks.append(kb_block)
+                    yield {"event": "kb", "data": json.dumps(kb_block, ensure_ascii=False)}
+                elif r.note:
+                    yield {"event": "kb", "data": json.dumps(
+                        {"kind": "kb", "citations": [], "queries": r.queries, "note": r.note},
+                        ensure_ascii=False)}
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("诊断知识库检索失败")
+                yield {"event": "kb", "data": json.dumps(
+                    {"kind": "kb", "citations": [], "queries": [],
+                     "note": f"知识库检索失败：{exc}"[:200]},
+                    ensure_ascii=False)}
 
         async for ev in stream_prompt(session_id=str(session_uuid), dsh_session_id=dsh_sid,
                                       text=text, attachments=attachments,

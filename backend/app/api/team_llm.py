@@ -15,6 +15,7 @@ from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_team_perm
 from app.models.llm import LlmUsageEvent, TeamLlmModel, TeamLlmProvider
+from app.models.team import Team
 from app.models.user import User
 from app.modules.agent.discovery import discover_models
 from app.modules.agent.probe import reasoning_options
@@ -52,6 +53,65 @@ class ModelPatch(BaseModel):
     display_name: str | None = None
     enabled: bool | None = None
     sort_order: int | None = None
+
+
+class RerankIn(BaseModel):
+    enabled: bool = False
+    model: str = ""
+    api_base: str = ""
+    api_key: str | None = None  # 空=保持原密钥
+
+
+def _rerank_public(cfg: dict | None) -> dict:
+    cfg = cfg or {}
+    has_key = bool(cfg.get("api_key_enc") or cfg.get("api_key"))
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "model": str(cfg.get("model") or ""),
+        "api_base": str(cfg.get("api_base") or ""),
+        "has_key": has_key,
+        "key_hint": cfg.get("key_hint") or ("****" if has_key else ""),
+    }
+
+
+@router.get("/rerank")
+async def get_team_rerank(
+    trio: Annotated[tuple, Depends(require_team_perm("llm:use"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _, team, _role = trio
+    row = await db.get(Team, team.id)
+    return _rerank_public(row.kb_rerank_config if row else {})
+
+
+@router.put("/rerank")
+async def put_team_rerank(
+    body: RerankIn,
+    trio: Annotated[tuple, Depends(require_team_perm("llm:manage"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _, team, _role = trio
+    row = await db.get(Team, team.id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
+    cfg = dict(row.kb_rerank_config or {})
+    cfg["enabled"] = body.enabled
+    cfg["model"] = (body.model or "").strip()
+    cfg["api_base"] = _valid_base(body.api_base)
+    raw_key = (body.api_key or "").strip()
+    if raw_key:
+        if len(raw_key) > 512:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "API Key 过长")
+        cfg["api_key_enc"] = encrypt_secret(raw_key)
+        cfg["key_hint"] = "****" + raw_key[-4:]
+        cfg.pop("api_key", None)
+    if body.enabled and not cfg.get("model"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "启用 Rerank 时必须填写模型 ID")
+    if body.enabled and not (cfg.get("api_key_enc") or cfg.get("api_key")):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "启用 Rerank 时必须配置 API Key")
+    row.kb_rerank_config = cfg
+    await db.commit()
+    return _rerank_public(cfg)
 
 
 def _valid_base(value: str) -> str:

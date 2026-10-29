@@ -140,3 +140,24 @@ export const fetchMyTeamUsage = (
   teamId: number | string,
   params: { start?: string; end?: string },
 ) => get<UsageResult>(`${base(teamId)}/usage/me`, params)
+
+export interface TeamRerankConfig {
+  enabled: boolean
+  model: string
+  apiBase: string
+  hasKey: boolean
+  keyHint: string
+}
+
+export const getTeamRerank = (teamId: number | string) =>
+  get<TeamRerankConfig>(`${base(teamId)}/rerank`)
+
+export const saveTeamRerank = (
+  teamId: number | string,
+  body: { enabled: boolean; model: string; apiBase?: string; apiKey?: string },
+) => put<TeamRerankConfig>(`${base(teamId)}/rerank`, {
+  enabled: body.enabled,
+  model: body.model,
+  api_base: body.apiBase ?? '',
+  api_key: body.apiKey,
+})

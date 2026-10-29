@@ -96,6 +96,8 @@ export interface SessionInfo {
   provider: string
   modelName: string
   reasoning: string
+  selectedKbIds: number[]
+  kbTopK: number
   userId: number
   ownerName: string
   teamName: string
@@ -103,6 +105,17 @@ export interface SessionInfo {
   messageCount: number
   createdAt: string
   updatedAt: string
+}
+
+export interface KbCitation {
+  index: number
+  chunkId: number
+  documentId: number
+  kbId: number
+  kbName: string
+  title: string
+  content: string
+  score: number
 }
 
 /** 团队可用模型 (按团队分组) */
@@ -142,12 +155,20 @@ export type PlanBlock = {
   entries: { content: string; status: 'pending' | 'in_progress' | 'completed'; priority: string }[]
 }
 
+export type KbBlock = {
+  kind: 'kb'
+  citations: KbCitation[]
+  queries?: string[]
+  note?: string
+}
+
 export type MessageBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thought'; text: string }
   | { kind: 'file'; name: string; taskId?: string }
   | ToolBlock
   | PlanBlock
+  | KbBlock
 
 export interface ChatMessage {
   id: number | string
@@ -205,6 +226,17 @@ export const createSession = (title = '', teamId?: number) =>
   post<SessionInfo>('/diagnosis/sessions', { title, team_id: teamId })
 export const renameSession = (id: string, title: string) =>
   patch<SessionInfo>(`/diagnosis/sessions/${id}`, { title })
+export const patchSession = (id: string, body: {
+  title?: string
+  selectedKbIds?: number[]
+  kbTopK?: number
+}) => {
+  const payload: Record<string, unknown> = {}
+  if (body.title !== undefined) payload.title = body.title
+  if (body.selectedKbIds !== undefined) payload.selected_kb_ids = body.selectedKbIds
+  if (body.kbTopK !== undefined) payload.kb_top_k = body.kbTopK
+  return patch<SessionInfo>(`/diagnosis/sessions/${id}`, payload)
+}
 export const deleteSession = (id: string) => del(`/diagnosis/sessions/${id}`)
 export const listMessages = (id: string) => get<ChatMessage[]>(`/diagnosis/sessions/${id}/messages`)
 export const listFiles = () => get<FileNode[]>('/diagnosis/files')
