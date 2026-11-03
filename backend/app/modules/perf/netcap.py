@@ -77,10 +77,12 @@ def _extract_ip(frame: bytes, network: int):
     else:
         return None
 
+    fragment_offset = 0
     if ethertype == 0x0800:  # IPv4
         if len(frame) < offset + 20:
             return None
         ihl = (frame[offset] & 0x0F) * 4
+        fragment_offset = struct.unpack(">H", frame[offset + 6:offset + 8])[0] & 0x1FFF
         proto = frame[offset + 9]
         src = str(ipaddress.IPv4Address(frame[offset + 12:offset + 16]))
         dst = str(ipaddress.IPv4Address(frame[offset + 16:offset + 20]))
@@ -96,7 +98,8 @@ def _extract_ip(frame: bytes, network: int):
         return None
 
     sport = dport = 0
-    if proto in (6, 17) and len(frame) >= t + 4:
+    # 非首片的载荷不是传输层头, 不能将其内容解释为端口。
+    if fragment_offset == 0 and proto in (6, 17) and len(frame) >= t + 4:
         sport, dport = struct.unpack(">HH", frame[t:t + 4])
     name = IP_PROTO.get(proto, f"IP-{proto}")
     return src, dst, name, sport, dport
