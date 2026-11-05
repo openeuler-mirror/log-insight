@@ -4,7 +4,7 @@
    - 本地目录(后端 /api/fs): 顶部「选择目录 / 选择文件」打开服务端路径弹窗, 逐层懒加载;
      磁盘变更(SSE)只定点刷新受影响的已加载目录, 保留展开态。
    通用交互: 点击打开 / 勾选多选(目录整选) / 拖拽加入提问上下文。 */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
 import Icon from '@/components/Icon.vue'
 import DiagnosisPathPicker from '@/components/DiagnosisPathPicker.vue'
@@ -260,6 +260,13 @@ watch(
     if (props.source === 'local') void loadRoot(p)
   },
 )
+
+/* 挂载时已有目录则直接加载 (折叠只隐藏不卸载, 正常仅在首次挂载时命中) */
+onMounted(() => {
+  if (props.source === 'local' && props.rootPath) {
+    void loadRoot(props.rootPath)
+  }
+})
 
 /* 切换数据源时释放本侧瞬时状态, 避免两边的展开 / 勾选 / 待刷新残留 */
 watch(

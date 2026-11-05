@@ -98,6 +98,8 @@ export interface SessionInfo {
   reasoning: string
   selectedKbIds: number[]
   kbTopK: number
+  /* 会话绑定的本地目录 (文件栏), 空=未选择 */
+  localRoot: string
   userId: number
   ownerName: string
   teamName: string
@@ -230,11 +232,13 @@ export const patchSession = (id: string, body: {
   title?: string
   selectedKbIds?: number[]
   kbTopK?: number
+  localRoot?: string
 }) => {
   const payload: Record<string, unknown> = {}
   if (body.title !== undefined) payload.title = body.title
   if (body.selectedKbIds !== undefined) payload.selected_kb_ids = body.selectedKbIds
   if (body.kbTopK !== undefined) payload.kb_top_k = body.kbTopK
+  if (body.localRoot !== undefined) payload.local_root = body.localRoot
   return patch<SessionInfo>(`/diagnosis/sessions/${id}`, payload)
 }
 export const deleteSession = (id: string) => del(`/diagnosis/sessions/${id}`)

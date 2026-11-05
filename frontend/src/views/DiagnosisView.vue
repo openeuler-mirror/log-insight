@@ -207,7 +207,8 @@ function startWatch(path: string) {
   fsSource = es
 }
 
-/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效) */
+/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效),
+   并把目录绑定到当前会话持久化 */
 function pickRoot(path: string) {
   rootPath.value = path
   rootSeq.value++
@@ -219,6 +220,38 @@ function pickRoot(path: string) {
     reloadTimer = null
   }
   startWatch(path)
+  void saveSessionRoot(path)
+}
+
+/* 目录绑定到会话: 后端持久化, 切回该会话时自动恢复 */
+async function saveSessionRoot(path: string) {
+  const sid = activeSessionId.value
+  if (!sid) return
+  try {
+    const updated = await patchSession(sid, { localRoot: path })
+    const idx = sessions.value.findIndex((s) => s.id === sid)
+    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
+}
+
+/* 会话切换: 恢复该会话绑定的本地目录(存在则自动切到本地目录模式), 无绑定则清空 */
+function applySessionRoot(sess?: SessionInfo) {
+  const path = sess?.localRoot || ''
+  /* 勾选属于会话上下文: 切换会话时清空, 避免与上一个会话的文件残留错配 */
+  clearAttached()
+  fsSource?.close()
+  fsSource = null
+  fsEvents.value = []
+  fsCursor = 0
+  dirtyPaths.clear()
+  rootPath.value = path
+  rootSeq.value++
+  if (path) {
+    sourceMode.value = 'local'
+    startWatch(path)
+  }
 }
 
 /* 释放本地目录数据源的全部瞬时状态并断开监听 */
@@ -450,6 +483,7 @@ async function loadMessageList(id: string) {
   queue.value = []
   try {
     messages.value = await listMessages(id)
+    applySessionRoot(sessions.value.find((s) => s.id === id))
     resetRun()
     await scrollBottom()
   } catch (e) {
@@ -962,8 +996,8 @@ const phaseText = computed(() => {
             <Icon name="refresh" :size="15" />
           </button>
         </header>
+        <div v-show="filesOpen" class="tree-wrap">
         <DiagnosisFileTree
-          v-if="filesOpen"
           ref="treeRef"
           :source="sourceMode"
           :nodes="fileNodes"
@@ -984,6 +1018,7 @@ const phaseText = computed(() => {
             </div>
           </template>
         </DiagnosisFileTree>
+        </div>
       </section>
 
       <!-- 会话统计 / 状态 -->
@@ -1305,6 +1340,13 @@ const phaseText = computed(() => {
 }
 .side-sec.is-collapsed {
   flex: 0 0 auto;
+}
+/* 文件树容器: 折叠时仅隐藏不卸载, 保留目录 / 展开态 / 勾选 */
+.tree-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .side-sec--history {
   flex: 0 1 auto;
