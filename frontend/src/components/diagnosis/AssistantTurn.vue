@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /* 一轮助手回复: 正文常显, 思考/工具/计划折叠, 轮末用量行 */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import FoldChevron from './FoldChevron.vue'
 import FoldSection from './FoldSection.vue'
 import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis'
@@ -60,6 +60,48 @@ const usage = computed(() => {
 })
 const hasUsage = computed(() => usage.value.total > 0 || usage.value.input > 0 || usage.value.output > 0)
 const fmt = (n: number) => n.toLocaleString('en-US')
+
+/* 复制正文: 优先剪贴板 API, 非 HTTPS 环境降级 execCommand */
+const copied = ref(false)
+let copiedTimer: number | undefined
+
+function fallbackCopy(content: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = content
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  document.body.removeChild(ta)
+  return ok
+}
+
+async function copyText() {
+  const content = text.value
+  if (!content) return
+  let ok = false
+  try {
+    await navigator.clipboard.writeText(content)
+    ok = true
+  } catch {
+    ok = fallbackCopy(content)
+  }
+  if (ok) {
+    copied.value = true
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copied.value = false
+    }, 1600)
+  }
+}
+
+onBeforeUnmount(() => window.clearTimeout(copiedTimer))
 </script>
 
 <template>
@@ -133,6 +175,13 @@ const fmt = (n: number) => n.toLocaleString('en-US')
       <span v-if="usage.cached">缓存读 {{ fmt(usage.cached) }}</span>
       <span v-if="usage.thought">思考 {{ fmt(usage.thought) }}</span>
       <span class="sum">合计 {{ fmt(usage.total) }} tokens</span>
+    </div>
+
+    <div v-if="text" class="actions">
+      <button type="button" class="copy-btn" :class="{ 'is-ok': copied }" @click="copyText">
+        <Icon :name="copied ? 'check' : 'clipboard'" :size="12" />
+        <span>{{ copied ? '已复制' : '复制' }}</span>
+      </button>
     </div>
   </div>
 </template>
@@ -311,5 +360,32 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 }
 .usage .sum {
   color: var(--text-3);
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-4);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.copy-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.copy-btn.is-ok {
+  border-color: var(--success);
+  color: var(--success);
 }
 </style>

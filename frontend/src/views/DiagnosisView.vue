@@ -32,6 +32,7 @@ import {
   type CatalogTeam,
   type ChatMessage,
   type FileNode,
+  type FileRef,
   type KbBlock,
   type MessageBlock,
   type PlanBlock,
@@ -157,6 +158,12 @@ async function loadFiles() {
   } finally {
     filesLoading.value = false
   }
+}
+
+/* 刷新文件列表: 任务日志重拉接口, 本地目录通过 rootSeq 自增触发整树重载 */
+function refreshFiles() {
+  if (sourceMode.value === 'log') void loadFiles()
+  else if (rootPath.value) rootSeq.value++
 }
 
 function onTreeSelect(files: Attach[]) {
@@ -433,6 +440,7 @@ async function scrollBottom() {
 async function loadMessageList(id: string) {
   loadingSession.value = true
   pickedModel.value = null
+  queue.value = []
   try {
     messages.value = await listMessages(id)
     resetRun()
@@ -478,6 +486,7 @@ async function addSession() {
     activeSessionId.value = s.id
     messages.value = []
     pickedModel.value = null
+    queue.value = []
     resetRun()
   } catch (e) {
     errorText.value = apiError(e)
@@ -654,30 +663,65 @@ function textBlocks(m: ChatMessage) {
   )
 }
 
-async function send() {
+/* ---------------- 排队发送 ---------------- */
+type QueuedItem = {
+  text: string
+  refs: FileRef[]
+  files: { kind: 'file'; name: string; taskId?: string }[]
+}
+
+const queue = ref<QueuedItem[]>([])
+
+/* 快照当前勾选的日志文件 (入队时刻的上下文) */
+function snapshotContext() {
+  const refs: FileRef[] = attached.value.map((f) => {
+    // 日志文件 id 形如 "{taskId}|{rel}"; 本地文件 id 即绝对路径
+    const cut = f.id.indexOf('|')
+    if (cut > 0) return { taskId: f.id.slice(0, cut), name: f.id.slice(cut + 1) || f.name }
+    return { path: f.path || f.id, name: f.name }
+  })
+  const files = attached.value.map((f) => ({
+    kind: 'file' as const,
+    name: f.name,
+    taskId: f.id.split('|')[0],
+  }))
+  return { refs, files }
+}
+
+function removeQueued(i: number) {
+  queue.value.splice(i, 1)
+}
+
+function send() {
   const text = draft.value.trim()
-  if (!text || running.value) return
+  if (!text) return
   if (!ready.value) {
     errorText.value = status.value?.reason || '请先在团队「大模型」中启用模型'
     return
   }
   const sid = activeSessionId.value
   if (!sid) return
+  const { refs, files } = snapshotContext()
+  if (running.value) {
+    // 正在处理: 进入排队, 当前轮结束或被停止后依次自动发送
+    queue.value.push({ text, refs, files })
+    draft.value = ''
+    void scrollBottom()
+    return
+  }
+  void runTurn(sid, text, refs, files)
+}
 
-  const refs = attached.value.map((f) => {
-    // 日志文件 id 形如 "{taskId}|{rel}"; 本地文件 id 即绝对路径
-    const cut = f.id.indexOf('|')
-    if (cut > 0) return { taskId: f.id.slice(0, cut), name: f.id.slice(cut + 1) || f.name }
-    return { path: f.path || f.id, name: f.name }
-  })
-
+async function runTurn(
+  sid: string,
+  text: string,
+  refs: FileRef[],
+  files: { kind: 'file'; name: string; taskId?: string }[],
+) {
   messages.value.push({
     id: `u-${Date.now()}`,
     role: 'user',
-    blocks: [
-      { kind: 'text', text },
-      ...attached.value.map((f) => ({ kind: 'file' as const, name: f.name, taskId: f.id.split('|')[0] })),
-    ],
+    blocks: [{ kind: 'text', text }, ...files],
   })
   const live: ChatMessage = reactive({ id: 'live', role: 'assistant', blocks: [] })
   messages.value.push(live)
@@ -750,6 +794,11 @@ async function send() {
       /* 忽略 */
     }
     await scrollBottom()
+    // 当前轮结束或被中止后, 依次处理排队消息
+    if (activeSessionId.value === sid && queue.value.length) {
+      const next = queue.value.shift()!
+      void runTurn(sid, next.text, next.refs, next.files)
+    }
   }
 }
 
@@ -892,10 +941,9 @@ const phaseText = computed(() => {
             </button>
           </div>
           <button
-            v-if="sourceMode === 'log'"
             class="icon-btn"
             title="刷新文件列表"
-            @click.stop="loadFiles"
+            @click.stop="refreshFiles"
           >
             <Icon name="refresh" :size="15" />
           </button>
@@ -997,7 +1045,7 @@ const phaseText = computed(() => {
               <span
                 v-if="running && m.role === 'assistant' && m.id === 'live'"
                 class="pill pill--run msg-live"
-              >生成中</span>
+                >生成中</span>
 
               <div v-if="fileBlocks(m).length" class="msg-files">
                 <span v-for="(b, i) in fileBlocks(m)" :key="i" class="msg-file o-mono">
@@ -1014,6 +1062,28 @@ const phaseText = computed(() => {
               <template v-else>
                 <p v-for="(b, i) in textBlocks(m)" :key="i" class="blk-text">{{ b.text }}</p>
               </template>
+            </div>
+          </div>
+
+          <!-- 排队中的消息: 当前轮结束或被中止后依次自动发送 -->
+          <div v-for="(q, i) in queue" :key="`q-${i}`" class="msg msg--user msg--queued">
+            <div class="avatar avatar--user">我</div>
+            <div class="bubble">
+              <span class="pill pill--queue msg-live" title="当前轮结束后自动发送">
+                排队中 · 第 {{ i + 1 }} 位
+              </span>
+              <div v-if="q.files.length" class="msg-files">
+                <span v-for="(b, bi) in q.files" :key="bi" class="msg-file o-mono">
+                  <Icon name="file" :size="12" />
+                  {{ b.name }}
+                </span>
+              </div>
+              <p class="blk-text">{{ q.text }}</p>
+              <div class="queue-actions">
+                <button class="o-btn o-btn--sm o-btn--text queue-cancel" @click="removeQueued(i)">
+                  取消排队
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1109,7 +1179,17 @@ const phaseText = computed(() => {
               </span>
             </div>
             <div class="o-row" style="gap: 8px">
+              <span v-if="queue.length" class="queue-badge">已排队 {{ queue.length }} 条</span>
               <button v-if="running" class="o-btn" @click="stop">停止</button>
+              <button
+                v-if="running"
+                class="o-btn o-btn--primary"
+                :disabled="!draft.trim() || !activeSessionId || !ready"
+                title="加入排队，当前轮结束后自动发送"
+                @click="send"
+              >
+                排队发送
+              </button>
               <button
                 v-else
                 class="o-btn o-btn--primary"
@@ -1420,6 +1500,10 @@ const phaseText = computed(() => {
   background: var(--danger-soft);
   color: var(--danger);
 }
+.pill--queue {
+  background: var(--surface-3);
+  color: var(--text-3);
+}
 .notice-bar {
   flex: none;
   padding: 7px 12px;
@@ -1507,6 +1591,25 @@ const phaseText = computed(() => {
 }
 .blk-text + .blk-text {
   margin-top: 8px;
+}
+.msg--queued .bubble {
+  border-style: dashed;
+}
+.queue-actions {
+  margin-top: 6px;
+  display: flex;
+}
+.queue-cancel {
+  color: var(--text-3);
+}
+.queue-cancel:hover {
+  color: var(--danger);
+}
+.queue-badge {
+  align-self: center;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-3);
 }
 .blk-thought {
   margin: 6px 0;
