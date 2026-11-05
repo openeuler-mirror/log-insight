@@ -236,15 +236,22 @@ function resetLocal() {
   rootSeq.value++
 }
 
-/* 切换数据源: 清空另一侧的瞬时状态并断开旧的 EventSource */
+/* 切换数据源: 保留已选本地目录, 切回时重载树并恢复监听;
+   仅清空勾选与另一侧的瞬时事件, 目录本身在新会话/重选目录前一直有效 */
 function setSource(mode: 'log' | 'local') {
   if (mode === sourceMode.value) return
   clearAttached()
+  sourceMode.value = mode
   if (mode === 'local') {
-    sourceMode.value = 'local'
+    if (rootPath.value) {
+      fsEvents.value = []
+      fsCursor = 0
+      rootSeq.value++
+      startWatch(rootPath.value)
+    }
   } else {
-    resetLocal()
-    sourceMode.value = 'log'
+    fsSource?.close()
+    fsSource = null
   }
 }
 
@@ -487,6 +494,8 @@ async function addSession() {
     messages.value = []
     pickedModel.value = null
     queue.value = []
+    /* 新建会话: 释放上一会话的本地目录选择与监听 */
+    resetLocal()
     resetRun()
   } catch (e) {
     errorText.value = apiError(e)
@@ -690,6 +699,11 @@ function snapshotContext() {
 
 function removeQueued(i: number) {
   queue.value.splice(i, 1)
+}
+
+function updateQueued(i: number, text: string) {
+  const item = queue.value[i]
+  if (item) item.text = text
 }
 
 function send() {
@@ -1065,28 +1079,6 @@ const phaseText = computed(() => {
             </div>
           </div>
 
-          <!-- 排队中的消息: 当前轮结束或被中止后依次自动发送 -->
-          <div v-for="(q, i) in queue" :key="`q-${i}`" class="msg msg--user msg--queued">
-            <div class="avatar avatar--user">我</div>
-            <div class="bubble">
-              <span class="pill pill--queue msg-live" title="当前轮结束后自动发送">
-                排队中 · 第 {{ i + 1 }} 位
-              </span>
-              <div v-if="q.files.length" class="msg-files">
-                <span v-for="(b, bi) in q.files" :key="bi" class="msg-file o-mono">
-                  <Icon name="file" :size="12" />
-                  {{ b.name }}
-                </span>
-              </div>
-              <p class="blk-text">{{ q.text }}</p>
-              <div class="queue-actions">
-                <button class="o-btn o-btn--sm o-btn--text queue-cancel" @click="removeQueued(i)">
-                  取消排队
-                </button>
-              </div>
-            </div>
-          </div>
-
           <div v-if="!messages.length && !running" class="welcome">
             <div class="welcome-ico"><Icon name="activity" :size="34" /></div>
             <h2>{{ ready || !modelEmpty ? '从一个故障现象开始' : '先由团队管理员配置大模型' }}</h2>
@@ -1132,7 +1124,14 @@ const phaseText = computed(() => {
       >
         <div class="composer-inner">
           <div v-if="dropActive" class="drop-mask">松开鼠标，把文件加入本次提问</div>
-          <ComposerTaskDock :plan="runPlanBlock" :tools="runTools" :running="running" />
+          <ComposerTaskDock
+            :plan="runPlanBlock"
+            :tools="runTools"
+            :running="running"
+            :queue="queue"
+            @remove-queued="removeQueued"
+            @update-queued="updateQueued"
+          />
           <div v-if="attached.length" class="ctx-chips">
             <span class="ctx-label">已选 {{ attached.length }} 份日志</span>
             <span v-for="f in attached" :key="f.id" class="ctx-chip" :title="f.path">
@@ -1179,7 +1178,6 @@ const phaseText = computed(() => {
               </span>
             </div>
             <div class="o-row" style="gap: 8px">
-              <span v-if="queue.length" class="queue-badge">已排队 {{ queue.length }} 条</span>
               <button v-if="running" class="o-btn" @click="stop">停止</button>
               <button
                 v-if="running"
@@ -1500,10 +1498,6 @@ const phaseText = computed(() => {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.pill--queue {
-  background: var(--surface-3);
-  color: var(--text-3);
-}
 .notice-bar {
   flex: none;
   padding: 7px 12px;
@@ -1591,25 +1585,6 @@ const phaseText = computed(() => {
 }
 .blk-text + .blk-text {
   margin-top: 8px;
-}
-.msg--queued .bubble {
-  border-style: dashed;
-}
-.queue-actions {
-  margin-top: 6px;
-  display: flex;
-}
-.queue-cancel {
-  color: var(--text-3);
-}
-.queue-cancel:hover {
-  color: var(--danger);
-}
-.queue-badge {
-  align-self: center;
-  white-space: nowrap;
-  font-size: 11.5px;
-  color: var(--text-3);
 }
 .blk-thought {
   margin: 6px 0;

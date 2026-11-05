@@ -6,6 +6,7 @@ import FoldSection from './FoldSection.vue'
 import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis'
 import Icon, { type IconName } from '@/components/Icon.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
+import { toolLabel } from './toolLabel'
 
 const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
 
@@ -153,7 +154,7 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer))
         <div v-for="tool in tools" :key="tool.id" class="tool" :class="tool.status">
           <div class="tool-head">
             <span class="tool-dot"></span>
-            <span class="tool-name">{{ tool.name || tool.title || '工具' }}</span>
+            <span class="tool-name">{{ toolLabel(tool.name || tool.title) }}</span>
             <span class="tool-status">{{ tool.status === 'done' ? '完成' : tool.status === 'failed' ? '失败' : '运行中' }}</span>
           </div>
           <div v-if="tool.input" class="tool-line">{{ tool.input }}</div>
