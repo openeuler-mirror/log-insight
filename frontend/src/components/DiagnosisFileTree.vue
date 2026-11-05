@@ -22,12 +22,15 @@ const props = withDefaults(
     rootSeq?: number
     events?: FsChange[]
     activeId?: string
+    /* 外部(会话记录)恢复的勾选, 变化时同步到树 */
+    selectedIds?: string[]
   }>(),
-  { nodes: () => [], loading: false, rootPath: '', rootSeq: 0, events: () => [], source: 'log' },
+  { nodes: () => [], loading: false, rootPath: '', rootSeq: 0, events: () => [],
+    source: 'log', selectedIds: () => [] },
 )
 const emit = defineEmits<{
   open: [file: Attach, payload?: FilePayload]
-  select: [files: Attach[]]
+  select: [files: Attach[], ids: string[]]
   'pick-root': [path: string]
 }>()
 
@@ -115,8 +118,8 @@ async function loadRoot(path: string) {
   loadingPaths.value = {}
   truncated.value = false
   localError.value = ''
-  /* 换目录(含重选同一目录)时释放上一次的勾选与待刷新队列, 避免残留选中态 */
-  selectedIds.value = []
+  /* 换目录(含重选同一目录): 勾选以外部为准(会话记录), 并清掉待刷新队列 */
+  selectedIds.value = [...(props.selectedIds ?? [])]
   pendingDirs.clear()
   cursor = 0
   if (flushTimer !== null) {
@@ -268,11 +271,22 @@ onMounted(() => {
   }
 })
 
+/* 外部勾选(会话记录恢复)变化时同步到树, 与当前一致则跳过以免回写抖动 */
+watch(
+  () => props.selectedIds,
+  (ids) => {
+    const next = ids ?? []
+    if (next.length === selectedIds.value.length
+      && next.every((id) => selectedIds.value.includes(id))) return
+    selectedIds.value = [...next]
+  },
+)
+
 /* 切换数据源时释放本侧瞬时状态, 避免两边的展开 / 勾选 / 待刷新残留 */
 watch(
   () => props.source,
   () => {
-    selectedIds.value = []
+    selectedIds.value = [...(props.selectedIds ?? [])]
     root.value = null
     expanded.value = {}
     loadingPaths.value = {}
@@ -364,9 +378,14 @@ const toggleSelect = (row: TreeRow) => {
     : Array.from(new Set([...selectedIds.value, ...ids]))
 }
 
+/* 同时给出 id 列表: 已加载节点外的勾选(深层未展开)由视图侧用会话记录补全 */
 watch(
   selectedIds,
-  (ids) => emit('select', ids.map((id) => allFiles.value[id]).filter((f): f is Attach => !!f)),
+  (ids) => emit(
+    'select',
+    ids.map((id) => allFiles.value[id]).filter((f): f is Attach => !!f),
+    [...ids],
+  ),
   { deep: true },
 )
 

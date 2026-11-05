@@ -59,6 +59,7 @@ class SessionPatch(BaseModel):
     selected_kb_ids: list[int] | None = None
     kb_top_k: int | None = Field(default=None, ge=1, le=50)
     local_root: str | None = Field(default=None, max_length=512)
+    selected_files: list[dict] | None = None
 
 
 class FileRef(BaseModel):
@@ -128,6 +129,7 @@ def _session_info(s: DiagnosisSession, *, team_name: str = "", owner_name: str =
             "selected_kb_ids": list(s.selected_kb_ids or []),
             "kb_top_k": int(s.kb_top_k or 10),
             "local_root": s.local_root or "",
+            "selected_files": list(s.selected_files or []),
             "user_id": s.user_id, "owner_name": owner_name,
             "team_name": team_name, "can_manage": can_manage,
             "message_count": message_count,
@@ -698,6 +700,15 @@ async def patch_session(session_id: uuid.UUID, body: SessionPatch,
         s.kb_top_k = body.kb_top_k
     if body.local_root is not None:
         s.local_root = body.local_root.strip()
+    if body.selected_files is not None:
+        if len(body.selected_files) > 200:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "勾选文件过多")
+        # 只保留文件栏需要的字段, 防止客户端塞入任意结构
+        keys = ("id", "name", "path", "size")
+        s.selected_files = [
+            {k: str(f.get(k) or "") for k in keys}
+            for f in body.selected_files if isinstance(f, dict)
+        ]
 
     if body.selected_kb_ids is not None:
         ids = list(dict.fromkeys(int(x) for x in body.selected_kb_ids))
@@ -714,7 +725,7 @@ async def patch_session(session_id: uuid.UUID, body: SessionPatch,
             ids = []
         s.selected_kb_ids = ids
     if (body.title is None and body.selected_kb_ids is None and body.kb_top_k is None
-            and body.local_root is None):
+            and body.local_root is None and body.selected_files is None):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "无更新字段")
     s.updated_at = datetime.now(timezone.utc)
     await db.commit()

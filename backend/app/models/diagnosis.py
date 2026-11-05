@@ -27,6 +27,8 @@ class DiagnosisSession(Base):
     kb_top_k: Mapped[int] = mapped_column(Integer, default=10)
     # 会话绑定的本地目录 (诊断页文件栏), 空=未选择
     local_root: Mapped[str] = mapped_column(String(512), default="")
+    # 会话勾选的文件 (文件栏), 切回会话时恢复
+    selected_files: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)

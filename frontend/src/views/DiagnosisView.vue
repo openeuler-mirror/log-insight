@@ -147,6 +147,8 @@ async function onModelChange(payload: { teamId: number; modelRowId: number; reas
 const fileNodes = ref<FileNode[]>([])
 const filesLoading = ref(false)
 const attached = ref<Attach[]>([])
+/* 文件树的勾选由 attached 驱动, 会话切换时用会话记录还原 */
+const attachedIds = computed(() => attached.value.map((a) => a.id))
 const treeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
 
 async function loadFiles() {
@@ -166,16 +168,48 @@ function refreshFiles() {
   else if (rootPath.value) rootSeq.value++
 }
 
-function onTreeSelect(files: Attach[]) {
-  attached.value = files
+/* 勾选变化: 树上已加载的节点直接给 Attach, 未加载(深层/会话恢复)的沿用旧记录 */
+function onTreeSelect(files: Attach[], ids: string[]) {
+  const prev = new Map(attached.value.map((a) => [a.id, a]))
+  const known = new Map(files.map((f) => [f.id, f]))
+  attached.value = ids.map((id) => known.get(id) ?? prev.get(id) ?? {
+    id,
+    name: id.split(/[\\/]/).pop() || id,
+    path: id,
+  })
+  scheduleSaveFiles()
 }
 function detachFile(id: string) {
   attached.value = attached.value.filter((a) => a.id !== id)
   treeRef.value?.deselect(id)
+  scheduleSaveFiles()
 }
 function clearAttached() {
   attached.value = []
   treeRef.value?.clear()
+}
+
+/* 勾选持久化到会话: 连续勾选做 200ms 去抖, 避免频繁 PATCH */
+let saveFilesTimer: number | null = null
+function scheduleSaveFiles() {
+  if (saveFilesTimer !== null) window.clearTimeout(saveFilesTimer)
+  saveFilesTimer = window.setTimeout(() => {
+    saveFilesTimer = null
+    void saveSessionFiles()
+  }, 200)
+}
+
+async function saveSessionFiles() {
+  const sid = activeSessionId.value
+  if (!sid) return
+  const files = attached.value.map((a) => ({ id: a.id, name: a.name, path: a.path, size: a.size ?? '' }))
+  try {
+    const updated = await patchSession(sid, { selectedFiles: files })
+    const idx = sessions.value.findIndex((s) => s.id === sid)
+    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
 }
 
 /* ---------------- 文件树数据源: 任务日志 / 本地目录 ----------------
@@ -220,7 +254,10 @@ function pickRoot(path: string) {
     reloadTimer = null
   }
   startWatch(path)
+  /* 目录变了, 旧的勾选路径已失效 */
+  clearAttached()
   void saveSessionRoot(path)
+  void saveSessionFiles()
 }
 
 /* 目录绑定到会话: 后端持久化, 切回该会话时自动恢复 */
@@ -239,8 +276,8 @@ async function saveSessionRoot(path: string) {
 /* 会话切换: 恢复该会话绑定的本地目录(存在则自动切到本地目录模式), 无绑定则清空 */
 function applySessionRoot(sess?: SessionInfo) {
   const path = sess?.localRoot || ''
-  /* 勾选属于会话上下文: 切换会话时清空, 避免与上一个会话的文件残留错配 */
-  clearAttached()
+  /* 勾选随会话持久化: 切换会话还原该会话勾选的文件 */
+  attached.value = (sess?.selectedFiles ?? []) as Attach[]
   fsSource?.close()
   fsSource = null
   fsEvents.value = []
@@ -269,11 +306,10 @@ function resetLocal() {
   rootSeq.value++
 }
 
-/* 切换数据源: 保留已选本地目录, 切回时重载树并恢复监听;
-   仅清空勾选与另一侧的瞬时事件, 目录本身在新会话/重选目录前一直有效 */
+/* 切换数据源: 保留已选本地目录与勾选, 切回时重载树并恢复监听;
+   目录与勾选都属于会话, 只有换目录/切会话/新建会话时才变化 */
 function setSource(mode: 'log' | 'local') {
   if (mode === sourceMode.value) return
-  clearAttached()
   sourceMode.value = mode
   if (mode === 'local') {
     if (rootPath.value) {
@@ -528,8 +564,9 @@ async function addSession() {
     messages.value = []
     pickedModel.value = null
     queue.value = []
-    /* 新建会话: 释放上一会话的本地目录选择与监听 */
+    /* 新建会话: 释放上一会话的本地目录选择与监听, 勾选也从空开始 */
     resetLocal()
+    attached.value = []
     resetRun()
   } catch (e) {
     errorText.value = apiError(e)
@@ -1006,6 +1043,7 @@ const phaseText = computed(() => {
           :root-seq="rootSeq"
           :events="fsEvents"
           :active-id="activeTabId"
+          :selected-ids="attachedIds"
           @open="openFile"
           @select="onTreeSelect"
           @pick-root="pickRoot"

@@ -55,8 +55,9 @@ _GUARDS: list[tuple[str, str]] = [
     ("ALTER TABLE teams ADD COLUMN IF NOT EXISTS kb_rerank_config JSONB DEFAULT '{}'::jsonb", "teams.kb_rerank_config"),
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS selected_kb_ids JSONB DEFAULT '[]'::jsonb", "diagnosis_sessions.selected_kb_ids"),
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS kb_top_k INTEGER DEFAULT 10", "diagnosis_sessions.kb_top_k"),
-    # 诊断会话绑定的本地目录
+    # 诊断会话绑定的本地目录与勾选文件
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS local_root VARCHAR(512) DEFAULT ''", "diagnosis_sessions.local_root"),
+    ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS selected_files JSONB DEFAULT '[]'::jsonb", "diagnosis_sessions.selected_files"),
 ]
 
 

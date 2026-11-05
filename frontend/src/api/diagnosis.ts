@@ -100,6 +100,8 @@ export interface SessionInfo {
   kbTopK: number
   /* 会话绑定的本地目录 (文件栏), 空=未选择 */
   localRoot: string
+  /* 会话勾选的文件 (文件栏), 切回会话时恢复 */
+  selectedFiles: Array<{ id: string; name: string; path: string; size?: string }>
   userId: number
   ownerName: string
   teamName: string
@@ -233,12 +235,14 @@ export const patchSession = (id: string, body: {
   selectedKbIds?: number[]
   kbTopK?: number
   localRoot?: string
+  selectedFiles?: Array<{ id: string; name: string; path: string; size?: string }>
 }) => {
   const payload: Record<string, unknown> = {}
   if (body.title !== undefined) payload.title = body.title
   if (body.selectedKbIds !== undefined) payload.selected_kb_ids = body.selectedKbIds
   if (body.kbTopK !== undefined) payload.kb_top_k = body.kbTopK
   if (body.localRoot !== undefined) payload.local_root = body.localRoot
+  if (body.selectedFiles !== undefined) payload.selected_files = body.selectedFiles
   return patch<SessionInfo>(`/diagnosis/sessions/${id}`, payload)
 }
 export const deleteSession = (id: string) => del(`/diagnosis/sessions/${id}`)
