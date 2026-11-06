@@ -14,7 +14,7 @@ import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
 import Icon from '@/components/Icon.vue'
 import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
-import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosisFiles'
+import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosis/diagnosisFiles'
 import { apiError } from '@/api/http'
 import { fetchFile as fetchFsFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
 import {
@@ -151,6 +151,18 @@ const attached = ref<Attach[]>([])
 const attachedIds = computed(() => attached.value.map((a) => a.id))
 const treeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
 
+/* ---------------- 排队发送 ---------------- */
+/* 处理中新消息进入排队, 当前轮结束或被中止后依次自动发送;
+   id 为自增序号, 队列增删时编辑态等引用不会随下标漂移 */
+type QueuedItem = {
+  id: number
+  text: string
+  refs: FileRef[]
+  files: { kind: 'file'; name: string; taskId?: string }[]
+}
+const queue = ref<QueuedItem[]>([])
+let queuedSeq = 0
+
 async function loadFiles() {
   filesLoading.value = true
   try {
@@ -187,6 +199,8 @@ function detachFile(id: string) {
 function clearAttached() {
   attached.value = []
   treeRef.value?.clear()
+  /* 模板「清空」按钮直接绑定本函数, 清空也要持久化, 否则刷新/切回勾选复原 */
+  scheduleSaveFiles()
 }
 
 /* 勾选持久化到会话: 连续勾选做 200ms 去抖, 避免频繁 PATCH */
@@ -199,17 +213,33 @@ function scheduleSaveFiles() {
   }, 200)
 }
 
+/* 会话局部更新: PATCH 后把返回值合并回 sessions 列表 */
+async function patchAndMergeSession(sid: string, payload: Parameters<typeof patchSession>[1]) {
+  try {
+    const updated = await patchSession(sid, payload)
+    const idx = sessions.value.findIndex((s) => s.id === sid)
+    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
+    return updated
+  } catch (e) {
+    errorText.value = apiError(e)
+    return undefined
+  }
+}
+
+/* 上次持久化的勾选 id 序列: 会话恢复触发树同步 emit 时内容未变, 跳过冗余 PATCH */
+let lastSavedFileKey = ''
+function filesKey() {
+  return attached.value.map((a) => a.id).join('\n')
+}
+
 async function saveSessionFiles() {
   const sid = activeSessionId.value
   if (!sid) return
+  const key = filesKey()
+  if (key === lastSavedFileKey) return
   const files = attached.value.map((a) => ({ id: a.id, name: a.name, path: a.path, size: a.size ?? '' }))
-  try {
-    const updated = await patchSession(sid, { selectedFiles: files })
-    const idx = sessions.value.findIndex((s) => s.id === sid)
-    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
-  } catch (e) {
-    errorText.value = apiError(e)
-  }
+  const updated = await patchAndMergeSession(sid, { selectedFiles: files })
+  if (updated) lastSavedFileKey = key
 }
 
 /* ---------------- 文件树数据源: 任务日志 / 本地目录 ----------------
@@ -242,7 +272,7 @@ function startWatch(path: string) {
 }
 
 /* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效),
-   并把目录绑定到当前会话持久化 */
+   目录绑定与勾选清空合并为一次 PATCH 持久化到当前会话 */
 function pickRoot(path: string) {
   rootPath.value = path
   rootSeq.value++
@@ -257,20 +287,15 @@ function pickRoot(path: string) {
   /* 目录变了, 旧的勾选路径已失效 */
   clearAttached()
   void saveSessionRoot(path)
-  void saveSessionFiles()
 }
 
-/* 目录绑定到会话: 后端持久化, 切回该会话时自动恢复 */
+/* 目录绑定到会话: root 与清空后的勾选一次提交, 切回该会话时自动恢复目录 */
 async function saveSessionRoot(path: string) {
   const sid = activeSessionId.value
   if (!sid) return
-  try {
-    const updated = await patchSession(sid, { localRoot: path })
-    const idx = sessions.value.findIndex((s) => s.id === sid)
-    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
-  } catch (e) {
-    errorText.value = apiError(e)
-  }
+  /* clearAttached 的去抖保存与本次合并提交内容一致, 先对齐基准避免重复 PATCH */
+  lastSavedFileKey = filesKey()
+  await patchAndMergeSession(sid, { localRoot: path, selectedFiles: [] })
 }
 
 /* 会话切换: 恢复该会话绑定的本地目录(存在则自动切到本地目录模式), 无绑定则清空 */
@@ -278,6 +303,8 @@ function applySessionRoot(sess?: SessionInfo) {
   const path = sess?.localRoot || ''
   /* 勾选随会话持久化: 切换会话还原该会话勾选的文件 */
   attached.value = (sess?.selectedFiles ?? []) as Attach[]
+  /* 恢复即已持久化的内容, 树同步 emit 回环时跳过冗余 PATCH */
+  lastSavedFileKey = filesKey()
   fsSource?.close()
   fsSource = null
   fsEvents.value = []
@@ -480,16 +507,10 @@ const sessionKbTopK = computed(() => currentSession.value?.kbTopK ?? 10)
 async function onKbChange(payload: { selectedIds: number[]; topK: number }) {
   const sid = activeSessionId.value
   if (!sid) return
-  try {
-    const updated = await patchSession(sid, {
-      selectedKbIds: payload.selectedIds,
-      kbTopK: payload.topK,
-    })
-    const idx = sessions.value.findIndex((s) => s.id === sid)
-    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
-  } catch (e) {
-    errorText.value = apiError(e)
-  }
+  await patchAndMergeSession(sid, {
+    selectedKbIds: payload.selectedIds,
+    kbTopK: payload.topK,
+  })
 }
 
 /* 输入框展示当前会话实际使用的模型 (未显式切换时取向会话快照) */
@@ -567,6 +588,7 @@ async function addSession() {
     /* 新建会话: 释放上一会话的本地目录选择与监听, 勾选也从空开始 */
     resetLocal()
     attached.value = []
+    lastSavedFileKey = ''
     resetRun()
   } catch (e) {
     errorText.value = apiError(e)
@@ -744,13 +766,7 @@ function textBlocks(m: ChatMessage) {
 }
 
 /* ---------------- 排队发送 ---------------- */
-type QueuedItem = {
-  text: string
-  refs: FileRef[]
-  files: { kind: 'file'; name: string; taskId?: string }[]
-}
-
-const queue = ref<QueuedItem[]>([])
+/* queue / QueuedItem 声明在顶部状态区; 这里是入队快照与编辑操作 */
 
 /* 快照当前勾选的日志文件 (入队时刻的上下文) */
 function snapshotContext() {
@@ -768,12 +784,13 @@ function snapshotContext() {
   return { refs, files }
 }
 
-function removeQueued(i: number) {
-  queue.value.splice(i, 1)
+function removeQueued(id: number) {
+  const i = queue.value.findIndex((q) => q.id === id)
+  if (i >= 0) queue.value.splice(i, 1)
 }
 
-function updateQueued(i: number, text: string) {
-  const item = queue.value[i]
+function updateQueued(id: number, text: string) {
+  const item = queue.value.find((q) => q.id === id)
   if (item) item.text = text
 }
 
@@ -789,12 +806,42 @@ function send() {
   const { refs, files } = snapshotContext()
   if (running.value) {
     // 正在处理: 进入排队, 当前轮结束或被停止后依次自动发送
-    queue.value.push({ text, refs, files })
+    queue.value.push({ id: ++queuedSeq, text, refs, files })
     draft.value = ''
     void scrollBottom()
     return
   }
   void runTurn(sid, text, refs, files)
+}
+
+/* SSE 流事件分发: 按 event 类型更新 live 消息块与运行态 */
+function applyStreamEvent(live: ChatMessage, event: string, data: any) {
+  if (event === 'phase') {
+    phase.value = data.phase ?? ''
+  } else if (event === 'kb') {
+    const block = normalizeKbBlock(data)
+    const existing = live.blocks.find((b): b is KbBlock => b.kind === 'kb')
+    if (existing) Object.assign(existing, block)
+    else live.blocks.unshift(block)
+  } else if (event === 'text') {
+    appendText(live, 'text', data.text ?? '')
+  } else if (event === 'thought') {
+    appendText(live, 'thought', data.text ?? '')
+  } else if (event === 'tool') {
+    upsertTool(live, data as RawToolEvent)
+  } else if (event === 'plan') {
+    runPlan.value = data.entries ?? []
+    const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
+    if (block) block.entries = runPlan.value
+    else live.blocks.push({ kind: 'plan', entries: runPlan.value })
+  } else if (event === 'usage') {
+    addUsage(data.usage)
+  } else if (event === 'error') {
+    live.error = data.message ?? '诊断失败'
+  } else if (event === 'done') {
+    if (data.messageId) live.id = data.messageId
+    mergeUsage(live, data.usage)
+  }
 }
 
 async function runTurn(
@@ -825,32 +872,7 @@ async function runTurn(
   try {
     await sendMessage(sid, text, refs, {
       onEvent(event, data) {
-        if (event === 'phase') {
-          phase.value = data.phase ?? ''
-        } else if (event === 'kb') {
-          const block = normalizeKbBlock(data)
-          const existing = live.blocks.find((b): b is KbBlock => b.kind === 'kb')
-          if (existing) Object.assign(existing, block)
-          else live.blocks.unshift(block)
-        } else if (event === 'text') {
-          appendText(live, 'text', data.text ?? '')
-        } else if (event === 'thought') {
-          appendText(live, 'thought', data.text ?? '')
-        } else if (event === 'tool') {
-          upsertTool(live, data as RawToolEvent)
-        } else if (event === 'plan') {
-          runPlan.value = data.entries ?? []
-          const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
-          if (block) block.entries = runPlan.value
-          else live.blocks.push({ kind: 'plan', entries: runPlan.value })
-        } else if (event === 'usage') {
-          addUsage(data.usage)
-        } else if (event === 'error') {
-          live.error = data.message ?? '诊断失败'
-        } else if (event === 'done') {
-          if (data.messageId) live.id = data.messageId
-          mergeUsage(live, data.usage)
-        }
+        applyStreamEvent(live, event, data)
         void scrollBottom()
       },
     }, ctl.signal, pickedModel.value ?? {})

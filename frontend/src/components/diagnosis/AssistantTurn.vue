@@ -7,6 +7,7 @@ import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis
 import Icon, { type IconName } from '@/components/Icon.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 import { toolLabel } from './toolLabel'
+import { copyText as writeClipboard } from '@/utils/clipboard'
 
 const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
 
@@ -62,37 +63,14 @@ const usage = computed(() => {
 const hasUsage = computed(() => usage.value.total > 0 || usage.value.input > 0 || usage.value.output > 0)
 const fmt = (n: number) => n.toLocaleString('en-US')
 
-/* 复制正文: 优先剪贴板 API, 非 HTTPS 环境降级 execCommand */
+/* 复制正文: 剪贴板 API + execCommand 降级统一在 util 内处理 */
 const copied = ref(false)
 let copiedTimer: number | undefined
 
-function fallbackCopy(content: string): boolean {
-  const ta = document.createElement('textarea')
-  ta.value = content
-  ta.style.position = 'fixed'
-  ta.style.opacity = '0'
-  document.body.appendChild(ta)
-  ta.select()
-  let ok = false
-  try {
-    ok = document.execCommand('copy')
-  } catch {
-    ok = false
-  }
-  document.body.removeChild(ta)
-  return ok
-}
-
-async function copyText() {
+async function onCopy() {
   const content = text.value
   if (!content) return
-  let ok = false
-  try {
-    await navigator.clipboard.writeText(content)
-    ok = true
-  } catch {
-    ok = fallbackCopy(content)
-  }
+  const ok = await writeClipboard(content)
   if (ok) {
     copied.value = true
     window.clearTimeout(copiedTimer)
@@ -179,7 +157,7 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer))
     </div>
 
     <div v-if="text" class="actions">
-      <button type="button" class="copy-btn" :class="{ 'is-ok': copied }" @click="copyText">
+      <button type="button" class="copy-btn" :class="{ 'is-ok': copied }" @click="onCopy">
         <Icon :name="copied ? 'check' : 'clipboard'" :size="12" />
         <span>{{ copied ? '已复制' : '复制' }}</span>
       </button>

@@ -3,7 +3,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchList, fetchRoots, type FsEntry, type FsRoot } from '@/api/fs'
 import { apiError } from '@/api/http'
-import { fmtSize } from '@/components/diagnosisFiles'
+import { fmtSize } from '@/components/diagnosis/diagnosisFiles'
 
 const props = defineProps<{ open: boolean; mode: 'dir' | 'file' }>()
 const emit = defineEmits<{ select: [path: string]; close: [] }>()

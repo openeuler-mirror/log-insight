@@ -10,7 +10,7 @@ import Icon from '@/components/Icon.vue'
 import DiagnosisPathPicker from '@/components/DiagnosisPathPicker.vue'
 import { fetchFile, fetchList, fetchTree, rawUrl, type FsChange, type FsEntry } from '@/api/fs'
 import { apiError } from '@/api/http'
-import type { Attach, FilePayload } from '@/components/diagnosisFiles'
+import type { Attach, FilePayload } from '@/components/diagnosis/diagnosisFiles'
 import type { FileNode } from '@/api/diagnosis'
 
 const props = withDefaults(

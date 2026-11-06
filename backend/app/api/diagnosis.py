@@ -689,7 +689,7 @@ async def create_session(body: SessionCreate,
 async def patch_session(session_id: uuid.UUID, body: SessionPatch,
                         db: Annotated[AsyncSession, Depends(get_db)],
                         user: Annotated[User, Depends(get_current_user)]):
-    """更新会话标题 / 知识库选择 / TopK / 绑定的本地目录."""
+    """更新会话标题 / 知识库选择 / TopK / 绑定的本地目录 / 勾选文件."""
     s = await _load_session(db, user, session_id, manage=True)
     if body.title is not None:
         title = body.title.strip()
@@ -703,13 +703,17 @@ async def patch_session(session_id: uuid.UUID, body: SessionPatch,
     if body.selected_files is not None:
         if len(body.selected_files) > 200:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "勾选文件过多")
-        # 只保留文件栏需要的字段, 防止客户端塞入任意结构
+        # 只保留文件栏需要的字段, 防止客户端塞入任意结构; 单字段限长与 local_root 一致
         keys = ("id", "name", "path", "size")
-        s.selected_files = [
-            {k: str(f.get(k) or "") for k in keys}
-            for f in body.selected_files if isinstance(f, dict)
-        ]
-
+        cleaned = []
+        for f in body.selected_files:
+            if not isinstance(f, dict):
+                continue
+            row = {k: str(f.get(k) or "") for k in keys}
+            if any(len(v) > 512 for v in row.values()):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "勾选文件字段过长")
+            cleaned.append(row)
+        s.selected_files = cleaned
     if body.selected_kb_ids is not None:
         ids = list(dict.fromkeys(int(x) for x in body.selected_kb_ids))
         if ids and s.team_id:

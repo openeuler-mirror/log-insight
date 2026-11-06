@@ -2,7 +2,8 @@
 /* 中·文件阅读器: 多标签页 + 只读查看 + 图片预览 */
 import { computed } from 'vue'
 import Icon from '@/components/Icon.vue'
-import type { ReaderTab } from '@/components/diagnosisFiles'
+import type { ReaderTab } from '@/components/diagnosis/diagnosisFiles'
+import { copyText } from '@/utils/clipboard'
 
 const props = defineProps<{
   tabs: ReaderTab[]
@@ -18,13 +19,9 @@ const active = computed<ReaderTab | null>(() => props.tabs.find((t) => t.id === 
 const lines = computed(() => (active.value ? active.value.content.split('\n') : []))
 const lineNo = computed(() => lines.value.map((_, i) => i + 1).join('\n'))
 
+/* 复制路径: 非 HTTPS 环境由 util 内部降级 execCommand, 不再静默失败 */
 const copyPath = async () => {
-  if (!active.value) return
-  try {
-    await navigator.clipboard.writeText(active.value.path)
-  } catch {
-    /* 浏览器不允许时忽略 */
-  }
+  if (active.value) await copyText(active.value.path)
 }
 </script>
 
