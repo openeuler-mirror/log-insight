@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /* 服务端路径选择弹窗: 浏览后端可访问的目录, 选择目录(dir)或文件(file) */
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchList, fetchRoots, type FsEntry, type FsRoot } from '@/api/fs'
 import { apiError } from '@/api/http'
-import { fmtSize } from '@/components/diagnosisFiles'
+import { fmtSize } from '@/components/diagnosis/diagnosisFiles'
 
 const props = defineProps<{ open: boolean; mode: 'dir' | 'file' }>()
 const emit = defineEmits<{ select: [path: string]; close: [] }>()
@@ -47,6 +47,13 @@ watch(
   },
 )
 
+/* Esc 关闭弹窗 */
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.open) emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+
 /** 上级目录(兼容 Windows 盘符根 E:\ 与 POSIX 根 /) */
 function parentOf(p: string): string | null {
   const norm = p.replace(/[\\/]+$/, '')
@@ -69,7 +76,17 @@ function onEntry(e: FsEntry) {
     <div class="pk">
       <div class="pk-head">
         <span class="pk-title">{{ mode === 'dir' ? '选择目录' : '选择文件' }}</span>
-        <button class="icon-btn" title="关闭" @click="emit('close')">✕</button>
+        <button class="pk-close" type="button" title="关闭 (Esc)" aria-label="关闭" @click="emit('close')">
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path
+              d="M2.6 2.6l6.8 6.8M9.4 2.6l-6.8 6.8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
       </div>
 
       <div class="pk-roots">
@@ -158,6 +175,31 @@ function onEntry(e: FsEntry) {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-1);
+}
+/* 关闭按钮: 无边框图标按钮, 悬停加深, 键盘可达 */
+.pk-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: -2px -2px -2px 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.pk-close:hover {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+.pk-close:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 .pk-roots {
   flex: none;

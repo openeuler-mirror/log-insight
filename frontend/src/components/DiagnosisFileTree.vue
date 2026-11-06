@@ -4,13 +4,13 @@
    - 本地目录(后端 /api/fs): 顶部「选择目录 / 选择文件」打开服务端路径弹窗, 逐层懒加载;
      磁盘变更(SSE)只定点刷新受影响的已加载目录, 保留展开态。
    通用交互: 点击打开 / 勾选多选(目录整选) / 拖拽加入提问上下文。 */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
 import Icon from '@/components/Icon.vue'
 import DiagnosisPathPicker from '@/components/DiagnosisPathPicker.vue'
 import { fetchFile, fetchList, fetchTree, rawUrl, type FsChange, type FsEntry } from '@/api/fs'
 import { apiError } from '@/api/http'
-import type { Attach, FilePayload } from '@/components/diagnosisFiles'
+import type { Attach, FilePayload } from '@/components/diagnosis/diagnosisFiles'
 import type { FileNode } from '@/api/diagnosis'
 
 const props = withDefaults(
@@ -22,12 +22,15 @@ const props = withDefaults(
     rootSeq?: number
     events?: FsChange[]
     activeId?: string
+    /* 外部(会话记录)恢复的勾选, 变化时同步到树 */
+    selectedIds?: string[]
   }>(),
-  { nodes: () => [], loading: false, rootPath: '', rootSeq: 0, events: () => [], source: 'log' },
+  { nodes: () => [], loading: false, rootPath: '', rootSeq: 0, events: () => [],
+    source: 'log', selectedIds: () => [] },
 )
 const emit = defineEmits<{
   open: [file: Attach, payload?: FilePayload]
-  select: [files: Attach[]]
+  select: [files: Attach[], ids: string[]]
   'pick-root': [path: string]
 }>()
 
@@ -89,6 +92,21 @@ const localError = ref('')
 const truncated = ref(false)
 const pickerOpen = ref(false)
 const pickerMode = ref<'dir' | 'file'>('dir')
+/* 双击路径后展开完整文本, 支持选中复制; 点击其他任意位置恢复单行 */
+const pathExpanded = ref(false)
+const pathEl = ref<HTMLElement | null>(null)
+
+function onDocClick(e: MouseEvent) {
+  if (pathEl.value && e.target instanceof Node && pathEl.value.contains(e.target)) return
+  pathExpanded.value = false
+}
+
+watch(pathExpanded, (on) => {
+  if (on) document.addEventListener('click', onDocClick)
+  else document.removeEventListener('click', onDocClick)
+})
+
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 let cursor = 0
 const pendingDirs = new Set<string>()
@@ -100,8 +118,8 @@ async function loadRoot(path: string) {
   loadingPaths.value = {}
   truncated.value = false
   localError.value = ''
-  /* 换目录(含重选同一目录)时释放上一次的勾选与待刷新队列, 避免残留选中态 */
-  selectedIds.value = []
+  /* 换目录(含重选同一目录): 勾选以外部为准(会话记录), 并清掉待刷新队列 */
+  selectedIds.value = [...(props.selectedIds ?? [])]
   pendingDirs.clear()
   cursor = 0
   if (flushTimer !== null) {
@@ -246,11 +264,29 @@ watch(
   },
 )
 
+/* 挂载时已有目录则直接加载 (折叠只隐藏不卸载, 正常仅在首次挂载时命中) */
+onMounted(() => {
+  if (props.source === 'local' && props.rootPath) {
+    void loadRoot(props.rootPath)
+  }
+})
+
+/* 外部勾选(会话记录恢复)变化时同步到树, 与当前一致则跳过以免回写抖动 */
+watch(
+  () => props.selectedIds,
+  (ids) => {
+    const next = ids ?? []
+    if (next.length === selectedIds.value.length
+      && next.every((id) => selectedIds.value.includes(id))) return
+    selectedIds.value = [...next]
+  },
+)
+
 /* 切换数据源时释放本侧瞬时状态, 避免两边的展开 / 勾选 / 待刷新残留 */
 watch(
   () => props.source,
   () => {
-    selectedIds.value = []
+    selectedIds.value = [...(props.selectedIds ?? [])]
     root.value = null
     expanded.value = {}
     loadingPaths.value = {}
@@ -342,9 +378,14 @@ const toggleSelect = (row: TreeRow) => {
     : Array.from(new Set([...selectedIds.value, ...ids]))
 }
 
+/* 同时给出 id 列表: 已加载节点外的勾选(深层未展开)由视图侧用会话记录补全 */
 watch(
   selectedIds,
-  (ids) => emit('select', ids.map((id) => allFiles.value[id]).filter((f): f is Attach => !!f)),
+  (ids) => emit(
+    'select',
+    ids.map((id) => allFiles.value[id]).filter((f): f is Attach => !!f),
+    [...ids],
+  ),
   { deep: true },
 )
 
@@ -387,7 +428,13 @@ defineExpose({
       <button class="tree-pick" title="从磁盘选择目录" @click="pick('dir')">选择目录</button>
       <button class="tree-pick" title="从磁盘选择文件" @click="pick('file')">选择文件</button>
     </div>
-    <div class="tree-sub-path o-mono" :class="{ 'o-text-3': !rootPath }" :title="rootPath">
+    <div
+      ref="pathEl"
+      class="tree-sub-path o-mono"
+      :class="{ 'o-text-3': !rootPath, 'is-expanded': pathExpanded }"
+      :title="rootPath ? '双击展开完整路径' : ''"
+      @dblclick="rootPath && (pathExpanded = true)"
+    >
       {{ rootPath || '未选择目录' }}
     </div>
   </div>
@@ -466,6 +513,7 @@ defineExpose({
 .tree-sub-row {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
 }
 .tree-pick {
@@ -491,6 +539,16 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: default;
+}
+/* 双击后展示完整路径, 便于选中复制 */
+.tree-sub-path.is-expanded {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+  user-select: text;
+  cursor: text;
 }
 .tree {
   flex: 1 1 auto;

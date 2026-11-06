@@ -14,7 +14,7 @@ import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
 import Icon from '@/components/Icon.vue'
 import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
-import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosisFiles'
+import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosis/diagnosisFiles'
 import { apiError } from '@/api/http'
 import { fetchFile as fetchFsFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
 import {
@@ -32,6 +32,7 @@ import {
   type CatalogTeam,
   type ChatMessage,
   type FileNode,
+  type FileRef,
   type KbBlock,
   type MessageBlock,
   type PlanBlock,
@@ -146,7 +147,21 @@ async function onModelChange(payload: { teamId: number; modelRowId: number; reas
 const fileNodes = ref<FileNode[]>([])
 const filesLoading = ref(false)
 const attached = ref<Attach[]>([])
+/* 文件树的勾选由 attached 驱动, 会话切换时用会话记录还原 */
+const attachedIds = computed(() => attached.value.map((a) => a.id))
 const treeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
+
+/* ---------------- 排队发送 ---------------- */
+/* 处理中新消息进入排队, 当前轮结束或被中止后依次自动发送;
+   id 为自增序号, 队列增删时编辑态等引用不会随下标漂移 */
+type QueuedItem = {
+  id: number
+  text: string
+  refs: FileRef[]
+  files: { kind: 'file'; name: string; taskId?: string }[]
+}
+const queue = ref<QueuedItem[]>([])
+let queuedSeq = 0
 
 async function loadFiles() {
   filesLoading.value = true
@@ -159,16 +174,72 @@ async function loadFiles() {
   }
 }
 
-function onTreeSelect(files: Attach[]) {
-  attached.value = files
+/* 刷新文件列表: 任务日志重拉接口, 本地目录通过 rootSeq 自增触发整树重载 */
+function refreshFiles() {
+  if (sourceMode.value === 'log') void loadFiles()
+  else if (rootPath.value) rootSeq.value++
+}
+
+/* 勾选变化: 树上已加载的节点直接给 Attach, 未加载(深层/会话恢复)的沿用旧记录 */
+function onTreeSelect(files: Attach[], ids: string[]) {
+  const prev = new Map(attached.value.map((a) => [a.id, a]))
+  const known = new Map(files.map((f) => [f.id, f]))
+  attached.value = ids.map((id) => known.get(id) ?? prev.get(id) ?? {
+    id,
+    name: id.split(/[\\/]/).pop() || id,
+    path: id,
+  })
+  scheduleSaveFiles()
 }
 function detachFile(id: string) {
   attached.value = attached.value.filter((a) => a.id !== id)
   treeRef.value?.deselect(id)
+  scheduleSaveFiles()
 }
 function clearAttached() {
   attached.value = []
   treeRef.value?.clear()
+  /* 模板「清空」按钮直接绑定本函数, 清空也要持久化, 否则刷新/切回勾选复原 */
+  scheduleSaveFiles()
+}
+
+/* 勾选持久化到会话: 连续勾选做 200ms 去抖, 避免频繁 PATCH */
+let saveFilesTimer: number | null = null
+function scheduleSaveFiles() {
+  if (saveFilesTimer !== null) window.clearTimeout(saveFilesTimer)
+  saveFilesTimer = window.setTimeout(() => {
+    saveFilesTimer = null
+    void saveSessionFiles()
+  }, 200)
+}
+
+/* 会话局部更新: PATCH 后把返回值合并回 sessions 列表 */
+async function patchAndMergeSession(sid: string, payload: Parameters<typeof patchSession>[1]) {
+  try {
+    const updated = await patchSession(sid, payload)
+    const idx = sessions.value.findIndex((s) => s.id === sid)
+    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
+    return updated
+  } catch (e) {
+    errorText.value = apiError(e)
+    return undefined
+  }
+}
+
+/* 上次持久化的勾选 id 序列: 会话恢复触发树同步 emit 时内容未变, 跳过冗余 PATCH */
+let lastSavedFileKey = ''
+function filesKey() {
+  return attached.value.map((a) => a.id).join('\n')
+}
+
+async function saveSessionFiles() {
+  const sid = activeSessionId.value
+  if (!sid) return
+  const key = filesKey()
+  if (key === lastSavedFileKey) return
+  const files = attached.value.map((a) => ({ id: a.id, name: a.name, path: a.path, size: a.size ?? '' }))
+  const updated = await patchAndMergeSession(sid, { selectedFiles: files })
+  if (updated) lastSavedFileKey = key
 }
 
 /* ---------------- 文件树数据源: 任务日志 / 本地目录 ----------------
@@ -200,7 +271,8 @@ function startWatch(path: string) {
   fsSource = es
 }
 
-/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效) */
+/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效),
+   目录绑定与勾选清空合并为一次 PATCH 持久化到当前会话 */
 function pickRoot(path: string) {
   rootPath.value = path
   rootSeq.value++
@@ -212,6 +284,38 @@ function pickRoot(path: string) {
     reloadTimer = null
   }
   startWatch(path)
+  /* 目录变了, 旧的勾选路径已失效 */
+  clearAttached()
+  void saveSessionRoot(path)
+}
+
+/* 目录绑定到会话: root 与清空后的勾选一次提交, 切回该会话时自动恢复目录 */
+async function saveSessionRoot(path: string) {
+  const sid = activeSessionId.value
+  if (!sid) return
+  /* clearAttached 的去抖保存与本次合并提交内容一致, 先对齐基准避免重复 PATCH */
+  lastSavedFileKey = filesKey()
+  await patchAndMergeSession(sid, { localRoot: path, selectedFiles: [] })
+}
+
+/* 会话切换: 恢复该会话绑定的本地目录(存在则自动切到本地目录模式), 无绑定则清空 */
+function applySessionRoot(sess?: SessionInfo) {
+  const path = sess?.localRoot || ''
+  /* 勾选随会话持久化: 切换会话还原该会话勾选的文件 */
+  attached.value = (sess?.selectedFiles ?? []) as Attach[]
+  /* 恢复即已持久化的内容, 树同步 emit 回环时跳过冗余 PATCH */
+  lastSavedFileKey = filesKey()
+  fsSource?.close()
+  fsSource = null
+  fsEvents.value = []
+  fsCursor = 0
+  dirtyPaths.clear()
+  rootPath.value = path
+  rootSeq.value++
+  if (path) {
+    sourceMode.value = 'local'
+    startWatch(path)
+  }
 }
 
 /* 释放本地目录数据源的全部瞬时状态并断开监听 */
@@ -229,15 +333,21 @@ function resetLocal() {
   rootSeq.value++
 }
 
-/* 切换数据源: 清空另一侧的瞬时状态并断开旧的 EventSource */
+/* 切换数据源: 保留已选本地目录与勾选, 切回时重载树并恢复监听;
+   目录与勾选都属于会话, 只有换目录/切会话/新建会话时才变化 */
 function setSource(mode: 'log' | 'local') {
   if (mode === sourceMode.value) return
-  clearAttached()
+  sourceMode.value = mode
   if (mode === 'local') {
-    sourceMode.value = 'local'
+    if (rootPath.value) {
+      fsEvents.value = []
+      fsCursor = 0
+      rootSeq.value++
+      startWatch(rootPath.value)
+    }
   } else {
-    resetLocal()
-    sourceMode.value = 'log'
+    fsSource?.close()
+    fsSource = null
   }
 }
 
@@ -397,16 +507,10 @@ const sessionKbTopK = computed(() => currentSession.value?.kbTopK ?? 10)
 async function onKbChange(payload: { selectedIds: number[]; topK: number }) {
   const sid = activeSessionId.value
   if (!sid) return
-  try {
-    const updated = await patchSession(sid, {
-      selectedKbIds: payload.selectedIds,
-      kbTopK: payload.topK,
-    })
-    const idx = sessions.value.findIndex((s) => s.id === sid)
-    if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated }
-  } catch (e) {
-    errorText.value = apiError(e)
-  }
+  await patchAndMergeSession(sid, {
+    selectedKbIds: payload.selectedIds,
+    kbTopK: payload.topK,
+  })
 }
 
 /* 输入框展示当前会话实际使用的模型 (未显式切换时取向会话快照) */
@@ -433,8 +537,10 @@ async function scrollBottom() {
 async function loadMessageList(id: string) {
   loadingSession.value = true
   pickedModel.value = null
+  queue.value = []
   try {
     messages.value = await listMessages(id)
+    applySessionRoot(sessions.value.find((s) => s.id === id))
     resetRun()
     await scrollBottom()
   } catch (e) {
@@ -478,6 +584,11 @@ async function addSession() {
     activeSessionId.value = s.id
     messages.value = []
     pickedModel.value = null
+    queue.value = []
+    /* 新建会话: 释放上一会话的本地目录选择与监听, 勾选也从空开始 */
+    resetLocal()
+    attached.value = []
+    lastSavedFileKey = ''
     resetRun()
   } catch (e) {
     errorText.value = apiError(e)
@@ -654,30 +765,95 @@ function textBlocks(m: ChatMessage) {
   )
 }
 
-async function send() {
+/* ---------------- 排队发送 ---------------- */
+/* queue / QueuedItem 声明在顶部状态区; 这里是入队快照与编辑操作 */
+
+/* 快照当前勾选的日志文件 (入队时刻的上下文) */
+function snapshotContext() {
+  const refs: FileRef[] = attached.value.map((f) => {
+    // 日志文件 id 形如 "{taskId}|{rel}"; 本地文件 id 即绝对路径
+    const cut = f.id.indexOf('|')
+    if (cut > 0) return { taskId: f.id.slice(0, cut), name: f.id.slice(cut + 1) || f.name }
+    return { path: f.path || f.id, name: f.name }
+  })
+  const files = attached.value.map((f) => ({
+    kind: 'file' as const,
+    name: f.name,
+    taskId: f.id.split('|')[0],
+  }))
+  return { refs, files }
+}
+
+function removeQueued(id: number) {
+  const i = queue.value.findIndex((q) => q.id === id)
+  if (i >= 0) queue.value.splice(i, 1)
+}
+
+function updateQueued(id: number, text: string) {
+  const item = queue.value.find((q) => q.id === id)
+  if (item) item.text = text
+}
+
+function send() {
   const text = draft.value.trim()
-  if (!text || running.value) return
+  if (!text) return
   if (!ready.value) {
     errorText.value = status.value?.reason || '请先在团队「大模型」中启用模型'
     return
   }
   const sid = activeSessionId.value
   if (!sid) return
+  const { refs, files } = snapshotContext()
+  if (running.value) {
+    // 正在处理: 进入排队, 当前轮结束或被停止后依次自动发送
+    queue.value.push({ id: ++queuedSeq, text, refs, files })
+    draft.value = ''
+    void scrollBottom()
+    return
+  }
+  void runTurn(sid, text, refs, files)
+}
 
-  const refs = attached.value.map((f) => {
-    // 日志文件 id 形如 "{taskId}|{rel}"; 本地文件 id 即绝对路径
-    const cut = f.id.indexOf('|')
-    if (cut > 0) return { taskId: f.id.slice(0, cut), name: f.id.slice(cut + 1) || f.name }
-    return { path: f.path || f.id, name: f.name }
-  })
+/* SSE 流事件分发: 按 event 类型更新 live 消息块与运行态 */
+function applyStreamEvent(live: ChatMessage, event: string, data: any) {
+  if (event === 'phase') {
+    phase.value = data.phase ?? ''
+  } else if (event === 'kb') {
+    const block = normalizeKbBlock(data)
+    const existing = live.blocks.find((b): b is KbBlock => b.kind === 'kb')
+    if (existing) Object.assign(existing, block)
+    else live.blocks.unshift(block)
+  } else if (event === 'text') {
+    appendText(live, 'text', data.text ?? '')
+  } else if (event === 'thought') {
+    appendText(live, 'thought', data.text ?? '')
+  } else if (event === 'tool') {
+    upsertTool(live, data as RawToolEvent)
+  } else if (event === 'plan') {
+    runPlan.value = data.entries ?? []
+    const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
+    if (block) block.entries = runPlan.value
+    else live.blocks.push({ kind: 'plan', entries: runPlan.value })
+  } else if (event === 'usage') {
+    addUsage(data.usage)
+  } else if (event === 'error') {
+    live.error = data.message ?? '诊断失败'
+  } else if (event === 'done') {
+    if (data.messageId) live.id = data.messageId
+    mergeUsage(live, data.usage)
+  }
+}
 
+async function runTurn(
+  sid: string,
+  text: string,
+  refs: FileRef[],
+  files: { kind: 'file'; name: string; taskId?: string }[],
+) {
   messages.value.push({
     id: `u-${Date.now()}`,
     role: 'user',
-    blocks: [
-      { kind: 'text', text },
-      ...attached.value.map((f) => ({ kind: 'file' as const, name: f.name, taskId: f.id.split('|')[0] })),
-    ],
+    blocks: [{ kind: 'text', text }, ...files],
   })
   const live: ChatMessage = reactive({ id: 'live', role: 'assistant', blocks: [] })
   messages.value.push(live)
@@ -696,32 +872,7 @@ async function send() {
   try {
     await sendMessage(sid, text, refs, {
       onEvent(event, data) {
-        if (event === 'phase') {
-          phase.value = data.phase ?? ''
-        } else if (event === 'kb') {
-          const block = normalizeKbBlock(data)
-          const existing = live.blocks.find((b): b is KbBlock => b.kind === 'kb')
-          if (existing) Object.assign(existing, block)
-          else live.blocks.unshift(block)
-        } else if (event === 'text') {
-          appendText(live, 'text', data.text ?? '')
-        } else if (event === 'thought') {
-          appendText(live, 'thought', data.text ?? '')
-        } else if (event === 'tool') {
-          upsertTool(live, data as RawToolEvent)
-        } else if (event === 'plan') {
-          runPlan.value = data.entries ?? []
-          const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
-          if (block) block.entries = runPlan.value
-          else live.blocks.push({ kind: 'plan', entries: runPlan.value })
-        } else if (event === 'usage') {
-          addUsage(data.usage)
-        } else if (event === 'error') {
-          live.error = data.message ?? '诊断失败'
-        } else if (event === 'done') {
-          if (data.messageId) live.id = data.messageId
-          mergeUsage(live, data.usage)
-        }
+        applyStreamEvent(live, event, data)
         void scrollBottom()
       },
     }, ctl.signal, pickedModel.value ?? {})
@@ -750,6 +901,11 @@ async function send() {
       /* 忽略 */
     }
     await scrollBottom()
+    // 当前轮结束或被中止后, 依次处理排队消息
+    if (activeSessionId.value === sid && queue.value.length) {
+      const next = queue.value.shift()!
+      void runTurn(sid, next.text, next.refs, next.files)
+    }
   }
 }
 
@@ -892,16 +1048,15 @@ const phaseText = computed(() => {
             </button>
           </div>
           <button
-            v-if="sourceMode === 'log'"
             class="icon-btn"
             title="刷新文件列表"
-            @click.stop="loadFiles"
+            @click.stop="refreshFiles"
           >
             <Icon name="refresh" :size="15" />
           </button>
         </header>
+        <div v-show="filesOpen" class="tree-wrap">
         <DiagnosisFileTree
-          v-if="filesOpen"
           ref="treeRef"
           :source="sourceMode"
           :nodes="fileNodes"
@@ -910,6 +1065,7 @@ const phaseText = computed(() => {
           :root-seq="rootSeq"
           :events="fsEvents"
           :active-id="activeTabId"
+          :selected-ids="attachedIds"
           @open="openFile"
           @select="onTreeSelect"
           @pick-root="pickRoot"
@@ -922,6 +1078,7 @@ const phaseText = computed(() => {
             </div>
           </template>
         </DiagnosisFileTree>
+        </div>
       </section>
 
       <!-- 会话统计 / 状态 -->
@@ -997,7 +1154,7 @@ const phaseText = computed(() => {
               <span
                 v-if="running && m.role === 'assistant' && m.id === 'live'"
                 class="pill pill--run msg-live"
-              >生成中</span>
+                >生成中</span>
 
               <div v-if="fileBlocks(m).length" class="msg-files">
                 <span v-for="(b, i) in fileBlocks(m)" :key="i" class="msg-file o-mono">
@@ -1062,7 +1219,14 @@ const phaseText = computed(() => {
       >
         <div class="composer-inner">
           <div v-if="dropActive" class="drop-mask">松开鼠标，把文件加入本次提问</div>
-          <ComposerTaskDock :plan="runPlanBlock" :tools="runTools" :running="running" />
+          <ComposerTaskDock
+            :plan="runPlanBlock"
+            :tools="runTools"
+            :running="running"
+            :queue="queue"
+            @remove-queued="removeQueued"
+            @update-queued="updateQueued"
+          />
           <div v-if="attached.length" class="ctx-chips">
             <span class="ctx-label">已选 {{ attached.length }} 份日志</span>
             <span v-for="f in attached" :key="f.id" class="ctx-chip" :title="f.path">
@@ -1110,6 +1274,15 @@ const phaseText = computed(() => {
             </div>
             <div class="o-row" style="gap: 8px">
               <button v-if="running" class="o-btn" @click="stop">停止</button>
+              <button
+                v-if="running"
+                class="o-btn o-btn--primary"
+                :disabled="!draft.trim() || !activeSessionId || !ready"
+                title="加入排队，当前轮结束后自动发送"
+                @click="send"
+              >
+                排队发送
+              </button>
               <button
                 v-else
                 class="o-btn o-btn--primary"
@@ -1227,6 +1400,13 @@ const phaseText = computed(() => {
 }
 .side-sec.is-collapsed {
   flex: 0 0 auto;
+}
+/* 文件树容器: 折叠时仅隐藏不卸载, 保留目录 / 展开态 / 勾选 */
+.tree-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .side-sec--history {
   flex: 0 1 auto;
