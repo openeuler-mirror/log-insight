@@ -158,6 +158,70 @@ function addPending(items: PendingFile[]) {
   uploadErr.value = rejected ? `已忽略 ${rejected} 个不支持格式的文件` : ''
 }
 
+/** 待上传文件按相对路径聚合成目录树行: 文件夹在前, 文件在后 */
+type PendingRow =
+  | { key: string; type: 'dir'; depth: number; name: string; count: number; size: number }
+  | { key: string; type: 'file'; depth: number; name: string; size: number; index: number }
+
+type TreeNode = {
+  dirs: Map<string, TreeNode>
+  files: { name: string; size: number; index: number }[]
+}
+
+function treeNode(): TreeNode {
+  return { dirs: new Map(), files: [] }
+}
+
+function treeStat(node: TreeNode): { count: number; size: number } {
+  let count = node.files.length
+  let size = node.files.reduce((s, f) => s + f.size, 0)
+  for (const child of node.dirs.values()) {
+    const sub = treeStat(child)
+    count += sub.count
+    size += sub.size
+  }
+  return { count, size }
+}
+
+const pendingRows = computed<PendingRow[]>(() => {
+  const root = treeNode()
+  pendingFiles.value.forEach((p, index) => {
+    const parts = (p.relPath || p.file.name).split('/').filter(Boolean)
+    if (!parts.length) return
+    let node = root
+    for (const seg of parts.slice(0, -1)) {
+      let child = node.dirs.get(seg)
+      if (!child) {
+        child = treeNode()
+        node.dirs.set(seg, child)
+      }
+      node = child
+    }
+    node.files.push({ name: parts[parts.length - 1], size: p.file.size, index })
+  })
+  const rows: PendingRow[] = []
+  const walk = (node: TreeNode, depth: number, prefix: string) => {
+    for (const name of [...node.dirs.keys()].sort((a, b) => a.localeCompare(b))) {
+      const child = node.dirs.get(name) as TreeNode
+      const path = `${prefix}/${name}`
+      rows.push({ key: `d:${path}`, type: 'dir', depth, name, ...treeStat(child) })
+      walk(child, depth + 1, path)
+    }
+    for (const f of [...node.files].sort((a, b) => a.name.localeCompare(b.name))) {
+      rows.push({ key: `f:${f.index}`, type: 'file', depth, name: f.name, size: f.size, index: f.index })
+    }
+  }
+  walk(root, 0, '')
+  return rows
+})
+
+const pendingTotalSize = computed(() => pendingFiles.value.reduce((s, p) => s + p.file.size, 0))
+
+function fmtSize(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(n / 1024))} KB`
+}
+
 /** 点击选择文件（普通文件多选） */
 function addFiles(list: FileList | File[] | null) {
   if (!list) return
@@ -722,11 +786,25 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
           @change="onPickDir"
         />
 
-        <ul v-if="pendingFiles.length" class="file-list">
-          <li v-for="(p, i) in pendingFiles" :key="`${p.relPath || p.file.name}-${p.file.size}-${i}`">
-            <span class="fn" :title="p.relPath || p.file.name">{{ p.relPath || p.file.name }}</span>
-            <span class="fs">{{ (p.file.size / 1024).toFixed(1) }} KB</span>
-            <button class="link" :disabled="uploading" @click="removeFile(i)">移除</button>
+        <div v-if="pendingRows.length" class="pending-summary">
+          已选 {{ pendingFiles.length }} 个文件 · {{ fmtSize(pendingTotalSize) }}
+        </div>
+        <ul v-if="pendingRows.length" class="file-tree">
+          <li
+            v-for="row in pendingRows"
+            :key="row.key"
+            class="tree-row"
+            :class="row.type"
+            :style="{ paddingLeft: `${10 + row.depth * 16}px` }"
+          >
+            <span class="fn" :title="row.name">{{ row.name }}</span>
+            <template v-if="row.type === 'dir'">
+              <span class="fs">{{ row.count }} 个文件 · {{ fmtSize(row.size) }}</span>
+            </template>
+            <template v-else>
+              <span class="fs">{{ fmtSize(row.size) }}</span>
+              <button class="link" :disabled="uploading" @click="removeFile(row.index)">移除</button>
+            </template>
           </li>
         </ul>
 
@@ -975,11 +1053,15 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
 .drop-ico { color: var(--text-4); margin-bottom: 8px; display: flex; justify-content: center; }
 .drop-t { font-size: 14px; color: var(--text-1); }
 .drop-s { font-size: 12px; color: var(--text-3); margin-top: 6px; }
-.file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow: auto; }
-.file-list li {
-  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
-  background: var(--primary-soft); border: 1px solid var(--primary-tint); border-radius: var(--radius); font-size: 13px;
+.pending-summary { font-size: 12px; color: var(--text-3); }
+.file-tree {
+  list-style: none; margin: 0; padding: 4px 0; max-height: 240px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-3);
 }
+.tree-row { display: flex; align-items: center; gap: 10px; padding: 5px 10px; font-size: 13px; }
+.tree-row.dir { color: var(--text-1); font-weight: 600; }
+.tree-row.file { color: var(--text-2); }
+.tree-row.file:hover { background: var(--primary-soft); }
 .fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
 .fs { color: var(--text-3); font-size: 12px; flex-shrink: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
