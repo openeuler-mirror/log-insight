@@ -13,10 +13,8 @@ import {
 import Icon from '@/components/Icon.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 
-const ACCEPT = '.txt,.md,.pdf,.docx,.xlsx,.xls,.csv,.html,.htm'
-const ACCEPT_SET = new Set([
-  '.txt', '.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv', '.html', '.htm',
-])
+const ACCEPT_SET = new Set(['.txt', '.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv', '.html', '.htm'])
+const ACCEPT = [...ACCEPT_SET].join(',')
 
 const route = useRoute()
 const rr = useRouter()
@@ -129,9 +127,7 @@ function extOf(name: string) {
   return i >= 0 ? name.slice(i).toLowerCase() : ''
 }
 
-function pendingKey(p: PendingFile) {
-  return `${p.relPath || p.file.name}:${p.file.size}:${p.file.lastModified}`
-}
+const pendingKey = (p: PendingFile) => `${p.relPath || p.file.name}:${p.file.size}:${p.file.lastModified}`
 
 /** 上传时的目标相对路径: 落在当前浏览目录下 */
 function uploadRel(p: PendingFile): string {
@@ -168,19 +164,15 @@ type TreeNode = {
   files: { name: string; size: number; index: number }[]
 }
 
-function treeNode(): TreeNode {
-  return { dirs: new Map(), files: [] }
-}
+const treeNode = (): TreeNode => ({ dirs: new Map(), files: [] })
 
-function treeStat(node: TreeNode): { count: number; size: number } {
-  let count = node.files.length
-  let size = node.files.reduce((s, f) => s + f.size, 0)
-  for (const child of node.dirs.values()) {
-    const sub = treeStat(child)
-    count += sub.count
-    size += sub.size
+const treeStat = (n: TreeNode) => {
+  const size = n.files.reduce((s, f) => s + f.size, 0)
+  const subs = [...n.dirs.values()].map(treeStat)
+  return {
+    count: n.files.length + subs.reduce((s, x) => s + x.count, 0),
+    size: size + subs.reduce((s, x) => s + x.size, 0),
   }
-  return { count, size }
 }
 
 const pendingRows = computed<PendingRow[]>(() => {
@@ -217,10 +209,8 @@ const pendingRows = computed<PendingRow[]>(() => {
 
 const pendingTotalSize = computed(() => pendingFiles.value.reduce((s, p) => s + p.file.size, 0))
 
-function fmtSize(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  return `${Math.max(1, Math.round(n / 1024))} KB`
-}
+const fmtSize = (n: number) =>
+  n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
 
 /** 点击选择文件（普通文件多选） */
 function addFiles(list: FileList | File[] | null) {
@@ -431,44 +421,40 @@ function parentOf(rel: string): string {
 }
 
 function fmtDate(s: string): string {
-  if (!s) return ''
   const d = new Date(s)
-  if (Number.isNaN(d.getTime())) return ''
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-/** 当前目录下的子目录: 显式目录记录 + 文档 relPath 派生的虚拟目录合并 */
+/** 当前目录下的子目录: 显式目录 + 显式路径派生的父段 + 文档 relPath 派生的虚拟目录合并 */
 const dirFolders = computed<DirFolder[]>(() => {
   const prefix = currentDir.value ? `${currentDir.value}/` : ''
   const map = new Map<string, DirFolder>()
+  const ensure = (path: string, name: string, virtual: boolean, updatedAt = '') => {
+    if (!map.has(path)) map.set(path, { path, name, count: 0, updatedAt, virtual })
+  }
   for (const f of folders.value) {
     if (!f.path.startsWith(prefix)) continue
     const rest = f.path.slice(prefix.length)
-    if (!rest || rest.includes('/')) continue
-    map.set(f.path, { path: f.path, name: rest, count: 0, updatedAt: f.updatedAt || '', virtual: false })
+    if (!rest) continue
+    const first = rest.split('/')[0]
+    /* 深层显式目录也注册其一级父段, 避免派生文档被删后目录变孤儿不可达 */
+    if (rest.includes('/')) ensure(prefix + first, first, true)
+    else ensure(f.path, first, false, f.updatedAt || '')
   }
+  /* 单趟遍历文档: 派生虚拟目录 + 向全部祖先目录累加计数与最新时间 */
   for (const d of docs.value) {
     const rel = d.relPath || ''
     if (!rel.startsWith(prefix)) continue
-    const rest = rel.slice(prefix.length)
-    if (!rest.includes('/')) continue
-    const p = prefix + rest.split('/')[0]
-    if (!map.has(p)) map.set(p, { path: p, name: rest.split('/')[0], count: 0, updatedAt: '', virtual: true })
-  }
-  for (const fo of map.values()) {
-    const fp = `${fo.path}/`
-    let n = 0
-    let latest = ''
-    for (const d of docs.value) {
-      if ((d.relPath || '').startsWith(fp)) {
-        n += 1
-        const u = d.updatedAt || ''
-        if (u > latest) latest = u
-      }
+    const segs = rel.slice(prefix.length).split('/')
+    if (segs.length < 2) continue
+    ensure(prefix + segs[0], segs[0], true)
+    for (let i = 1; i < segs.length; i++) {
+      const fo = map.get(prefix + segs.slice(0, i).join('/'))
+      if (!fo) continue
+      fo.count += 1
+      const u = d.updatedAt || ''
+      if (u > fo.updatedAt) fo.updatedAt = u
     }
-    fo.count = n
-    if (latest) fo.updatedAt = latest
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh'))
 })
@@ -561,6 +547,8 @@ async function submitFolderModal() {
       }
     }
     folderModal.value = null
+    /* 重命名会改变目录 key, 勾选集合按旧路径残留会导致计数虚高且删除失效 */
+    clearSel()
     await reload()
   } catch (e) {
     m.err = apiError(e)
@@ -762,8 +750,7 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
         >
           <div class="drop-ico"><Icon name="folder" :size="28" /></div>
           <div class="drop-t">点击选择文件 / 文件夹，或直接拖拽到此处</div>
-          <div class="drop-s">文件夹会递归加入其中所有支持的文件 · 单文件 ≤ 20MB</div>
-          <div class="drop-s">支持 txt / md / pdf / docx / xlsx / xls / csv / html / htm</div>
+          <div class="drop-s">文件夹会递归加入其中所有支持的文件 · 单文件 ≤ 20MB · 支持 {{ ACCEPT.replace(/,/g, ' / ').replace(/\./g, '') }}</div>
           <div v-if="showPickMenu" class="pick-menu" @click.stop>
             <button type="button" @click="pickFiles">选择文件</button>
             <button type="button" @click="pickFolder">选择文件夹</button>
@@ -798,9 +785,7 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
             :style="{ paddingLeft: `${10 + row.depth * 16}px` }"
           >
             <span class="fn" :title="row.name">{{ row.name }}</span>
-            <template v-if="row.type === 'dir'">
-              <span class="fs">{{ row.count }} 个文件 · {{ fmtSize(row.size) }}</span>
-            </template>
+            <span v-if="row.type === 'dir'" class="fs">{{ row.count }} 个文件 · {{ fmtSize(row.size) }}</span>
             <template v-else>
               <span class="fs">{{ fmtSize(row.size) }}</span>
               <button class="link" :disabled="uploading" @click="removeFile(row.index)">移除</button>
@@ -1058,9 +1043,8 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
   list-style: none; margin: 0; padding: 4px 0; max-height: 240px; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-3);
 }
-.tree-row { display: flex; align-items: center; gap: 10px; padding: 5px 10px; font-size: 13px; }
+.tree-row { display: flex; align-items: center; gap: 10px; padding: 5px 10px; font-size: 13px; color: var(--text-2); }
 .tree-row.dir { color: var(--text-1); font-weight: 600; }
-.tree-row.file { color: var(--text-2); }
 .tree-row.file:hover { background: var(--primary-soft); }
 .fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
 .fs { color: var(--text-3); font-size: 12px; flex-shrink: 0; }

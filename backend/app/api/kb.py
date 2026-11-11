@@ -327,6 +327,17 @@ def _norm_folder_path(raw: str) -> str:
     return path
 
 
+def _like_prefix(col, prefix: str):
+    """前缀 LIKE, 转义 %/_: 目录名含通配符时不能波及同形路径 (如 a_b 误伤 axb)."""
+    esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return col.like(esc + "/%", escape="\\")
+
+
+def _norm_rel_path(raw: str) -> str:
+    """清洗上传相对路径: 统一分隔符, 丢弃空段与 '.'/'..'."""
+    return "/".join(p for p in raw.strip().replace("\\", "/").split("/") if p not in ("", ".", ".."))[:512]
+
+
 def _folder_info(f: KbFolder) -> dict:
     return {
         "id": f.id,
@@ -392,7 +403,7 @@ async def rename_folder(
     clash = (await db.execute(
         select(KbFolder.id).where(
             KbFolder.kb_id == kb_id,
-            (KbFolder.path == new) | KbFolder.path.like(new + "/%"),
+            (KbFolder.path == new) | _like_prefix(KbFolder.path, new),
         ).limit(1)
     )).scalar_one_or_none()
     if clash:
@@ -401,7 +412,7 @@ async def rename_folder(
         select(KbDocument.id).where(
             KbDocument.kb_id == kb_id,
             KbDocument.deleted_at.is_(None),
-            (KbDocument.rel_path == new) | KbDocument.rel_path.like(new + "/%"),
+            (KbDocument.rel_path == new) | _like_prefix(KbDocument.rel_path, new),
         ).limit(1)
     )).scalar_one_or_none()
     if doc_clash:
@@ -409,7 +420,7 @@ async def rename_folder(
     folders = (await db.execute(
         select(KbFolder).where(
             KbFolder.kb_id == kb_id,
-            (KbFolder.path == old) | KbFolder.path.like(old + "/%"),
+            (KbFolder.path == old) | _like_prefix(KbFolder.path, old),
         )
     )).scalars().all()
     for f in folders:
@@ -418,7 +429,7 @@ async def rename_folder(
         select(KbDocument).where(
             KbDocument.kb_id == kb_id,
             KbDocument.deleted_at.is_(None),
-            KbDocument.rel_path.like(old + "/%"),
+            _like_prefix(KbDocument.rel_path, old),
         )
     )).scalars().all()
     for d in docs:
@@ -442,7 +453,7 @@ async def delete_folder(
         select(KbDocument).where(
             KbDocument.kb_id == kb_id,
             KbDocument.deleted_at.is_(None),
-            KbDocument.rel_path.like(old + "/%"),
+            _like_prefix(KbDocument.rel_path, old),
         )
     )).scalars().all()
     from app.models.kb import KbChunk
@@ -457,7 +468,7 @@ async def delete_folder(
     folders = (await db.execute(
         select(KbFolder).where(
             KbFolder.kb_id == kb_id,
-            (KbFolder.path == old) | KbFolder.path.like(old + "/%"),
+            (KbFolder.path == old) | _like_prefix(KbFolder.path, old),
         )
     )).scalars().all()
     for f in folders:
@@ -550,7 +561,7 @@ async def upload_raw(
         doc_type="raw_import", ingest_mode="raw",
         source_format=ext.lstrip("."),
         storage_path=str(dest),
-        rel_path=rel_path.strip()[:512],
+        rel_path=_norm_rel_path(rel_path),
         status="pending", created_by=user.id,
     )
     db.add(doc)
@@ -590,7 +601,7 @@ async def upload_batch(
         rel_list = []
     if not isinstance(rel_list, list):
         rel_list = []
-    rel_list = [str(x)[:512] for x in rel_list]
+    rel_list = [_norm_rel_path(str(x)) for x in rel_list]
 
     batch = KbIngestBatch(
         team_id=team_id, kb_id=kb.id, mode="template",
@@ -605,7 +616,9 @@ async def upload_batch(
 
     from app.modules.kb.case_convert import convert_case
 
-    for idx, f in enumerate(files[:20]):
+    if len(files) > 20:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "单批最多 20 个文件, 请分批上传")
+    for idx, f in enumerate(files):
         name = f.filename or "upload.bin"
         ext = Path(name).suffix.lower()
         data = await f.read()

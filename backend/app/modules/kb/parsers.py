@@ -122,15 +122,13 @@ class _HtmlTextExtractor(HTMLParser):
 
 def _html(path: Path) -> str:
     raw = path.read_bytes()
-    # utf-8-sig 优先: 带 BOM 的页面不会把 BOM 混进正文
+    # utf-8-sig 优先: 带 BOM 的页面不会把 BOM 混进正文; latin-1 兜底永不失败
     for enc in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
         try:
             text = raw.decode(enc)
             break
         except UnicodeDecodeError:
             continue
-    else:
-        text = raw.decode("utf-8", errors="replace")
     parser = _HtmlTextExtractor()
     parser.feed(text)
     parser.close()
