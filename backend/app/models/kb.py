@@ -1,7 +1,7 @@
 """团队知识库: 多库 / 文档 / 切块 / 导入批次."""
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,12 +38,30 @@ class KbDocument(Base):
     ingest_mode: Mapped[str] = mapped_column(String(16), default="raw")  # raw / template
     source_format: Mapped[str] = mapped_column(String(16), default="")
     storage_path: Mapped[str] = mapped_column(String(512), default="")
+    # 目录导入时的相对路径 (POSIX 分隔); 空=平铺在根
+    rel_path: Mapped[str] = mapped_column(String(512), default="")
     content_norm: Mapped[str] = mapped_column(Text, default="")
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class KbFolder(Base):
+    """显式目录: 持久化用户手动创建的空目录 (文档派生的目录无需记录)."""
+
+    __tablename__ = "kb_folders"
+    __table_args__ = (UniqueConstraint("kb_id", "path", name="uq_kb_folders_kb_path"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kb_id: Mapped[int] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    # POSIX 相对路径 (相对知识库根), 如 "sub" / "sub/deep"
+    path: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -84,6 +102,8 @@ class KbIngestItem(Base):
     batch_id: Mapped[int] = mapped_column(ForeignKey("kb_ingest_batches.id", ondelete="CASCADE"), index=True)
     filename: Mapped[str] = mapped_column(String(256), default="")
     storage_path: Mapped[str] = mapped_column(String(512), default="")
+    # 目录导入时的相对路径 (POSIX 分隔), 提交入库时写入文档
+    rel_path: Mapped[str] = mapped_column(String(512), default="")
     parse_status: Mapped[str] = mapped_column(String(16), default="pending")
     convert_status: Mapped[str] = mapped_column(String(16), default="")  # 仅 template
     preview_markdown: Mapped[str] = mapped_column(Text, default="")

@@ -58,6 +58,9 @@ _GUARDS: list[tuple[str, str]] = [
     # 诊断会话绑定的本地目录与勾选文件
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS local_root VARCHAR(512) DEFAULT ''", "diagnosis_sessions.local_root"),
     ("ALTER TABLE diagnosis_sessions ADD COLUMN IF NOT EXISTS selected_files JSONB DEFAULT '[]'::jsonb", "diagnosis_sessions.selected_files"),
+    # 知识库目录导入: 保留原始目录层级
+    ("ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS rel_path VARCHAR(512) DEFAULT ''", "kb_documents.rel_path"),
+    ("ALTER TABLE kb_ingest_items ADD COLUMN IF NOT EXISTS rel_path VARCHAR(512) DEFAULT ''", "kb_ingest_items.rel_path"),
 ]
 
 

@@ -1,13 +1,14 @@
 """团队知识库 API: CRUD / 上传 / 检索试跑."""
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.deps import ensure_team_perm, get_current_user
-from app.models.kb import KbDocument, KbIngestBatch, KbIngestItem, KnowledgeBase
+from app.models.kb import KbDocument, KbFolder, KbIngestBatch, KbIngestItem, KnowledgeBase
 from app.models.user import User
 from app.modules.kb.ingest import ingest_document
 from app.modules.kb.parsers import SUPPORTED, parse_file
@@ -115,6 +116,7 @@ def _doc_info(d: KbDocument) -> dict:
         "doc_type": d.doc_type,
         "ingest_mode": d.ingest_mode,
         "source_format": d.source_format,
+        "rel_path": d.rel_path or "",
         "status": d.status,
         "enabled": d.enabled,
         "metadata": d.metadata_ or {},
@@ -305,11 +307,171 @@ async def delete_doc(
     return {"ok": True}
 
 
+class FolderCreate(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+
+
+class FolderRename(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    name: str = Field(min_length=1, max_length=128)
+
+
+def _norm_folder_path(raw: str) -> str:
+    """规范化目录路径: 统一分隔符, 去掉空段与 '.'; 拒绝 '..'."""
+    parts = [p for p in raw.replace("\\", "/").split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目录路径不合法")
+    path = "/".join(parts)
+    if not path or len(path) > 512:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目录路径不合法")
+    return path
+
+
+def _folder_info(f: KbFolder) -> dict:
+    return {
+        "id": f.id,
+        "kb_id": f.kb_id,
+        "path": f.path,
+        "created_at": f.created_at,
+        "updated_at": f.updated_at,
+    }
+
+
+@router.get("/{kb_id}/folders")
+async def list_folders(
+    team_id: int, kb_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await ensure_team_perm(db, user, team_id, "kb:view")
+    await _get_kb(db, team_id, kb_id)
+    rows = (await db.execute(
+        select(KbFolder).where(KbFolder.kb_id == kb_id).order_by(KbFolder.path)
+    )).scalars().all()
+    return [_folder_info(f) for f in rows]
+
+
+@router.post("/{kb_id}/folders")
+async def create_folder(
+    team_id: int, kb_id: int, body: FolderCreate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await ensure_team_perm(db, user, team_id, "kb:manage")
+    kb = await _get_kb(db, team_id, kb_id)
+    path = _norm_folder_path(body.path)
+    dup = (await db.execute(
+        select(KbFolder).where(KbFolder.kb_id == kb_id, KbFolder.path == path)
+    )).scalar_one_or_none()
+    if dup:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "同名目录已存在")
+    f = KbFolder(kb_id=kb.id, team_id=team_id, path=path)
+    db.add(f)
+    await db.commit()
+    await db.refresh(f)
+    return _folder_info(f)
+
+
+@router.patch("/{kb_id}/folders")
+async def rename_folder(
+    team_id: int, kb_id: int, body: FolderRename,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await ensure_team_perm(db, user, team_id, "kb:manage")
+    await _get_kb(db, team_id, kb_id)
+    old = _norm_folder_path(body.path)
+    name = body.name.strip()
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目录名不合法")
+    parent = old.rsplit("/", 1)[0] if "/" in old else ""
+    new = f"{parent}/{name}" if parent else name
+    if new == old:
+        return {"ok": True, "path": new}
+    # 目标路径已被显式目录或文档占用时拒绝合并
+    clash = (await db.execute(
+        select(KbFolder.id).where(
+            KbFolder.kb_id == kb_id,
+            (KbFolder.path == new) | KbFolder.path.like(new + "/%"),
+        ).limit(1)
+    )).scalar_one_or_none()
+    if clash:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目标目录已存在")
+    doc_clash = (await db.execute(
+        select(KbDocument.id).where(
+            KbDocument.kb_id == kb_id,
+            KbDocument.deleted_at.is_(None),
+            (KbDocument.rel_path == new) | KbDocument.rel_path.like(new + "/%"),
+        ).limit(1)
+    )).scalar_one_or_none()
+    if doc_clash:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目标目录下已有文档")
+    folders = (await db.execute(
+        select(KbFolder).where(
+            KbFolder.kb_id == kb_id,
+            (KbFolder.path == old) | KbFolder.path.like(old + "/%"),
+        )
+    )).scalars().all()
+    for f in folders:
+        f.path = new + f.path[len(old):]
+    docs = (await db.execute(
+        select(KbDocument).where(
+            KbDocument.kb_id == kb_id,
+            KbDocument.deleted_at.is_(None),
+            KbDocument.rel_path.like(old + "/%"),
+        )
+    )).scalars().all()
+    for d in docs:
+        d.rel_path = new + d.rel_path[len(old):]
+    await db.commit()
+    return {"ok": True, "path": new}
+
+
+@router.delete("/{kb_id}/folders")
+async def delete_folder(
+    team_id: int, kb_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    path: str = Query(..., min_length=1),
+):
+    await ensure_team_perm(db, user, team_id, "kb:manage")
+    await _get_kb(db, team_id, kb_id)
+    old = _norm_folder_path(path)
+    now = datetime.now(timezone.utc)
+    docs = (await db.execute(
+        select(KbDocument).where(
+            KbDocument.kb_id == kb_id,
+            KbDocument.deleted_at.is_(None),
+            KbDocument.rel_path.like(old + "/%"),
+        )
+    )).scalars().all()
+    from app.models.kb import KbChunk
+    for d in docs:
+        d.deleted_at = now
+    if docs:
+        chunks = (await db.execute(
+            select(KbChunk).where(KbChunk.document_id.in_([d.id for d in docs]))
+        )).scalars().all()
+        for c in chunks:
+            c.deleted_at = now
+    folders = (await db.execute(
+        select(KbFolder).where(
+            KbFolder.kb_id == kb_id,
+            (KbFolder.path == old) | KbFolder.path.like(old + "/%"),
+        )
+    )).scalars().all()
+    for f in folders:
+        await db.delete(f)
+    await db.commit()
+    return {"ok": True, "deleted_docs": len(docs)}
+
+
 def _item_info(it: KbIngestItem) -> dict:
     return {
         "id": it.id,
         "batch_id": it.batch_id,
         "filename": it.filename,
+        "rel_path": it.rel_path or "",
         "parse_status": it.parse_status,
         "convert_status": it.convert_status,
         "preview_markdown": it.preview_markdown,
@@ -359,6 +521,7 @@ async def upload_raw(
     db: Annotated[AsyncSession, Depends(get_db)],
     file: UploadFile = File(...),
     mode: str = Form("raw"),
+    rel_path: str = Form(""),
 ):
     """原样上传并同步入库. 模板化请用 upload-batch."""
     await ensure_team_perm(db, user, team_id, "kb:manage")
@@ -387,6 +550,7 @@ async def upload_raw(
         doc_type="raw_import", ingest_mode="raw",
         source_format=ext.lstrip("."),
         storage_path=str(dest),
+        rel_path=rel_path.strip()[:512],
         status="pending", created_by=user.id,
     )
     db.add(doc)
@@ -404,8 +568,12 @@ async def upload_batch(
     db: Annotated[AsyncSession, Depends(get_db)],
     files: list[UploadFile] = File(...),
     mode: str = Form("template"),
+    rel_paths: str = Form("[]"),
 ):
-    """模板化多文件上传: 解析 → LLM 转换预览 → 返回批次供勾选导入."""
+    """模板化多文件上传: 解析 → LLM 转换预览 → 返回批次供勾选导入.
+
+    rel_paths: JSON 数组, 与 files 顺序对齐, 用于保留目录层级.
+    """
     await ensure_team_perm(db, user, team_id, "kb:manage")
     if mode != "template":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "upload-batch 仅支持 mode=template")
@@ -415,6 +583,14 @@ async def upload_batch(
     settings = get_settings()
     max_b = settings.KB_MAX_UPLOAD_MB * 1024 * 1024
     chat = await _team_chat(db, team_id)
+    # 目录上传时前端按 files 顺序传相对路径
+    try:
+        rel_list = json.loads(rel_paths) if rel_paths else []
+    except (TypeError, ValueError):
+        rel_list = []
+    if not isinstance(rel_list, list):
+        rel_list = []
+    rel_list = [str(x)[:512] for x in rel_list]
 
     batch = KbIngestBatch(
         team_id=team_id, kb_id=kb.id, mode="template",
@@ -429,11 +605,14 @@ async def upload_batch(
 
     from app.modules.kb.case_convert import convert_case
 
-    for f in files[:20]:
+    for idx, f in enumerate(files[:20]):
         name = f.filename or "upload.bin"
         ext = Path(name).suffix.lower()
         data = await f.read()
-        item = KbIngestItem(batch_id=batch.id, filename=Path(name).name[:256])
+        item = KbIngestItem(
+            batch_id=batch.id, filename=Path(name).name[:256],
+            rel_path=rel_list[idx] if idx < len(rel_list) else "",
+        )
         if ext not in SUPPORTED:
             item.parse_status = "failed"
             item.convert_status = "failed"
@@ -533,6 +712,7 @@ async def commit_batch(
             doc_type="converted_case", ingest_mode="template",
             source_format=Path(it.filename).suffix.lstrip(".") or "md",
             storage_path=it.storage_path,
+            rel_path=it.rel_path or "",
             content_norm=it.preview_markdown,
             status="pending", created_by=user.id,
         )
