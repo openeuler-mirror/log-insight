@@ -25,6 +25,8 @@ const err = ref('')
 const kbs = ref<KnowledgeBase[]>([])
 
 const showCreate = ref(false)
+/* 弹窗内的错误与页面级加载错误分开: 创建失败不能把下方知识库列表一起隐藏 */
+const createErr = ref('')
 const formName = ref('')
 const formDesc = ref('')
 const formVector = ref(false)
@@ -72,20 +74,25 @@ function openSettings(e: Event, kb: KnowledgeBase) {
   setEmbedKey.value = ''
 }
 
+function openCreate() {
+  createErr.value = ''
+  showCreate.value = true
+}
+
 async function onCreate() {
   if (!teamId.value || !formName.value.trim()) return
   if (formVector.value) {
     if (!formEmbedModel.value.trim()) {
-      err.value = '启用向量时请填写 Embedding 模型 ID'
+      createErr.value = '启用向量时请填写 Embedding 模型 ID'
       return
     }
     if (!formEmbedKey.value.trim()) {
-      err.value = '启用向量时请填写 Embedding API Key（可与团队 Chat 密钥不同）'
+      createErr.value = '启用向量时请填写 Embedding API Key（可与团队 Chat 密钥不同）'
       return
     }
   }
   creating.value = true
-  err.value = ''
+  createErr.value = ''
   try {
     const kb = await createKb(teamId.value, {
       name: formName.value.trim(),
@@ -109,7 +116,7 @@ async function onCreate() {
     await reload()
     openKb(kb.id)
   } catch (e) {
-    err.value = apiError(e)
+    createErr.value = apiError(e)
   } finally {
     creating.value = false
   }
@@ -174,7 +181,7 @@ onMounted(async () => {
         <h1 class="title">知识库</h1>
         <p class="sub">当前团队：{{ teamsStore.activeTeam?.name || '未选择' }} · 点击卡片进入详情</p>
       </div>
-      <button v-if="canManage" class="btn primary" @click="showCreate = true">
+      <button v-if="canManage" class="btn primary" @click="openCreate">
         <Icon name="plus" :size="14" /> 新建知识库
       </button>
     </div>
@@ -185,7 +192,7 @@ onMounted(async () => {
     <div v-else-if="loading" class="empty muted">加载中…</div>
     <div v-else-if="!kbs.length" class="empty">
       暂无知识库
-      <button v-if="canManage" class="btn primary" style="margin-top:12px" @click="showCreate = true">创建第一个</button>
+      <button v-if="canManage" class="btn primary" style="margin-top:12px" @click="openCreate">创建第一个</button>
     </div>
 
     <div v-else class="grid">
@@ -244,6 +251,7 @@ onMounted(async () => {
           </label>
           <div class="hint">密钥按库加密保存并锁定；仅用于本库向量化，不会回传明文。</div>
         </template>
+        <div v-if="createErr" class="err">{{ createErr }}</div>
         <div class="dialog-actions">
           <button class="btn" @click="showCreate = false">取消</button>
           <button
