@@ -246,7 +246,13 @@ export const patchSession = (id: string, body: {
   return patch<SessionInfo>(`/diagnosis/sessions/${id}`, payload)
 }
 export const deleteSession = (id: string) => del(`/diagnosis/sessions/${id}`)
+/* 批量删除: 只删自己的会话, 返回实际删除数 */
+export const batchDeleteSessions = (ids: string[]) =>
+  post<{ deleted: number }>('/diagnosis/sessions/batch-delete', { ids })
 export const listMessages = (id: string) => get<ChatMessage[]>(`/diagnosis/sessions/${id}/messages`)
+/* 删除会话内单条消息 */
+export const deleteMessage = (sessionId: string, messageId: number) =>
+  del(`/diagnosis/sessions/${sessionId}/messages/${messageId}`)
 export const listFiles = () => get<FileNode[]>('/diagnosis/files')
 export const readFile = (fileId: string) =>
   get<FileContent>('/diagnosis/files/content', { file_id: fileId })

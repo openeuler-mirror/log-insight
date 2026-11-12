@@ -21,6 +21,7 @@ import { fetchFile as fetchFsFile, rawUrl, watchUrl, type FsChange } from '@/api
 import {
   agentStatus,
   createSession,
+  deleteMessage,
   fetchCatalog,
   listFiles,
   listMessages,
@@ -859,6 +860,34 @@ async function copyMessage(m: ChatMessage) {
 
 onBeforeUnmount(() => window.clearTimeout(copyTimer))
 
+/* 消息删除: 生成中的消息等价于停止本轮并从列表移除, 已落库的走接口删除 */
+const removingId = ref<string | number>('')
+
+async function removeMessage(m: ChatMessage) {
+  const sid = activeSessionId.value
+  if (!sid || removingId.value) return
+  /* 生成中的消息: 变相触发停止, 再把该条移出列表 */
+  if (m.id === 'live') {
+    runs[sid]?.ctl?.abort()
+    messages.value = messages.value.filter((x) => x.id !== 'live')
+    return
+  }
+  /* 尚未拿到后端 id 的本地消息: 只从当前列表移除 */
+  if (typeof m.id !== 'number') {
+    messages.value = messages.value.filter((x) => x.id !== m.id)
+    return
+  }
+  removingId.value = m.id
+  try {
+    await deleteMessage(sid, m.id)
+    messages.value = messages.value.filter((x) => x.id !== m.id)
+  } catch (e) {
+    errorText.value = apiError(e)
+  } finally {
+    removingId.value = ''
+  }
+}
+
 /* ---------------- 排队发送 ---------------- */
 /* queue / QueuedItem 声明在顶部状态区; 这里是入队快照与编辑操作 */
 
@@ -957,12 +986,14 @@ async function runTurn(
   const live: ChatMessage = reactive({ id: 'live', role: 'assistant', blocks: [] })
   run.live = live
   /* 只有会话可见时才插到当前列表; 后台会话的消息等切回来再从后端 + live 恢复 */
+  let userMsg: ChatMessage | null = null
   if (visible()) {
-    messages.value.push({
+    userMsg = reactive<ChatMessage>({
       id: `u-${Date.now()}`,
       role: 'user',
       blocks: [{ kind: 'text', text }, ...files],
     })
+    messages.value.push(userMsg)
     messages.value.push(live)
   }
 
@@ -980,6 +1011,10 @@ async function runTurn(
   try {
     await sendMessage(sid, text, refs, {
       onEvent(event, data) {
+        /* 后端在开流时回传用户消息 id, 用于把本地占位换成可删除的真实 id */
+        if (userMsg && typeof userMsg.id !== 'number' && data?.userMessageId) {
+          userMsg.id = data.userMessageId
+        }
         applyStreamEvent(live, run, event, data)
         /* 会话已切走, 或用户上翻查看历史时不跟随; 流式内容照常累积 */
         if (visible() && atBottom.value) void scrollBottom()
@@ -1020,6 +1055,17 @@ async function runTurn(
 function stop() {
   const sid = activeSessionId.value
   if (sid) runs[sid]?.ctl?.abort()
+}
+
+/* 删除会话时终止其运行中的轮次: 复用停止链路 (连接断开 -> 后端关流 -> DSH 子进程退出),
+   并清空排队消息, 避免对已删会话继续发起注定 404 的请求 */
+function onSessionsRemoved(ids: string[]) {
+  for (const id of ids) {
+    const run = runs[id]
+    if (!run) continue
+    run.queue.length = 0
+    run.ctl?.abort()
+  }
 }
 
 const examples = [
@@ -1131,6 +1177,7 @@ const phaseText = computed(() => {
           :active-id="activeSessionId"
           @select="selectSession($event.id)"
           @changed="refreshSessions"
+          @removed="onSessionsRemoved"
         />
       </section>
 
@@ -1285,15 +1332,27 @@ const phaseText = computed(() => {
                 </template>
               </div>
 
-              <div v-if="textBlocks(m).length" class="msg-actions">
+              <div class="msg-actions">
                 <button
+                  v-if="textBlocks(m).length"
                   type="button"
                   class="copy-btn"
                   :class="{ 'is-ok': copiedId === m.id }"
+                  :data-tip="copiedId === m.id ? '已复制' : '复制'"
+                  aria-label="复制"
                   @click="copyMessage(m)"
                 >
-                  <Icon :name="copiedId === m.id ? 'check' : 'clipboard'" :size="12" />
-                  <span>{{ copiedId === m.id ? '已复制' : '复制' }}</span>
+                  <Icon :name="copiedId === m.id ? 'check' : 'clipboard'" :size="13" />
+                </button>
+                <button
+                  type="button"
+                  class="copy-btn copy-btn--del"
+                  :data-tip="m.id === 'live' ? '停止并删除' : '删除'"
+                  :aria-label="m.id === 'live' ? '停止并删除' : '删除'"
+                  :disabled="removingId === m.id"
+                  @click="removeMessage(m)"
+                >
+                  <Icon name="trash" :size="13" />
                 </button>
               </div>
             </div>
@@ -1825,6 +1884,7 @@ const phaseText = computed(() => {
 .msg-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 4px;
   max-height: 0;
   opacity: 0;
   overflow: hidden;
@@ -1834,25 +1894,58 @@ const phaseText = computed(() => {
   max-height: 30px;
   margin-top: 4px;
   opacity: 1;
+  /* 悬停时放出图标的文字提示, 避免被 max-height 裁切 */
+  overflow: visible;
 }
 .copy-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 1px 7px;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text-4);
-  font: inherit;
-  font-size: 11px;
-  line-height: 1.6;
   cursor: pointer;
   transition: all 0.15s;
+}
+/* 图标下方浮出的文字提示 */
+.copy-btn::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  background: var(--text-1);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(-2px);
+  transition: opacity 0.12s, transform 0.12s;
+  z-index: 20;
+}
+.copy-btn:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 .copy-btn:hover {
   border-color: var(--primary);
   color: var(--primary);
+}
+.copy-btn--del:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.copy-btn--del:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .copy-btn.is-ok {
   border-color: var(--success);
