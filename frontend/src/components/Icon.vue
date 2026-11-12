@@ -5,7 +5,7 @@ export type IconName =
   | 'bell' | 'pencil' | 'trash' | 'alert' | 'chart' | 'search' | 'clipboard'
   | 'activity' | 'refresh' | 'chevron-left' | 'chevron-right' | 'plus' | 'sidebar'
   | 'close' | 'lock' | 'users' | 'play' | 'check' | 'x' | 'disk' | 'bolt'
-  | 'hourglass' | 'star' | 'arrow-left' | 'arrow-right'
+  | 'hourglass' | 'star' | 'arrow-left' | 'arrow-right' | 'arrow-down'
   | 'caret-down' | 'caret-right' | 'circle'
 
 const props = withDefaults(defineProps<{ name: IconName; size?: number }>(), { size: 14 })
@@ -107,6 +107,7 @@ const PATHS: Record<IconName, string[]> = {
   star: ['M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z'],
   'arrow-left': ['M19 12H5', 'M12 19l-7-7 7-7'],
   'arrow-right': ['M5 12h14', 'M12 5l7 7-7 7'],
+  'arrow-down': ['M12 5v14', 'M5 12l7 7 7-7'],
   'caret-down': ['M6 9l6 6 6-6'],
   'caret-right': ['M9 6l6 6-6 6'],
   circle: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z'],

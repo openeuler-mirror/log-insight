@@ -1,13 +1,12 @@
 <script setup lang="ts">
 /* 一轮助手回复: 正文常显, 思考/工具/计划折叠, 轮末用量行 */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import FoldChevron from './FoldChevron.vue'
 import FoldSection from './FoldSection.vue'
 import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis'
 import Icon, { type IconName } from '@/components/Icon.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 import { toolLabel } from './toolLabel'
-import { copyText as writeClipboard } from '@/utils/clipboard'
 
 const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
 
@@ -62,25 +61,6 @@ const usage = computed(() => {
 })
 const hasUsage = computed(() => usage.value.total > 0 || usage.value.input > 0 || usage.value.output > 0)
 const fmt = (n: number) => n.toLocaleString('en-US')
-
-/* 复制正文: 剪贴板 API + execCommand 降级统一在 util 内处理 */
-const copied = ref(false)
-let copiedTimer: number | undefined
-
-async function onCopy() {
-  const content = text.value
-  if (!content) return
-  const ok = await writeClipboard(content)
-  if (ok) {
-    copied.value = true
-    window.clearTimeout(copiedTimer)
-    copiedTimer = window.setTimeout(() => {
-      copied.value = false
-    }, 1600)
-  }
-}
-
-onBeforeUnmount(() => window.clearTimeout(copiedTimer))
 </script>
 
 <template>
@@ -154,13 +134,6 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer))
       <span v-if="usage.cached">缓存读 {{ fmt(usage.cached) }}</span>
       <span v-if="usage.thought">思考 {{ fmt(usage.thought) }}</span>
       <span class="sum">合计 {{ fmt(usage.total) }} tokens</span>
-    </div>
-
-    <div v-if="text" class="actions">
-      <button type="button" class="copy-btn" :class="{ 'is-ok': copied }" @click="onCopy">
-        <Icon :name="copied ? 'check' : 'clipboard'" :size="12" />
-        <span>{{ copied ? '已复制' : '复制' }}</span>
-      </button>
     </div>
   </div>
 </template>
@@ -339,32 +312,5 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer))
 }
 .usage .sum {
   color: var(--text-3);
-}
-.actions {
-  display: flex;
-  justify-content: flex-end;
-}
-.copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text-4);
-  font: inherit;
-  font-size: 11px;
-  line-height: 1.6;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.copy-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-.copy-btn.is-ok {
-  border-color: var(--success);
-  color: var(--success);
 }
 </style>

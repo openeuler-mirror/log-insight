@@ -12,6 +12,7 @@ import AssistantTurn from '@/components/diagnosis/AssistantTurn.vue'
 import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
 import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
 import Icon from '@/components/Icon.vue'
+import { copyText } from '@/utils/clipboard'
 import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
 import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosis/diagnosisFiles'
@@ -152,15 +153,7 @@ const attachedIds = computed(() => attached.value.map((a) => a.id))
 const treeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
 
 /* ---------------- 排队发送 ---------------- */
-/* 处理中新消息进入排队, 当前轮结束或被中止后依次自动发送;
-   id 为自增序号, 队列增删时编辑态等引用不会随下标漂移 */
-type QueuedItem = {
-  id: number
-  text: string
-  refs: FileRef[]
-  files: { kind: 'file'; name: string; taskId?: string }[]
-}
-const queue = ref<QueuedItem[]>([])
+/* 处理中新消息进入排队, 当前轮结束或被中止后依次自动发送 */
 let queuedSeq = 0
 
 async function loadFiles() {
@@ -504,6 +497,71 @@ const canKbSearch = computed(() => {
 const sessionKbIds = computed(() => currentSession.value?.selectedKbIds ?? [])
 const sessionKbTopK = computed(() => currentSession.value?.kbTopK ?? 10)
 
+/* ---------------- 会话级瞬时状态 ----------------
+   输入草稿 / 排队消息 / 运行态都按会话隔离: 一个会话在后台继续诊断时切走,
+   状态不会串到另一个会话, 切回来还能接着看进度。 */
+type QueuedItem = {
+  id: number
+  text: string
+  refs: FileRef[]
+  files: { kind: 'file'; name: string; taskId?: string }[]
+  /* 入队时刻的模型选择, 后台续发时不跟随当前输入框的选择漂移 */
+  model?: { modelRowId: number; reasoning: string }
+}
+
+type RunState = {
+  draft: string
+  queue: QueuedItem[]
+  running: boolean
+  phase: string
+  plan: PlanBlock['entries']
+  tools: ToolBlock[]
+  usage: { input: number; output: number; total: number }
+  /* 在飞轮次的流式消息 (未落库), 切回该会话时重新挂到列表末尾 */
+  live: ChatMessage | null
+  ctl: AbortController | null
+}
+
+function emptyRun(): RunState {
+  return {
+    draft: '',
+    queue: [],
+    running: false,
+    phase: '',
+    plan: [],
+    tools: [],
+    usage: { input: 0, output: 0, total: 0 },
+    live: null,
+    ctl: null,
+  }
+}
+
+/* 只读占位: 未创建过状态的会话不会把数据写进共享对象 */
+const EMPTY_RUN = emptyRun()
+const runs = reactive<Record<string, RunState>>({})
+
+function runOf(sid: string): RunState {
+  /* 统一返回 reactive 代理: 直接返回原始对象会导致后续改动不触发视图更新 */
+  if (!runs[sid]) runs[sid] = emptyRun()
+  return runs[sid]
+}
+
+const activeRun = computed<RunState>(() => runs[activeSessionId.value] ?? EMPTY_RUN)
+
+/* 输入框内容跟随会话: 切换会话显示各自的草稿 */
+const draft = computed({
+  get: () => activeRun.value.draft,
+  set: (v: string) => {
+    if (activeSessionId.value) runOf(activeSessionId.value).draft = v
+  },
+})
+const running = computed(() => activeRun.value.running)
+const phase = computed(() => activeRun.value.phase)
+const runPlan = computed(() => activeRun.value.plan)
+const runTools = computed(() => activeRun.value.tools)
+const queue = computed(() => activeRun.value.queue)
+const streamUsage = computed(() => activeRun.value.usage)
+
 async function onKbChange(payload: { selectedIds: number[]; topK: number }) {
   const sid = activeSessionId.value
   if (!sid) return
@@ -532,26 +590,54 @@ async function scrollBottom() {
   await nextTick()
   const el = bodyRef.value
   if (el) el.scrollTop = el.scrollHeight
+  onBodyScroll()
+}
+
+/* 回到底部: 离开底部超过阈值时浮出按钮 (以最近一条消息为参考) */
+const atBottom = ref(true)
+
+function onBodyScroll() {
+  const el = bodyRef.value
+  if (el) atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+async function jumpBottom() {
+  await nextTick()
+  const el = bodyRef.value
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  /* 平滑滚动目标在开始时固定, 期间悬停操作栏展开会改变内容高度, 结束后再补对齐 */
+  window.setTimeout(() => {
+    const cur = bodyRef.value
+    if (cur) cur.scrollTop = cur.scrollHeight
+  }, 360)
 }
 
 async function loadMessageList(id: string) {
   loadingSession.value = true
   pickedModel.value = null
-  queue.value = []
   try {
-    messages.value = await listMessages(id)
+    const rows = await listMessages(id)
+    /* 快速连续切换会话时, 丢弃已不是当前会话的过期响应 */
+    if (activeSessionId.value !== id) return
+    const run = runs[id]
+    /* 该会话正在后台跑: live 消息尚未落库, 重新挂回列表末尾继续接收事件 */
+    if (run?.running && run.live) rows.push(run.live)
+    messages.value = rows
     applySessionRoot(sessions.value.find((s) => s.id === id))
-    resetRun()
-    await scrollBottom()
+    if (!run?.running) resetRun(id)
   } catch (e) {
     errorText.value = apiError(e)
   } finally {
     loadingSession.value = false
+    /* 等 loading 占位退出、消息真正渲染后再定位到最新消息 */
+    if (activeSessionId.value === id) await scrollBottom()
   }
 }
 
 async function selectSession(id: string) {
-  if (id === activeSessionId.value || running.value) return
+  if (id === activeSessionId.value) return
+  /* 允许切走正在诊断的会话: 该轮次在后台继续, 切回来重新挂上进度 */
   activeSessionId.value = id
   const sess = sessions.value.find((s) => s.id === id)
   if (sess?.teamId) void refreshStatus(sess.teamId)
@@ -577,32 +663,24 @@ async function refreshSessions() {
 }
 
 async function addSession() {
-  if (running.value) return
   try {
     const s = await createSession('', status.value?.teamId || undefined)
     sessions.value.unshift(s)
     activeSessionId.value = s.id
     messages.value = []
     pickedModel.value = null
-    queue.value = []
     /* 新建会话: 释放上一会话的本地目录选择与监听, 勾选也从空开始 */
     resetLocal()
     attached.value = []
     lastSavedFileKey = ''
-    resetRun()
+    resetRun(s.id)
   } catch (e) {
     errorText.value = apiError(e)
   }
 }
 
 /* ---------------- 一轮诊断 ---------------- */
-const draft = ref('')
-const running = ref(false)
-const phase = ref('')
-const abortCtl = ref<AbortController | null>(null)
-const runPlan = ref<PlanBlock['entries']>([])
-const runTools = ref<ToolBlock[]>([])
-const streamUsage = reactive({ input: 0, output: 0, total: 0 })
+/* draft / running / phase / plan / tools / usage 都是当前会话运行态的只读视图 */
 
 const usageTotals = computed(() => {
   let input = 0
@@ -616,10 +694,11 @@ const usageTotals = computed(() => {
     total += numOf(u, ['totalTokens', 'total_tokens'])
   }
   if (!total) total = input + output
+  const live = streamUsage.value
   return {
-    input: input + streamUsage.input,
-    output: output + streamUsage.output,
-    total: total + streamUsage.total,
+    input: input + live.input,
+    output: output + live.output,
+    total: total + live.total,
   }
 })
 
@@ -660,13 +739,14 @@ function numOf(obj: Record<string, unknown>, keys: string[]): number {
   return 0
 }
 
-function resetRun() {
-  runPlan.value = []
-  runTools.value = []
-  streamUsage.input = 0
-  streamUsage.output = 0
-  streamUsage.total = 0
-  phase.value = ''
+function resetRun(sid: string) {
+  const run = runOf(sid)
+  run.plan = []
+  run.tools = []
+  run.usage.input = 0
+  run.usage.output = 0
+  run.usage.total = 0
+  run.phase = ''
 }
 
 function normalizeKbBlock(data: Record<string, unknown>): KbBlock {
@@ -707,7 +787,7 @@ type RawToolEvent = {
   output?: string
 }
 
-function upsertTool(msg: ChatMessage, data: RawToolEvent) {
+function upsertTool(msg: ChatMessage, run: RunState, data: RawToolEvent) {
   const statusValue: ToolBlock['status'] =
     data.status === 'completed' || data.status === 'done'
       ? 'done'
@@ -730,27 +810,27 @@ function upsertTool(msg: ChatMessage, data: RawToolEvent) {
   } else {
     msg.blocks.push(normalized)
   }
-  const row = runTools.value.find((t) => t.id === data.id)
+  const row = run.tools.find((t) => t.id === data.id)
   if (row) Object.assign(row, normalized)
-  else runTools.value.push(normalized)
+  else run.tools.push(normalized)
 }
 
-function addUsage(raw: unknown) {
+function addUsage(run: RunState, raw: unknown) {
   if (!raw || typeof raw !== 'object') return
   const u = raw as Record<string, unknown>
-  streamUsage.input += numOf(u, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens'])
-  streamUsage.output += numOf(u, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens'])
-  streamUsage.total += numOf(u, ['totalTokens', 'total_tokens'])
+  run.usage.input += numOf(u, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens'])
+  run.usage.output += numOf(u, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens'])
+  run.usage.total += numOf(u, ['totalTokens', 'total_tokens'])
 }
 
-function mergeUsage(msg: ChatMessage, raw: unknown) {
+function mergeUsage(msg: ChatMessage, run: RunState, raw: unknown) {
   if (!raw || typeof raw !== 'object') return
   const u = raw as Record<string, unknown>
   msg.usage = { ...(msg.usage ?? {}), ...u }
   // 会话级统计已包含 live 用量, 这里清零避免重复
-  streamUsage.input = 0
-  streamUsage.output = 0
-  streamUsage.total = 0
+  run.usage.input = 0
+  run.usage.output = 0
+  run.usage.total = 0
 }
 
 function fileBlocks(m: ChatMessage) {
@@ -764,6 +844,20 @@ function textBlocks(m: ChatMessage) {
     (b): b is Extract<MessageBlock, { kind: 'text' }> => b.kind === 'text',
   )
 }
+
+/* 消息复制: 悬停浮现操作栏, 只取正文 text 块 (思考/工具不算) */
+const copiedId = ref<string | number>('')
+let copyTimer: number | undefined
+
+async function copyMessage(m: ChatMessage) {
+  const content = textBlocks(m).map((b) => b.text).join('\n\n')
+  if (!content || !(await copyText(content))) return
+  copiedId.value = m.id
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => { copiedId.value = '' }, 1600)
+}
+
+onBeforeUnmount(() => window.clearTimeout(copyTimer))
 
 /* ---------------- 排队发送 ---------------- */
 /* queue / QueuedItem 声明在顶部状态区; 这里是入队快照与编辑操作 */
@@ -785,12 +879,17 @@ function snapshotContext() {
 }
 
 function removeQueued(id: number) {
-  const i = queue.value.findIndex((q) => q.id === id)
-  if (i >= 0) queue.value.splice(i, 1)
+  const sid = activeSessionId.value
+  if (!sid) return
+  const list = runOf(sid).queue
+  const i = list.findIndex((q) => q.id === id)
+  if (i >= 0) list.splice(i, 1)
 }
 
 function updateQueued(id: number, text: string) {
-  const item = queue.value.find((q) => q.id === id)
+  const sid = activeSessionId.value
+  if (!sid) return
+  const item = runOf(sid).queue.find((q) => q.id === id)
   if (item) item.text = text
 }
 
@@ -804,20 +903,22 @@ function send() {
   const sid = activeSessionId.value
   if (!sid) return
   const { refs, files } = snapshotContext()
-  if (running.value) {
+  const run = runOf(sid)
+  const model = pickedModel.value ? { ...pickedModel.value } : undefined
+  if (run.running) {
     // 正在处理: 进入排队, 当前轮结束或被停止后依次自动发送
-    queue.value.push({ id: ++queuedSeq, text, refs, files })
-    draft.value = ''
+    run.queue.push({ id: ++queuedSeq, text, refs, files, model })
+    run.draft = ''
     void scrollBottom()
     return
   }
-  void runTurn(sid, text, refs, files)
+  void runTurn(sid, text, refs, files, model)
 }
 
-/* SSE 流事件分发: 按 event 类型更新 live 消息块与运行态 */
-function applyStreamEvent(live: ChatMessage, event: string, data: any) {
+/* SSE 流事件分发: 按 event 类型更新 live 消息块与该会话的运行态 */
+function applyStreamEvent(live: ChatMessage, run: RunState, event: string, data: any) {
   if (event === 'phase') {
-    phase.value = data.phase ?? ''
+    run.phase = data.phase ?? ''
   } else if (event === 'kb') {
     const block = normalizeKbBlock(data)
     const existing = live.blocks.find((b): b is KbBlock => b.kind === 'kb')
@@ -828,19 +929,19 @@ function applyStreamEvent(live: ChatMessage, event: string, data: any) {
   } else if (event === 'thought') {
     appendText(live, 'thought', data.text ?? '')
   } else if (event === 'tool') {
-    upsertTool(live, data as RawToolEvent)
+    upsertTool(live, run, data as RawToolEvent)
   } else if (event === 'plan') {
-    runPlan.value = data.entries ?? []
+    run.plan = data.entries ?? []
     const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
-    if (block) block.entries = runPlan.value
-    else live.blocks.push({ kind: 'plan', entries: runPlan.value })
+    if (block) block.entries = run.plan
+    else live.blocks.push({ kind: 'plan', entries: run.plan })
   } else if (event === 'usage') {
-    addUsage(data.usage)
+    addUsage(run, data.usage)
   } else if (event === 'error') {
     live.error = data.message ?? '诊断失败'
   } else if (event === 'done') {
     if (data.messageId) live.id = data.messageId
-    mergeUsage(live, data.usage)
+    mergeUsage(live, run, data.usage)
   }
 }
 
@@ -849,33 +950,41 @@ async function runTurn(
   text: string,
   refs: FileRef[],
   files: { kind: 'file'; name: string; taskId?: string }[],
+  model?: { modelRowId: number; reasoning: string },
 ) {
-  messages.value.push({
-    id: `u-${Date.now()}`,
-    role: 'user',
-    blocks: [{ kind: 'text', text }, ...files],
-  })
+  const run = runOf(sid)
+  const visible = () => activeSessionId.value === sid
   const live: ChatMessage = reactive({ id: 'live', role: 'assistant', blocks: [] })
-  messages.value.push(live)
+  run.live = live
+  /* 只有会话可见时才插到当前列表; 后台会话的消息等切回来再从后端 + live 恢复 */
+  if (visible()) {
+    messages.value.push({
+      id: `u-${Date.now()}`,
+      role: 'user',
+      blocks: [{ kind: 'text', text }, ...files],
+    })
+    messages.value.push(live)
+  }
 
-  draft.value = ''
-  resetRun()
+  run.draft = ''
+  resetRun(sid)
   errorText.value = ''
-  running.value = true
-  phase.value = 'preparing'
+  run.running = true
+  run.phase = 'preparing'
   await scrollBottom()
 
   const ctl = new AbortController()
-  abortCtl.value = ctl
+  run.ctl = ctl
   let stopped = false
 
   try {
     await sendMessage(sid, text, refs, {
       onEvent(event, data) {
-        applyStreamEvent(live, event, data)
-        void scrollBottom()
+        applyStreamEvent(live, run, event, data)
+        /* 会话已切走, 或用户上翻查看历史时不跟随; 流式内容照常累积 */
+        if (visible() && atBottom.value) void scrollBottom()
       },
-    }, ctl.signal, pickedModel.value ?? {})
+    }, ctl.signal, model ?? {})
   } catch (e) {
     if ((e as Error)?.name === 'AbortError') {
       stopped = true
@@ -884,13 +993,14 @@ async function runTurn(
       const msg = apiError(e)
       if (!live.error) {
         live.error = msg
-        errorText.value = msg
+        if (visible()) errorText.value = msg
       }
     }
   } finally {
-    running.value = false
-    phase.value = ''
-    abortCtl.value = null
+    run.running = false
+    run.phase = ''
+    run.ctl = null
+    run.live = null
     if (!live.blocks.length && !live.error) {
       live.error = stopped ? '已停止本轮诊断' : '智能体没有返回内容'
     }
@@ -900,17 +1010,16 @@ async function runTurn(
     } catch {
       /* 忽略 */
     }
-    await scrollBottom()
-    // 当前轮结束或被中止后, 依次处理排队消息
-    if (activeSessionId.value === sid && queue.value.length) {
-      const next = queue.value.shift()!
-      void runTurn(sid, next.text, next.refs, next.files)
-    }
+    if (visible() && atBottom.value) await scrollBottom()
+    // 当前轮结束或被中止后, 继续发送该会话排队中的下一条
+    const next = run.queue.shift()
+    if (next) void runTurn(sid, next.text, next.refs, next.files, next.model)
   }
 }
 
 function stop() {
-  abortCtl.value?.abort()
+  const sid = activeSessionId.value
+  if (sid) runs[sid]?.ctl?.abort()
 }
 
 const examples = [
@@ -986,7 +1095,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopDrag()
-  abortCtl.value?.abort()
+  /* 离开页面时中止所有在飞轮次 (含后台会话) */
+  for (const run of Object.values(runs)) run.ctl?.abort()
   fsSource?.close()
   fsSource = null
   if (reloadTimer !== null) window.clearTimeout(reloadTimer)
@@ -1143,34 +1253,49 @@ const phaseText = computed(() => {
         </router-link>
         <span v-else class="o-text-3" style="font-size: 12.5px">请联系团队管理员配置大模型</span>
       </div>
-      <div ref="bodyRef" class="chat-body">
+      <div class="chat-scroll">
+        <div ref="bodyRef" class="chat-body" @scroll.passive="onBodyScroll">
         <div class="chat-list">
           <div v-if="loadingSession" class="chat-empty"><p>正在加载会话…</p></div>
 
           <template v-else>
           <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
             <div class="avatar" :class="`avatar--${m.role}`">{{ m.role === 'user' ? '我' : 'AI' }}</div>
-            <div class="bubble">
-              <span
-                v-if="running && m.role === 'assistant' && m.id === 'live'"
-                class="pill pill--run msg-live"
-                >生成中</span>
+            <div class="msg-main">
+              <div class="bubble">
+                <span
+                  v-if="running && m.role === 'assistant' && m.id === 'live'"
+                  class="pill pill--run msg-live"
+                  >生成中</span>
 
-              <div v-if="fileBlocks(m).length" class="msg-files">
-                <span v-for="(b, i) in fileBlocks(m)" :key="i" class="msg-file o-mono">
-                  <Icon name="file" :size="12" />
-                  {{ b.name }}
-                </span>
+                <div v-if="fileBlocks(m).length" class="msg-files">
+                  <span v-for="(b, i) in fileBlocks(m)" :key="i" class="msg-file o-mono">
+                    <Icon name="file" :size="12" />
+                    {{ b.name }}
+                  </span>
+                </div>
+
+                <AssistantTurn
+                  v-if="m.role === 'assistant'"
+                  :message="m"
+                  :running="running && m.id === 'live'"
+                />
+                <template v-else>
+                  <p v-for="(b, i) in textBlocks(m)" :key="i" class="blk-text">{{ b.text }}</p>
+                </template>
               </div>
 
-              <AssistantTurn
-                v-if="m.role === 'assistant'"
-                :message="m"
-                :running="running && m.id === 'live'"
-              />
-              <template v-else>
-                <p v-for="(b, i) in textBlocks(m)" :key="i" class="blk-text">{{ b.text }}</p>
-              </template>
+              <div v-if="textBlocks(m).length" class="msg-actions">
+                <button
+                  type="button"
+                  class="copy-btn"
+                  :class="{ 'is-ok': copiedId === m.id }"
+                  @click="copyMessage(m)"
+                >
+                  <Icon :name="copiedId === m.id ? 'check' : 'clipboard'" :size="12" />
+                  <span>{{ copiedId === m.id ? '已复制' : '复制' }}</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1208,6 +1333,11 @@ const phaseText = computed(() => {
         </template>
         </div>
       </div>
+      <!-- 离开底部时浮出的快速回底按钮 -->
+      <button v-if="!atBottom" type="button" class="jump-bottom" title="回到底部" @click="jumpBottom">
+        <Icon name="arrow-down" :size="16" />
+      </button>
+      </div>
 
       <div
         class="composer"
@@ -1230,8 +1360,8 @@ const phaseText = computed(() => {
           <div v-if="attached.length" class="ctx-chips">
             <span class="ctx-label">已选 {{ attached.length }} 份日志</span>
             <span v-for="f in attached" :key="f.id" class="ctx-chip" :title="f.path">
-              {{ f.name }}
-              <button class="ctx-x" title="移除" @click="detachFile(f.id)">×</button>
+              <span class="ctx-name">{{ f.name }}</span>
+              <button class="ctx-x" title="取消勾选" @click="detachFile(f.id)">×</button>
             </span>
             <button class="o-btn o-btn--text ctx-clear" @click="clearAttached">清空</button>
           </div>
@@ -1629,6 +1759,18 @@ const phaseText = computed(() => {
 .msg--user {
   flex-direction: row-reverse;
 }
+.msg-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 86%;
+}
+.msg--assistant .msg-main {
+  max-width: 94%;
+}
+.msg--user .msg-main {
+  max-width: 78%;
+}
 .avatar {
   flex: none;
   width: 26px;
@@ -1648,7 +1790,7 @@ const phaseText = computed(() => {
   background: hsl(212, 60%, 48%);
 }
 .bubble {
-  max-width: 86%;
+  max-width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1678,6 +1820,43 @@ const phaseText = computed(() => {
   padding: 2px 8px;
   font-size: 11px;
   color: var(--text-2);
+}
+/* 悬停消息时在气泡下方浮出的操作栏 */
+.msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.16s ease, margin-top 0.16s ease, opacity 0.16s ease;
+}
+.msg:hover .msg-actions {
+  max-height: 30px;
+  margin-top: 4px;
+  opacity: 1;
+}
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-4);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.copy-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.copy-btn.is-ok {
+  border-color: var(--success);
+  color: var(--success);
 }
 .blk-text {
   font-size: 13.5px;
@@ -1935,24 +2114,37 @@ const phaseText = computed(() => {
   background: var(--primary-soft);
   color: var(--primary);
   border-radius: var(--radius);
-  padding: 2px 6px 2px 8px;
+  padding: 2px 4px 2px 8px;
   font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ctx-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 跟着文件名尾巴: 极简方块, 悬停才显出底色 */
 .ctx-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
   border: none;
+  border-radius: 3px;
   background: transparent;
   color: var(--primary);
-  cursor: pointer;
   font-size: 12px;
   line-height: 1;
-  padding: 0;
-  opacity: 0.7;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
 }
 .ctx-x:hover {
   opacity: 1;
+  background: rgba(15, 23, 42, 0.07);
 }
 .ctx-clear {
   margin-left: auto;
@@ -2190,6 +2382,13 @@ const phaseText = computed(() => {
 }
 
 /* ---------- 对话主体 ---------- */
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
 .chat-body {
   flex: 1;
   min-height: 0;
@@ -2197,20 +2396,38 @@ const phaseText = computed(() => {
   padding: 0;
   display: block;
 }
+.jump-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-2);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.16);
+  cursor: pointer;
+  z-index: 4;
+  transition: color 0.15s, border-color 0.15s;
+}
+.jump-bottom:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
 .chat-list {
   width: 100%;
-  padding: 14px 18px 18px;
+  /* 底部留白: 容纳悬浮的回底按钮, 避免压住最后一条消息 */
+  padding: 14px 18px 56px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-height: 100%;
-}
-.msg--assistant .bubble {
-  max-width: 94%;
-}
-.msg--user .bubble {
-  max-width: 78%;
 }
 .welcome {
   margin: auto;
