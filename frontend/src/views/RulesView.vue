@@ -10,6 +10,7 @@ import { useRbacStore } from '@/stores/rbac'
 import { useTeamsStore } from '@/stores/teams'
 import { teamRoleHasPerm } from '@/rbac/permissions'
 import Icon from '@/components/Icon.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 /* embedded: 作为团队详情页的「规则集」Tab, 作用域固定为该团队 */
 const props = defineProps<{ teamId?: number | null; embedded?: boolean }>()
@@ -323,7 +324,7 @@ function editFromDetail() {
     </div>
   </div>
 
-  <div v-if="loadErr" class="o-mono err-line"><Icon name="alert" :size="13" /> {{ loadErr }}</div>
+  <ErrorAlert v-if="loadErr" :text="loadErr" style="margin-bottom: 12px" @close="loadErr = ''" />
 
   <div class="o-card">
     <div class="o-table-wrap">
@@ -494,7 +495,7 @@ function editFromDetail() {
           <span>{{ form.enabled ? '启用中' : '已停用' }}</span>
         </label>
       </div>
-      <div v-if="saveErr" class="o-mono err-line err-line--sm"><Icon name="alert" :size="13" /> {{ saveErr }}</div>
+      <ErrorAlert v-if="saveErr" :text="saveErr" style="margin-bottom: 12px" @close="saveErr = ''" />
       <div class="o-modal__foot">
         <button class="o-btn" @click="showEdit = false">取消</button>
         <button class="o-btn o-btn--primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -564,7 +565,7 @@ function editFromDetail() {
           <span class="o-mono">{{ JSON.stringify(detailRule.scriptParams) }}</span>
         </div>
         <div v-if="scriptLoading" class="o-text-3" style="padding: 12px 0; font-size: 13px">脚本内容加载中…</div>
-        <div v-else-if="scriptErr" class="o-mono err-line err-line--sm"><Icon name="alert" :size="13" /> {{ scriptErr }}</div>
+        <ErrorAlert v-else-if="scriptErr" :text="scriptErr" style="margin-bottom: 12px" @close="scriptErr = ''" />
         <pre v-else class="code-block code-scroll">{{ scriptContent || '（脚本内容为空）' }}</pre>
       </template>
 
@@ -577,16 +578,6 @@ function editFromDetail() {
 </template>
 
 <style scoped>
-.err-line {
-  color: var(--danger);
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.err-line--sm {
-  font-size: 12.5px;
-}
 .back-link {
   display: inline-flex;
   align-items: center;

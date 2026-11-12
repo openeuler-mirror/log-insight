@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useRbacStore } from '@/stores/rbac'
 import { apiError } from '@/api/http'
 import Icon from '@/components/Icon.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const rr = useRouter()
 const rbac = useRbacStore()
@@ -83,7 +84,7 @@ function submit() {
             </button>
           </div>
         </div>
-        <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
+        <ErrorAlert v-if="err" :text="err" style="margin-bottom: 10px" @close="err = ''" />
         <button class="o-btn o-btn--primary o-btn--lg" type="submit" :disabled="loading">
           <span v-if="!loading">登 录</span>
           <span v-else class="o-row" style="gap: 8px"><span class="spin" />登录中…</span>
@@ -178,14 +179,6 @@ function submit() {
 }
 .pwd-row .o-input {
   flex: 1;
-}
-.err {
-  color: var(--danger);
-  font-size: 13px;
-  margin-bottom: 10px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .o-btn--lg {
   height: 42px;

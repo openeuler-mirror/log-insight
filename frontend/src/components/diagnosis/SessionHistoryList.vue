@@ -3,6 +3,7 @@
 import { computed, ref } from 'vue'
 import { apiError } from '@/api/http'
 import { batchDeleteSessions, deleteSession, renameSession, type SessionInfo } from '@/api/diagnosis'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import Icon from '@/components/Icon.vue'
 
 const props = defineProps<{
@@ -119,7 +120,7 @@ async function remove(s: SessionInfo) {
 
 <template>
   <div class="hist-body">
-    <p v-if="err" class="hist-err">{{ err }}</p>
+    <ErrorAlert v-if="err" :text="err" style="margin: 6px 10px" @close="err = ''" />
     <div v-if="props.sessions.length" class="hist-toolbar">
       <template v-if="managing">
         <button class="hist-link" @click="toggleAll">{{ allPicked ? '取消全选' : '全选' }}</button>
@@ -251,11 +252,6 @@ async function remove(s: SessionInfo) {
   font-size: 12.5px;
   color: var(--text-4);
   text-align: center;
-}
-.hist-err {
-  margin: 6px 10px;
-  color: var(--danger);
-  font-size: 12px;
 }
 .hist-row {
   display: flex;

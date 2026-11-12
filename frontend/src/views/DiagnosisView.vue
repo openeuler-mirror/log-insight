@@ -11,6 +11,7 @@ import ComposerTaskDock from '@/components/diagnosis/ComposerTaskDock.vue'
 import AssistantTurn from '@/components/diagnosis/AssistantTurn.vue'
 import FoldChevron from '@/components/diagnosis/FoldChevron.vue'
 import SessionHistoryList from '@/components/diagnosis/SessionHistoryList.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import Icon from '@/components/Icon.vue'
 import { copyText } from '@/utils/clipboard'
 import { useTeamsStore } from '@/stores/teams'
@@ -1482,7 +1483,7 @@ const phaseText = computed(() => {
               </button>
             </div>
           </div>
-          <p v-if="errorText" class="composer-error">{{ errorText }}</p>
+          <ErrorAlert v-if="errorText" :text="errorText" style="margin-top: 8px" @close="errorText = ''" />
         </div>
       </div>
     </main>
@@ -2267,15 +2268,6 @@ const phaseText = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.composer-error {
-  margin-top: 8px;
-  padding: 6px 8px;
-  background: var(--danger-soft);
-  color: var(--danger);
-  border-radius: var(--radius);
-  font-size: 12px;
-  line-height: 1.6;
 }
 </style>
 

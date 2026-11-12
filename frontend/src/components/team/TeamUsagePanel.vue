@@ -3,7 +3,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { apiError } from '@/api/http'
 import { fetchMyTeamUsage, fetchTeamUsage, type UsageRow } from '@/api/teamLlm'
-import Icon from '@/components/Icon.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const props = defineProps<{ teamId: number; canViewAll: boolean }>()
 
@@ -92,7 +92,7 @@ onMounted(() => { void load() })
       <div><b>{{ fmt(totals.totalTokens) }}</b><span>合计 token</span></div>
     </div>
 
-    <div v-if="error" class="err"><Icon name="alert" :size="13" /> {{ error }}</div>
+    <ErrorAlert v-if="error" :text="error" style="margin-bottom: 12px" @close="error = ''" />
 
     <div class="o-card">
       <div class="o-table-wrap">
@@ -210,13 +210,6 @@ onMounted(() => { void load() })
 .summary span {
   font-size: 11.5px;
   color: var(--text-3);
-}
-.err {
-  color: var(--danger);
-  font-size: 12.5px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .mono {
   font-size: 10.5px;

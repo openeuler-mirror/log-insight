@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import { PARSER_DEFS, parserList } from '@/parser/parsers'
 import { genAppLog, genDmesg, genRedfish, genSel, genSyslog, genWindows } from '@/parser/mock-logs'
 import http, { post, apiError } from '@/api/http'
@@ -279,7 +280,7 @@ async function execute() {
         </div>
       </div>
 
-      <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
+      <ErrorAlert v-if="err" :text="err" style="margin-bottom: 12px" @close="err = ''" />
       <div class="o-row" style="margin-top: 6px">
         <button class="o-btn" @click="rr.push('/inspection')">取消</button>
         <button class="o-btn o-btn--primary" @click="toStep2">下一步</button>
@@ -318,7 +319,7 @@ async function execute() {
           <span class="v">时间分布 · 事件类别 · 错误码 TopN · 源 IP 分组</span>
         </div>
       </div>
-      <div v-if="err" class="err"><Icon name="alert" :size="13" /> {{ err }}</div>
+      <ErrorAlert v-if="err" :text="err" style="margin-bottom: 12px" @close="err = ''" />
       <div class="o-row" style="margin-top: 20px">
         <button class="o-btn" :disabled="running" @click="step = 1">上一步</button>
         <button v-if="canExecute" class="o-btn o-btn--primary" :disabled="running" @click="execute">
@@ -473,14 +474,6 @@ async function execute() {
   white-space: nowrap;
   display: inline-block;
   vertical-align: bottom;
-}
-.err {
-  color: var(--danger);
-  font-size: 13px;
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .o-file-ico,
 .btn-ico {

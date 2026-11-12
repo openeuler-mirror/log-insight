@@ -11,6 +11,7 @@ import {
   type KbDocument, type KbFolder, type KbIngestBatch, type KnowledgeBase,
 } from '@/api/kb'
 import Icon from '@/components/Icon.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 
 const ACCEPT_SET = new Set(['.txt', '.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv', '.html', '.htm'])
@@ -576,7 +577,7 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
       </div>
     </div>
 
-    <div v-if="err" class="err">{{ err }}</div>
+    <ErrorAlert v-if="err" :text="err" style="margin-bottom: 12px" @close="err = ''" />
     <div v-if="loading" class="empty">加载中…</div>
     <div v-else-if="!kb" class="empty">知识库不存在或无权访问</div>
 
@@ -759,7 +760,7 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
           </li>
         </ul>
 
-        <div v-if="uploadErr" class="err sm">{{ uploadErr }}</div>
+        <ErrorAlert v-if="uploadErr" :text="uploadErr" style="margin-bottom: 12px" @close="uploadErr = ''" />
         <div v-if="uploadProgress" class="muted sm">{{ uploadProgress }}</div>
 
         <div class="dialog-actions">
@@ -806,7 +807,7 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
             <MarkdownView v-if="it.previewMarkdown" class="preview-md" :text="it.previewMarkdown" />
           </article>
         </div>
-        <div v-if="previewErr" class="err sm">{{ previewErr }}</div>
+        <ErrorAlert v-if="previewErr" :text="previewErr" style="margin-bottom: 12px" @close="previewErr = ''" />
         <div class="dialog-actions">
           <button class="btn" :disabled="committing" @click="previewBatch = null">取消</button>
           <button
@@ -835,7 +836,7 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
           placeholder="目录名称"
           @keyup.enter="submitFolderModal"
         />
-        <div v-if="folderModal.err" class="err sm">{{ folderModal.err }}</div>
+        <ErrorAlert v-if="folderModal.err" :text="folderModal.err" style="margin-bottom: 12px" @close="folderModal.err = ''" />
         <div class="dialog-actions">
           <button class="btn" @click="folderModal = null">取消</button>
           <button class="btn primary" :disabled="folderBusy" @click="submitFolderModal">确定</button>
