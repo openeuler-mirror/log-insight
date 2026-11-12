@@ -28,10 +28,23 @@ export interface KbDocument {
   docType: string
   ingestMode: string
   sourceFormat: string
+  /** 目录导入时的原始相对路径（POSIX 分隔），空=根目录 */
+  relPath: string
   status: string
   enabled: boolean
   metadata?: Record<string, unknown>
   createdAt?: string
+  updatedAt?: string
+}
+
+/** 知识库显式目录（用于持久化空目录） */
+export interface KbFolder {
+  id: number
+  kbId: number
+  /** POSIX 相对路径（相对知识库根） */
+  path: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 export function listKbs(teamId: number) {
@@ -94,6 +107,25 @@ export function deleteDoc(teamId: number, kbId: number, docId: number) {
   return del(`/teams/${teamId}/knowledge-bases/${kbId}/documents/${docId}`)
 }
 
+export function listFolders(teamId: number, kbId: number) {
+  return get<KbFolder[]>(`/teams/${teamId}/knowledge-bases/${kbId}/folders`)
+}
+
+export function createFolder(teamId: number, kbId: number, path: string) {
+  return post<KbFolder>(`/teams/${teamId}/knowledge-bases/${kbId}/folders`, { path })
+}
+
+export function renameFolder(teamId: number, kbId: number, path: string, name: string) {
+  return patch<{ ok: boolean; path: string }>(
+    `/teams/${teamId}/knowledge-bases/${kbId}/folders`,
+    { path, name },
+  )
+}
+
+export function deleteFolder(teamId: number, kbId: number, path: string) {
+  return del(`/teams/${teamId}/knowledge-bases/${kbId}/folders?path=${encodeURIComponent(path)}`)
+}
+
 function mapDoc(d: Record<string, unknown>): KbDocument {
   return {
     id: Number(d.id),
@@ -102,10 +134,12 @@ function mapDoc(d: Record<string, unknown>): KbDocument {
     docType: String(d.doc_type ?? d.docType ?? ''),
     ingestMode: String(d.ingest_mode ?? d.ingestMode ?? ''),
     sourceFormat: String(d.source_format ?? d.sourceFormat ?? ''),
+    relPath: String(d.rel_path ?? d.relPath ?? ''),
     status: String(d.status ?? ''),
     enabled: Boolean(d.enabled),
     metadata: (d.metadata as Record<string, unknown>) || {},
     createdAt: (d.created_at ?? d.createdAt) as string | undefined,
+    updatedAt: (d.updated_at ?? d.updatedAt) as string | undefined,
   }
 }
 
@@ -114,10 +148,12 @@ export async function uploadFile(
   kbId: number,
   file: File,
   mode: 'raw' | 'template' = 'raw',
+  relPath = '',
 ): Promise<KbDocument> {
   const fd = new FormData()
   fd.append('file', file)
   fd.append('mode', mode)
+  fd.append('rel_path', relPath)
   const res = await http.post(`/teams/${teamId}/knowledge-bases/${kbId}/upload`, fd, {
     timeout: 120000,
   })
@@ -133,6 +169,8 @@ export interface KbIngestItem {
   id: number
   batchId: number
   filename: string
+  /** 目录导入时的原始相对路径（POSIX 分隔） */
+  relPath: string
   parseStatus: string
   convertStatus: string
   previewMarkdown: string
@@ -154,10 +192,12 @@ export async function uploadTemplateBatch(
   teamId: number,
   kbId: number,
   files: File[],
+  relPaths: string[] = [],
 ): Promise<KbIngestBatch> {
   const fd = new FormData()
   fd.append('mode', 'template')
   for (const f of files) fd.append('files', f)
+  fd.append('rel_paths', JSON.stringify(relPaths))
   // 多文件串行 LLM 转换：按文件数放大超时（单文件约 3 分钟上限，整批最多 20 分钟）
   const perFileMs = 180_000
   const timeout = Math.min(1_200_000, Math.max(300_000, files.length * perFileMs))
@@ -166,11 +206,15 @@ export async function uploadTemplateBatch(
     fd,
     { timeout },
   )
-  const d = res.data as Record<string, unknown>
+  return mapBatch(res.data as Record<string, unknown>)
+}
+
+function mapBatch(d: Record<string, unknown>): KbIngestBatch {
   const items = ((d.items as Record<string, unknown>[]) || []).map((it) => ({
     id: Number(it.id),
     batchId: Number(it.batch_id ?? it.batchId),
     filename: String(it.filename ?? ''),
+    relPath: String(it.rel_path ?? it.relPath ?? ''),
     parseStatus: String(it.parse_status ?? it.parseStatus ?? ''),
     convertStatus: String(it.convert_status ?? it.convertStatus ?? ''),
     previewMarkdown: String(it.preview_markdown ?? it.previewMarkdown ?? ''),

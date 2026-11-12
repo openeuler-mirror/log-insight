@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import csv
 import io
+import re
+from html.parser import HTMLParser
 from pathlib import Path
 
-SUPPORTED = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv"}
+SUPPORTED = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv", ".html", ".htm"}
 
 
 def parse_file(path: Path) -> str:
@@ -28,6 +30,8 @@ def parse_file(path: Path) -> str:
         return _xlsx(path)
     if ext == ".csv":
         return _csv(path)
+    if ext in {".html", ".htm"}:
+        return _html(path)
     raise ValueError(f"不支持的格式: {ext}")
 
 
@@ -77,3 +81,55 @@ def _csv(path: Path) -> str:
     text = path.read_text(encoding="utf-8", errors="replace")
     reader = csv.reader(io.StringIO(text))
     return "\n".join(" | ".join(row) for row in reader)
+
+
+class _HtmlTextExtractor(HTMLParser):
+    """把 HTML 抽成纯文本: 跳过脚本/样式, 块级元素换行, 保留可读结构."""
+
+    _SKIP = {"script", "style", "noscript", "template", "head", "iframe"}
+    _BLOCK = {
+        "p", "div", "br", "hr", "li", "tr", "td", "th", "pre", "blockquote",
+        "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "table",
+        "ul", "ol", "dl", "dt", "dd", "body",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP:
+            self._skip += 1
+        elif tag in self._BLOCK:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP:
+            self._skip = max(0, self._skip - 1)
+        elif tag in self._BLOCK:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip and data.strip():
+            self._parts.append(data.strip() + " ")
+
+    def text(self) -> str:
+        raw = "".join(self._parts)
+        lines = (re.sub(r"[ \t]+", " ", ln).strip() for ln in raw.splitlines())
+        return "\n".join(ln for ln in lines if ln)
+
+
+def _html(path: Path) -> str:
+    raw = path.read_bytes()
+    # utf-8-sig 优先: 带 BOM 的页面不会把 BOM 混进正文; latin-1 兜底永不失败
+    for enc in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    parser = _HtmlTextExtractor()
+    parser.feed(text)
+    parser.close()
+    return parser.text()
