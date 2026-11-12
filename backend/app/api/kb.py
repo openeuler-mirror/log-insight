@@ -10,7 +10,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -23,6 +24,9 @@ from app.modules.kb.parsers import SUPPORTED, parse_file
 from app.modules.kb.search import search_kbs
 
 router = APIRouter(prefix="/teams/{team_id}/knowledge-bases", tags=["knowledge-base"])
+
+# 模板化批次单批上限 (控制 LLM 转换成本)
+_MAX_BATCH_FILES = 20
 
 
 class KbCreate(BaseModel):
@@ -304,6 +308,7 @@ async def delete_doc(
     for c in chunks:
         c.deleted_at = now
     await db.commit()
+    _purge_storage(doc.storage_path)  # 软删后回收磁盘原件
     return {"ok": True}
 
 
@@ -334,8 +339,20 @@ def _like_prefix(col, prefix: str):
 
 
 def _norm_rel_path(raw: str) -> str:
-    """清洗上传相对路径: 统一分隔符, 丢弃空段与 '.'/'..'."""
-    return "/".join(p for p in raw.strip().replace("\\", "/").split("/") if p not in ("", ".", ".."))[:512]
+    """清洗上传相对路径: 统一分隔符, 丢弃空段与 '.', 拒绝 '..' (与目录接口一致)."""
+    parts = raw.strip().replace("\\", "/").split("/")
+    if ".." in parts:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "相对路径不允许包含 '..'")
+    return "/".join(p for p in parts if p not in ("", "."))[:512]
+
+
+def _purge_storage(*paths: str) -> None:
+    """尽力清理磁盘原件, 失败不阻断删除流程."""
+    for p in filter(None, paths):
+        try:
+            Path(p).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _folder_info(f: KbFolder) -> dict:
@@ -417,23 +434,24 @@ async def rename_folder(
     )).scalar_one_or_none()
     if doc_clash:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "目标目录下已有文档")
-    folders = (await db.execute(
-        select(KbFolder).where(
-            KbFolder.kb_id == kb_id,
-            (KbFolder.path == old) | _like_prefix(KbFolder.path, old),
+    # 批量 UPDATE 一次性改写前缀; 并发冲突由 (kb_id, path) 唯一约束兜底
+    try:
+        await db.execute(
+            update(KbFolder)
+            .where(KbFolder.kb_id == kb_id, (KbFolder.path == old) | _like_prefix(KbFolder.path, old))
+            .values(path=func.concat(new, func.substr(KbFolder.path, len(old) + 1))),
+            execution_options={"synchronize_session": False},
         )
-    )).scalars().all()
-    for f in folders:
-        f.path = new + f.path[len(old):]
-    docs = (await db.execute(
-        select(KbDocument).where(
-            KbDocument.kb_id == kb_id,
-            KbDocument.deleted_at.is_(None),
-            _like_prefix(KbDocument.rel_path, old),
+        await db.execute(
+            update(KbDocument)
+            .where(KbDocument.kb_id == kb_id, KbDocument.deleted_at.is_(None),
+                   _like_prefix(KbDocument.rel_path, old))
+            .values(rel_path=func.concat(new, func.substr(KbDocument.rel_path, len(old) + 1))),
+            execution_options={"synchronize_session": False},
         )
-    )).scalars().all()
-    for d in docs:
-        d.rel_path = new + d.rel_path[len(old):]
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "目标目录已存在 (并发修改, 请重试)")
     await db.commit()
     return {"ok": True, "path": new}
 
@@ -474,6 +492,7 @@ async def delete_folder(
     for f in folders:
         await db.delete(f)
     await db.commit()
+    _purge_storage(*(d.storage_path or "" for d in docs))  # 软删后回收磁盘原件
     return {"ok": True, "deleted_docs": len(docs)}
 
 
@@ -548,6 +567,7 @@ async def upload_raw(
     ext = Path(name).suffix.lower()
     if ext not in SUPPORTED:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不支持的格式: {ext}")
+    rel = _norm_rel_path(rel_path)  # 校验在写盘前, 坏路径不留磁盘孤儿文件
 
     root = Path(settings.DATA_DIR) / "kb" / str(team_id) / str(kb_id)
     root.mkdir(parents=True, exist_ok=True)
@@ -561,7 +581,7 @@ async def upload_raw(
         doc_type="raw_import", ingest_mode="raw",
         source_format=ext.lstrip("."),
         storage_path=str(dest),
-        rel_path=_norm_rel_path(rel_path),
+        rel_path=rel,
         status="pending", created_by=user.id,
     )
     db.add(doc)
@@ -590,17 +610,20 @@ async def upload_batch(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "upload-batch 仅支持 mode=template")
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请至少上传一个文件")
+    if len(files) > _MAX_BATCH_FILES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"单批最多 {_MAX_BATCH_FILES} 个文件, 当前 {len(files)} 个, 请分批上传")
     kb = await _get_kb(db, team_id, kb_id)
     settings = get_settings()
     max_b = settings.KB_MAX_UPLOAD_MB * 1024 * 1024
     chat = await _team_chat(db, team_id)
-    # 目录上传时前端按 files 顺序传相对路径
+    # 目录上传时前端按 files 顺序传相对路径; 格式错误直接拒绝而非静默丢层级
     try:
         rel_list = json.loads(rel_paths) if rel_paths else []
     except (TypeError, ValueError):
-        rel_list = []
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "rel_paths 不是合法 JSON")
     if not isinstance(rel_list, list):
-        rel_list = []
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "rel_paths 必须为字符串数组")
     rel_list = [_norm_rel_path(str(x)) for x in rel_list]
 
     batch = KbIngestBatch(
@@ -616,8 +639,6 @@ async def upload_batch(
 
     from app.modules.kb.case_convert import convert_case
 
-    if len(files) > 20:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "单批最多 20 个文件, 请分批上传")
     for idx, f in enumerate(files):
         name = f.filename or "upload.bin"
         ext = Path(name).suffix.lower()

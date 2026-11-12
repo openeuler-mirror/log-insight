@@ -1,7 +1,7 @@
 """团队知识库: 多库 / 文档 / 切块 / 导入批次."""
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,10 @@ class KnowledgeBase(Base):
 
 class KbDocument(Base):
     __tablename__ = "kb_documents"
+    # LIKE 'prefix%' 前缀查询走 varchar_pattern_ops 操作符类索引 (普通 B-tree 在非 C 排序规则下不生效)
+    __table_args__ = (
+        Index("ix_kb_documents_rel_path", "rel_path", postgresql_ops={"rel_path": "varchar_pattern_ops"}),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kb_id: Mapped[int] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)

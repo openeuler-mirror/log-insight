@@ -86,7 +86,7 @@ def _csv(path: Path) -> str:
 class _HtmlTextExtractor(HTMLParser):
     """把 HTML 抽成纯文本: 跳过脚本/样式, 块级元素换行, 保留可读结构."""
 
-    _SKIP = {"script", "style", "noscript", "template", "head"}
+    _SKIP = {"script", "style", "noscript", "template", "head", "iframe"}
     _BLOCK = {
         "p", "div", "br", "hr", "li", "tr", "td", "th", "pre", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "table",

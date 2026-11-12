@@ -130,10 +130,7 @@ function extOf(name: string) {
 const pendingKey = (p: PendingFile) => `${p.relPath || p.file.name}:${p.file.size}:${p.file.lastModified}`
 
 /** 上传时的目标相对路径: 落在当前浏览目录下 */
-function uploadRel(p: PendingFile): string {
-  const rel = p.relPath || p.file.name
-  return currentDir.value ? `${currentDir.value}/${rel}` : rel
-}
+const uploadRel = (p: PendingFile) => (currentDir.value ? `${currentDir.value}/` : '') + (p.relPath || p.file.name)
 
 function addPending(items: PendingFile[]) {
   if (!items.length) return
@@ -167,11 +164,10 @@ type TreeNode = {
 const treeNode = (): TreeNode => ({ dirs: new Map(), files: [] })
 
 const treeStat = (n: TreeNode) => {
-  const size = n.files.reduce((s, f) => s + f.size, 0)
   const subs = [...n.dirs.values()].map(treeStat)
   return {
     count: n.files.length + subs.reduce((s, x) => s + x.count, 0),
-    size: size + subs.reduce((s, x) => s + x.size, 0),
+    size: n.files.reduce((s, f) => s + f.size, 0) + subs.reduce((s, x) => s + x.size, 0),
   }
 }
 
@@ -213,10 +209,7 @@ const fmtSize = (n: number) =>
   n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
 
 /** 点击选择文件（普通文件多选） */
-function addFiles(list: FileList | File[] | null) {
-  if (!list) return
-  addPending(Array.from(list).map((file) => ({ file, relPath: '' })))
-}
+const addFiles = (list: FileList | File[] | null) => list && addPending(Array.from(list).map((file) => ({ file, relPath: '' })))
 
 /** 递归展开拖入目录: 目录下所有文件按相对路径加入, 普通文件只加入自身 */
 function readEntry(entry: FileSystemEntry, prefix: string, out: PendingFile[]): Promise<void> {
@@ -265,20 +258,10 @@ function onPickDir(ev: Event) {
   input.value = ''
 }
 
-function togglePickMenu() {
-  showPickMenu.value = !showPickMenu.value
-}
-function pickFiles() {
-  showPickMenu.value = false
-  fileInput.value?.click()
-}
-function pickFolder() {
-  showPickMenu.value = false
-  dirInput.value?.click()
-}
-function closePickMenu() {
-  showPickMenu.value = false
-}
+const togglePickMenu = () => (showPickMenu.value = !showPickMenu.value)
+const pickFiles = () => { showPickMenu.value = false; fileInput.value?.click() }
+const pickFolder = () => { showPickMenu.value = false; dirInput.value?.click() }
+const closePickMenu = () => (showPickMenu.value = false)
 
 function onDragEnter(e: DragEvent) {
   e.preventDefault()
@@ -415,10 +398,7 @@ interface DirFolder {
   virtual: boolean
 }
 
-function parentOf(rel: string): string {
-  const i = rel.lastIndexOf('/')
-  return i >= 0 ? rel.slice(0, i) : ''
-}
+const parentOf = (rel: string) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
 
 function fmtDate(s: string): string {
   const d = new Date(s)
@@ -468,26 +448,19 @@ const dirFiles = computed<KbDocument[]>(() =>
 
 const crumbs = computed(() => (currentDir.value ? currentDir.value.split('/') : []))
 
-function goDir(path: string) {
-  currentDir.value = path
-  clearSel()
-}
+const goDir = (path: string) => { currentDir.value = path; clearSel() }
 
 /* ---- 勾选与批量删除 ---- */
 const selected = ref<Set<string>>(new Set())
 
-function isSel(key: string) {
-  return selected.value.has(key)
-}
+const isSel = (key: string) => selected.value.has(key)
 function toggleSel(key: string) {
   const s = new Set(selected.value)
   if (s.has(key)) s.delete(key)
   else s.add(key)
   selected.value = s
 }
-function clearSel() {
-  selected.value = new Set()
-}
+const clearSel = () => { selected.value = new Set() }
 const selCount = computed(() => selected.value.size)
 
 /* ---- 目录增删改 ---- */
@@ -501,18 +474,12 @@ const folderModal = ref<{
 const deleteModal = ref<{ dirs: DirFolder[]; files: KbDocument[] } | null>(null)
 const folderBusy = ref(false)
 
-function openCreateFolder(base: string) {
-  folderModal.value = { mode: 'create', base, path: '', name: '', err: '' }
-}
-function openRenameFolder(f: DirFolder) {
+const openCreateFolder = (base: string) => { folderModal.value = { mode: 'create', base, path: '', name: '', err: '' } }
+const openRenameFolder = (f: DirFolder) => {
   folderModal.value = { mode: 'rename', base: parentOf(f.path), path: f.path, name: f.name, err: '' }
 }
-function openDeleteFolder(f: DirFolder) {
-  deleteModal.value = { dirs: [f], files: [] }
-}
-function openDeleteFiles(files: KbDocument[]) {
-  deleteModal.value = { dirs: [], files }
-}
+const openDeleteFolder = (f: DirFolder) => (deleteModal.value = { dirs: [f], files: [] })
+const openDeleteFiles = (files: KbDocument[]) => (deleteModal.value = { dirs: [], files })
 function openBulkDelete() {
   const dirs = dirFolders.value.filter((f) => selected.value.has(`d:${f.path}`))
   const files = dirFiles.value.filter((d) => selected.value.has(`f:${d.id}`))
@@ -522,8 +489,7 @@ function openBulkDelete() {
 /** 删除涉及的文档总数（目录内文档 + 直接选中的文件） */
 const deleteDocTotal = computed(() => {
   const m = deleteModal.value
-  if (!m) return 0
-  return m.dirs.reduce((s, f) => s + f.count, 0) + m.files.length
+  return m ? m.dirs.reduce((s, f) => s + f.count, 0) + m.files.length : 0
 })
 
 async function submitFolderModal() {
