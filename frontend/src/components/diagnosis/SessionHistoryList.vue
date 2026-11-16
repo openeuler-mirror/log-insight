@@ -264,9 +264,7 @@ async function remove(s: SessionInfo) {
 .hist-row:hover {
   background: var(--surface);
 }
-.hist-row.is-active {
-  background: var(--primary-soft);
-}
+.hist-row.is-active,
 .hist-row.is-picked {
   background: var(--primary-soft);
 }

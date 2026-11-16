@@ -1913,7 +1913,6 @@ const phaseText = computed(() => {
   cursor: pointer;
   transition: all 0.15s;
 }
-/* 图标下方浮出的文字提示 */
 .copy-btn::after {
   content: attr(data-tip);
   position: absolute;
@@ -1924,7 +1923,6 @@ const phaseText = computed(() => {
   background: var(--text-1);
   color: #fff;
   font-size: 11px;
-  line-height: 1.5;
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;

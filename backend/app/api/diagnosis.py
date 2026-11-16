@@ -759,9 +759,10 @@ async def batch_delete_sessions(body: BatchDeleteSessionsIn,
     """批量删除会话: 只作用于当前用户自己的会话, 返回实际删除数."""
     if not body.ids:
         return {"deleted": 0}
+    # FOR UPDATE 行锁: 与 send_message 末尾的行锁读写串行化, 收窄删除竞态
     ids = list((await db.execute(select(DiagnosisSession.id).where(
         DiagnosisSession.id.in_(body.ids),
-        DiagnosisSession.user_id == user.id))).scalars().all())
+        DiagnosisSession.user_id == user.id).with_for_update())).scalars().all())
     if not ids:
         return {"deleted": 0}
     await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id.in_(ids)))
@@ -787,12 +788,13 @@ async def delete_message(session_id: uuid.UUID, message_id: int,
                          user: Annotated[User, Depends(get_current_user)]):
     """删除会话内单条消息: 仅会话创建者可删, 消息不存在或不属于该会话返回 404."""
     s = await _load_session(db, user, session_id, manage=True)
+    # RETURNING 原子地返回被删行: 不存在的 id 无需进入提交阶段
     res = await db.execute(sa_delete(DiagnosisMessage).where(
         DiagnosisMessage.id == message_id,
-        DiagnosisMessage.session_id == s.id))
-    await db.commit()
-    if res.rowcount == 0:
+        DiagnosisMessage.session_id == s.id).returning(DiagnosisMessage.id))
+    if res.fetchone() is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "消息不存在")
+    await db.commit()
     return {"detail": "消息已删除"}
 
 
@@ -1035,7 +1037,8 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
         am = DiagnosisMessage(session_id=session_uuid, role="assistant", blocks=blocks,
                               usage=final_usage, error=error)
         async with AsyncSessionLocal() as stream_db:
-            row = await stream_db.get(DiagnosisSession, session_uuid)
+            # 行锁读取: 与批量删除的 FOR UPDATE 串行化, 二者后到的一方必然看到删除结果
+            row = await stream_db.get(DiagnosisSession, session_uuid, with_for_update=True)
             if row is not None:
                 stream_db.add(am)
                 row.dsh_session_id = dsh_sid
@@ -1044,8 +1047,8 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                 row.model_name = model_name
                 row.reasoning = reasoning
                 row.updated_at = datetime.now(timezone.utc)
-                await stream_db.commit()
-                await stream_db.refresh(am)
+                # flush 分配 am.id, 让用量事件能携带消息外键
+                await stream_db.flush()
                 if resolved is not None and resolved.ok:
                     stream_db.add(LlmUsageEvent(
                         session_id=str(session_uuid), message_id=am.id,
@@ -1056,7 +1059,12 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                         raw={"usage": final_usage, "metrics": metrics},
                         **normalize_usage(final_usage),
                     ))
+                # 消息与用量同事务提交: 要么都保存, 要么都不保存, 不再出现半提交
+                try:
                     await stream_db.commit()
+                except Exception:
+                    logger.exception("诊断轮次落库失败: session=%s", session_uuid)
+                    error = error or "结果保存失败"
             else:
                 # 会话在本轮运行期间被删除 (如另一端批量删除): 结果无处落地, 跳过落库
                 error = error or "会话已被删除"
