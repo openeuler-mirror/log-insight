@@ -4,6 +4,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchList, fetchRoots, type FsEntry, type FsRoot } from '@/api/fs'
 import { apiError } from '@/api/http'
 import { fmtSize } from '@/components/diagnosis/diagnosisFiles'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const props = defineProps<{ open: boolean; mode: 'dir' | 'file' }>()
 const emit = defineEmits<{ select: [path: string]; close: [] }>()
@@ -123,7 +124,12 @@ function onEntry(e: FsEntry) {
         </template>
       </div>
 
-      <div v-if="error" class="pk-err">{{ error }}</div>
+      <ErrorAlert
+        v-if="error"
+        :text="error"
+        style="flex: none; margin: 0; border-top: 1px solid var(--border); border-radius: 0"
+        @close="error = ''"
+      />
 
       <div class="pk-foot">
         <span class="pk-tip">{{
@@ -288,13 +294,6 @@ function onEntry(e: FsEntry) {
   text-align: center;
   font-size: 12px;
   color: var(--text-4);
-}
-.pk-err {
-  flex: none;
-  padding: 6px 12px;
-  font-size: 11.5px;
-  color: var(--danger-deep);
-  border-top: 1px solid var(--border);
 }
 .pk-foot {
   flex: none;

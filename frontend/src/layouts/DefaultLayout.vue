@@ -9,6 +9,7 @@ import { teamRoleById } from '@/rbac/permissions'
 import { fmtTime } from '@/parser/types'
 import { apiError } from '@/api/http'
 import Icon from '@/components/Icon.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import TeamBrowserDialog from '@/components/team/TeamBrowserDialog.vue'
 
 const rr = useRouter()
@@ -177,7 +178,12 @@ function openTeamBrowser() {
               <b>申请与邀请</b>
               <span class="o-mono o-text-3">{{ noticeCount }} 条待处理</span>
             </div>
-            <div v-if="resolveErr" class="notice-err"><Icon name="alert" :size="13" /> {{ resolveErr }}</div>
+            <ErrorAlert
+              v-if="resolveErr"
+              :text="resolveErr"
+              style="margin: 8px 12px"
+              @close="resolveErr = ''"
+            />
             <div v-if="!myNotices.length" class="o-empty" style="padding: 28px 0">暂无待处理的申请或邀请</div>
             <div v-for="n in myNotices" :key="n.id" class="notice-item">
               <div class="notice-body">
@@ -428,15 +434,6 @@ function openTeamBrowser() {
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
-}
-.notice-err {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 18px;
-  font-size: 12.5px;
-  color: var(--danger);
-  border-bottom: 1px solid var(--border);
 }
 .notice-item {
   display: flex;

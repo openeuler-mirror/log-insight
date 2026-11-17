@@ -9,6 +9,7 @@ import {
   createKb, deleteKb, listKbs, updateKb, type KnowledgeBase,
 } from '@/api/kb'
 import Icon from '@/components/Icon.vue'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const rr = useRouter()
 const teamsStore = useTeamsStore()
@@ -188,7 +189,7 @@ onMounted(async () => {
 
     <div v-if="!teamId" class="empty">请先在顶栏选择或加入团队</div>
     <div v-else-if="!canView" class="empty">无知识库查看权限</div>
-    <div v-else-if="err" class="err">{{ err }}</div>
+    <ErrorAlert v-else-if="err" :text="err" style="margin-bottom: 12px" @close="err = ''" />
     <div v-else-if="loading" class="empty muted">加载中…</div>
     <div v-else-if="!kbs.length" class="empty">
       暂无知识库
@@ -251,7 +252,7 @@ onMounted(async () => {
           </label>
           <div class="hint">密钥按库加密保存并锁定；仅用于本库向量化，不会回传明文。</div>
         </template>
-        <div v-if="createErr" class="err">{{ createErr }}</div>
+        <ErrorAlert v-if="createErr" :text="createErr" style="margin-bottom: 12px" @close="createErr = ''" />
         <div class="dialog-actions">
           <button class="btn" @click="showCreate = false">取消</button>
           <button
@@ -310,7 +311,6 @@ onMounted(async () => {
 .kb-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; gap: 12px; }
 .title { font-size: 20px; margin: 0 0 4px; color: var(--text-1); }
 .sub, .muted { color: var(--text-2); font-size: 13px; margin: 0; }
-.err { color: var(--danger-deep); background: var(--danger-soft); padding: 8px 12px; border-radius: var(--radius); margin-bottom: 12px; }
 .empty { padding: 56px 24px; text-align: center; color: var(--text-2); display: flex; flex-direction: column; align-items: center; }
 
 .grid {

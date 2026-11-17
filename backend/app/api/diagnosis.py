@@ -82,6 +82,10 @@ class SendMessage(BaseModel):
     reasoning: str = ""
 
 
+class BatchDeleteSessionsIn(BaseModel):
+    ids: list[uuid.UUID]
+
+
 class TeamSelectionIn(BaseModel):
     team_id: int
     model_row_id: int
@@ -748,6 +752,25 @@ async def delete_session(session_id: uuid.UUID,
     return {"detail": "会话已删除"}
 
 
+@router.post("/sessions/batch-delete")
+async def batch_delete_sessions(body: BatchDeleteSessionsIn,
+                                db: Annotated[AsyncSession, Depends(get_db)],
+                                user: Annotated[User, Depends(get_current_user)]):
+    """批量删除会话: 只作用于当前用户自己的会话, 返回实际删除数."""
+    if not body.ids:
+        return {"deleted": 0}
+    # FOR UPDATE 行锁: 与 send_message 末尾的行锁读写串行化, 收窄删除竞态
+    ids = list((await db.execute(select(DiagnosisSession.id).where(
+        DiagnosisSession.id.in_(body.ids),
+        DiagnosisSession.user_id == user.id).with_for_update())).scalars().all())
+    if not ids:
+        return {"deleted": 0}
+    await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id.in_(ids)))
+    await db.execute(sa_delete(DiagnosisSession).where(DiagnosisSession.id.in_(ids)))
+    await db.commit()
+    return {"deleted": len(ids)}
+
+
 @router.get("/sessions/{session_id}/messages")
 async def list_messages(session_id: uuid.UUID,
                         db: Annotated[AsyncSession, Depends(get_db)],
@@ -757,6 +780,22 @@ async def list_messages(session_id: uuid.UUID,
         select(DiagnosisMessage).where(DiagnosisMessage.session_id == session_id)
         .order_by(DiagnosisMessage.id.asc()).limit(500))).scalars().all()
     return [_message_info(m) for m in rows]
+
+
+@router.delete("/sessions/{session_id}/messages/{message_id}")
+async def delete_message(session_id: uuid.UUID, message_id: int,
+                         db: Annotated[AsyncSession, Depends(get_db)],
+                         user: Annotated[User, Depends(get_current_user)]):
+    """删除会话内单条消息: 仅会话创建者可删, 消息不存在或不属于该会话返回 404."""
+    s = await _load_session(db, user, session_id, manage=True)
+    # RETURNING 原子地返回被删行: 不存在的 id 无需进入提交阶段
+    res = await db.execute(sa_delete(DiagnosisMessage).where(
+        DiagnosisMessage.id == message_id,
+        DiagnosisMessage.session_id == s.id).returning(DiagnosisMessage.id))
+    if res.fetchone() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "消息不存在")
+    await db.commit()
+    return {"detail": "消息已删除"}
 
 
 @router.post("/sessions/{session_id}/messages")
@@ -857,7 +896,8 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
             yield {"event": "error", "data": json.dumps({"message": block_reason},
                                                         ensure_ascii=False)}
             yield {"event": "done", "data": json.dumps(
-                {"messageId": err_msg.id, "error": block_reason}, ensure_ascii=False)}
+                {"messageId": err_msg.id, "userMessageId": user_msg.id,
+                 "error": block_reason}, ensure_ascii=False)}
 
         return EventSourceResponse(not_ready())
 
@@ -878,8 +918,8 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
         error = ""
         started = time.monotonic()
 
-        yield {"event": "phase", "data": json.dumps({"phase": "preparing"},
-                                                    ensure_ascii=False)}
+        yield {"event": "phase", "data": json.dumps(
+            {"phase": "preparing", "userMessageId": user_msg.id}, ensure_ascii=False)}
 
         # R1: 发消息前若已选库则自动检索并写入 kb_context.md
         if kb_ids and retrieve_team_id:
@@ -997,35 +1037,45 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
         am = DiagnosisMessage(session_id=session_uuid, role="assistant", blocks=blocks,
                               usage=final_usage, error=error)
         async with AsyncSessionLocal() as stream_db:
-            stream_db.add(am)
-            row = await stream_db.get(DiagnosisSession, session_uuid)
+            # 行锁读取: 与批量删除的 FOR UPDATE 串行化, 二者后到的一方必然看到删除结果
+            row = await stream_db.get(DiagnosisSession, session_uuid, with_for_update=True)
             if row is not None:
+                stream_db.add(am)
                 row.dsh_session_id = dsh_sid
                 row.model = model
                 row.provider = provider
                 row.model_name = model_name
                 row.reasoning = reasoning
                 row.updated_at = datetime.now(timezone.utc)
-            await stream_db.commit()
-            await stream_db.refresh(am)
-            if resolved is not None and resolved.ok:
-                stream_db.add(LlmUsageEvent(
-                    session_id=str(session_uuid), message_id=am.id,
-                    team_id=resolved.team_id, user_id=user.id,
-                    provider=provider, model=model, model_name=model_name,
-                    latency_ms=int((time.monotonic() - started) * 1000),
-                    status="error" if error else "ok",
-                    raw={"usage": final_usage, "metrics": metrics},
-                    **normalize_usage(final_usage),
-                ))
-                await stream_db.commit()
+                # flush 分配 am.id, 让用量事件能携带消息外键
+                await stream_db.flush()
+                if resolved is not None and resolved.ok:
+                    stream_db.add(LlmUsageEvent(
+                        session_id=str(session_uuid), message_id=am.id,
+                        team_id=resolved.team_id, user_id=user.id,
+                        provider=provider, model=model, model_name=model_name,
+                        latency_ms=int((time.monotonic() - started) * 1000),
+                        status="error" if error else "ok",
+                        raw={"usage": final_usage, "metrics": metrics},
+                        **normalize_usage(final_usage),
+                    ))
+                # 消息与用量同事务提交: 要么都保存, 要么都不保存, 不再出现半提交
+                try:
+                    await stream_db.commit()
+                except Exception:
+                    logger.exception("诊断轮次落库失败: session=%s", session_uuid)
+                    error = error or "结果保存失败"
+            else:
+                # 会话在本轮运行期间被删除 (如另一端批量删除): 结果无处落地, 跳过落库
+                error = error or "会话已被删除"
         if dsh_sid:
             yield {"event": "session", "data": json.dumps(
                 {"dshSessionId": dsh_sid}, ensure_ascii=False)}
         yield {"event": "usage", "data": json.dumps({"usage": final_usage},
                                                     ensure_ascii=False)}
         yield {"event": "done", "data": json.dumps(
-            {"messageId": am.id, "usage": final_usage, "error": error},
+            {"messageId": am.id, "userMessageId": user_msg.id,
+             "usage": final_usage, "error": error},
             ensure_ascii=False)}
 
     return EventSourceResponse(generator())
