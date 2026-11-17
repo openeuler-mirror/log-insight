@@ -154,11 +154,6 @@ export type ToolBlock = {
   output: string
 }
 
-export type PlanBlock = {
-  kind: 'plan'
-  entries: { content: string; status: 'pending' | 'in_progress' | 'completed'; priority: string }[]
-}
-
 export type KbBlock = {
   kind: 'kb'
   citations: KbCitation[]
@@ -171,7 +166,6 @@ export type MessageBlock =
   | { kind: 'thought'; text: string }
   | { kind: 'file'; name: string; taskId?: string }
   | ToolBlock
-  | PlanBlock
   | KbBlock
 
 export interface ChatMessage {

@@ -1,9 +1,5 @@
 <script setup lang="ts">
-/* 左·底部运行状态: 模型 / 用量 / 诊断进度 / 工具调用 */
-import { computed } from 'vue'
-import Icon, { type IconName } from '@/components/Icon.vue'
-
-type TodoStatus = 'done' | 'doing' | 'todo'
+/* 左·底部运行状态: 模型 / 用量 / 工具调用 */
 
 interface ModelInfo {
   model: string
@@ -14,25 +10,17 @@ interface ModelInfo {
   total: number
 }
 
-interface Todo {
-  text: string
-  status: TodoStatus
-}
-
 interface ToolCall {
   name: string
   target: string
   status: 'done' | 'running' | 'failed'
 }
 
-const props = defineProps<{
+defineProps<{
   modelInfo: ModelInfo
-  todos: Todo[]
   tools: ToolCall[]
 }>()
 
-const todoDone = computed(() => props.todos.filter((t) => t.status === 'done').length)
-const TODO_MARK: Record<TodoStatus, IconName> = { done: 'check', doing: 'activity', todo: 'circle' }
 const fmtNum = (n: number) => (n || 0).toLocaleString('en-US')
 </script>
 
@@ -52,18 +40,6 @@ const fmtNum = (n: number) => (n || 0).toLocaleString('en-US')
           <span>输入 {{ fmtNum(modelInfo.input) }}</span>
           <span>输出 {{ fmtNum(modelInfo.output) }}</span>
         </div>
-      </div>
-    </div>
-
-    <div class="rp-section">
-      <div class="rp-section-head">
-        <span class="pane-title">诊断进度</span>
-        <span class="o-mono o-text-3">{{ todos.length ? `${todoDone}/${todos.length}` : '' }}</span>
-      </div>
-      <div v-if="!todos.length" class="rp-empty">助手会在需要时列出诊断步骤。</div>
-      <div v-for="(t, i) in todos" :key="i" class="todo" :class="`todo--${t.status}`">
-        <span class="todo-mark"><Icon :name="TODO_MARK[t.status]" :size="12" /></span>
-        <span class="todo-text">{{ t.text }}</span>
       </div>
     </div>
 
@@ -152,35 +128,6 @@ const fmtNum = (n: number) => (n || 0).toLocaleString('en-US')
   font-size: 12px;
   line-height: 1.7;
   color: var(--text-4);
-}
-.todo {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 12.5px;
-  line-height: 1.7;
-  padding: 2px 0;
-}
-.todo-mark {
-  flex: none;
-  width: 14px;
-  color: var(--text-4);
-  display: inline-flex;
-  align-items: center;
-}
-.todo--done .todo-mark {
-  color: var(--success);
-}
-.todo--doing .todo-mark {
-  color: var(--warning);
-}
-.todo--done .todo-text {
-  color: var(--text-3);
-  text-decoration: line-through;
-}
-.todo--doing .todo-text {
-  color: var(--primary);
-  font-weight: 600;
 }
 .tool-dot {
   flex: none;

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import AsyncIterator
 
 from app.core.config import get_settings
 from app.modules.agent.acp import AcpConnection, AcpError, build_env
-from app.modules.agent.providers import spec_of
+from app.modules.agent.providers import route_of, spec_of
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -44,7 +45,8 @@ def runtime_ready() -> tuple[bool, str]:
     """返回 (运行时是否可用, 不可用原因); 模型密钥由调用方按用户校验."""
     if not settings.AGENT_ENABLED:
         return False, "智能诊断未启用"
-    if shutil.which(settings.AGENT_ACP_CMD) is None:
+    argv = shlex.split(settings.AGENT_ACP_CMD)
+    if not argv or shutil.which(argv[0]) is None:
         return False, f"运行时未安装: {settings.AGENT_ACP_CMD}"
     return True, ""
 
@@ -226,19 +228,6 @@ def normalize_update(update: dict) -> dict | None:
             "input": _brief(update.get("rawInput") or update.get("raw_input")),
             "output": _tool_output(update.get("content")),
         }
-    if kind == "plan":
-        entries = []
-        for e in update.get("entries") or []:
-            entries.append({
-                "content": e.get("content", ""),
-                "status": e.get("status", "pending"),
-                "priority": e.get("priority", "medium"),
-            })
-        return {"type": "plan", "entries": entries}
-    if kind == "available_commands_update":
-        cmds = update.get("availableCommands") or update.get("available_commands") or []
-        names = [c.get("name") for c in cmds if isinstance(c, dict) and c.get("name")]
-        return {"type": "commands", "names": names} if names else None
     if kind in ("usage_update", "usage"):
         usage = update.get("usage") or update
         return {"type": "usage", "usage": usage}
@@ -273,6 +262,96 @@ def normalize_usage(usage: dict | None) -> dict:
     return out
 
 
+# ---------- 模型选择 ----------
+def _model_option_value(config_options: list[dict], route: str, model: str) -> str:
+    """在 configOptions 里找 (路由, 模型) 对应的确切取值字符串.
+
+    ACP 的 model 选项按 provider 分组, 取值形如 `["zai","glm-5.3-flashx"]`,
+    必须原样回传, 不能自行拼接.
+    """
+    groups: list[dict] = []
+    for option in config_options or []:
+        if option.get("id") == "model":
+            groups = option.get("options") or []
+            break
+    candidates = [route]
+    if route == "deepseek-official":
+        # 未配置 API Key 时, DSH 的账号通道仍可用
+        candidates.append("deepseek-account")
+    for group_id in candidates:
+        for group in groups:
+            if (group.get("group") or "") != group_id:
+                continue
+            for item in group.get("options") or []:
+                value = str(item.get("value") or "")
+                try:
+                    pair = json.loads(value)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(pair, list) and len(pair) == 2 and str(pair[1]) == model:
+                    return value
+    return ""
+
+
+async def _set_model(conn: AcpConnection, session_id: str, value: str) -> None:
+    """设置模型; 路由刚注册时服务端可能还没认, 短暂重试."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 3
+    while True:
+        try:
+            await conn.set_config_option(session_id, "model", value)
+            return
+        except AcpError as exc:
+            if "unknown model option" not in str(exc) or loop.time() >= deadline:
+                raise
+            await asyncio.sleep(0.25)
+
+
+async def _open_session(conn: AcpConnection, ws: Path, route: str, model: str,
+                        resume_id: str) -> tuple[str, list[dict]]:
+    """恢复或新建会话并选中模型.
+
+    DSH 启动后异步导入 settings.yaml 并注册 provider 路由, 新 DSH_HOME 的
+    首个会话可能暂时看不到该模型; 此时关掉当前会话、稍后重建, 直到路由就绪.
+    """
+    if resume_id:
+        try:
+            resumed = await conn.resume_session(resume_id, ws)
+            options = resumed.get("configOptions") or []
+            value = _model_option_value(options, route, model)
+            if value:
+                await _set_model(conn, resume_id, value)
+                return resume_id, options
+            logger.info("恢复的会话没有模型 %s/%s, 改为新建会话", route, model)
+            await _close_quietly(conn, resume_id)
+        except AcpError as exc:
+            logger.info("恢复 DSH 会话失败, 新建会话: %s", exc)
+
+    for _ in range(20):
+        created = await conn.new_session_result(ws)
+        sid = str(created.get("sessionId") or created.get("session_id") or "")
+        if not sid:
+            raise AcpError("session/new 未返回 sessionId")
+        options = created.get("configOptions") or []
+        value = _model_option_value(options, route, model)
+        if value:
+            try:
+                await _set_model(conn, sid, value)
+                return sid, options
+            except AcpError as exc:
+                logger.info("会话模型设置失败, 稍后重建: %s", exc)
+        await _close_quietly(conn, sid)
+        await asyncio.sleep(0.5)
+    raise AcpError(f"模型 {model} 未在当前智能体注册 (路由 {route})，请重新选择模型")
+
+
+async def _close_quietly(conn: AcpConnection, session_id: str) -> None:
+    try:
+        await conn.close_session(session_id)
+    except AcpError:
+        pass
+
+
 # ---------- 主流程 ----------
 async def stream_prompt(
     *,
@@ -293,15 +372,16 @@ async def stream_prompt(
     if not ready:
         yield {"type": "error", "message": reason}
         return
-    if not api_key:
+    spec = spec_of(provider)
+    if not api_key and spec.native != "deepseek":
         yield {"type": "error", "message": "请先在供应商连接中配置 API Key"}
         return
-    spec = spec_of(provider)
     if not model:
         yield {"type": "error", "message": "请先选择模型"}
         return
-    command = settings.AGENT_ACP_CMD if spec.native == "deepseek" else settings.AGENT_ACP_MULTI_CMD
-    if shutil.which(command) is None:
+    command = settings.AGENT_ACP_CMD
+    argv = shlex.split(command)
+    if not argv or shutil.which(argv[0]) is None:
         yield {"type": "error", "message": f"运行时未安装: {command}"}
         return
 
@@ -345,25 +425,11 @@ async def stream_prompt(
     )
     try:
         await conn.start()
-        sid = dsh_session_id
-        if sid:
-            try:
-                await conn.load_session(sid, ws)
-            except AcpError as exc:
-                logger.info("恢复 DSH 会话失败, 新建会话: %s", exc)
-                sid = ""
-        config_options: list[dict] = []
-        if not sid:
-            created = await conn.new_session_result(ws)
-            sid = str(created.get("sessionId") or created.get("session_id") or "")
-            config_options = created.get("configOptions") or []
-            if not sid:
-                raise AcpError("session/new 未返回 sessionId")
+        sid, _options = await _open_session(
+            conn, ws, route_of(spec.id, protocol), model, dsh_session_id)
         if reasoning:
             try:
-                cid = await conn.set_reasoning(sid, reasoning, config_options or None)
-                if not cid:
-                    logger.info("会话无推理强度配置项, 跳过 %s", reasoning)
+                await conn.set_reasoning(sid, reasoning)
             except AcpError as exc:
                 logger.info("设置推理强度失败 %s: %s", reasoning, exc)
         captured["sid"] = sid

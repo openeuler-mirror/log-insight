@@ -17,15 +17,19 @@
 
 ## 接入方式
 
-后端通过 ACP（Agent Client Protocol）在独立子进程中启动 `dsh-acp`，每个诊断会话一个工作区：
+后端通过 ACP（Agent Client Protocol）在独立子进程中启动官方 DSH 的
+`dsh --profile acp`（镜像内安装 `@deepseek-ai/dsh`），每个诊断会话一个工作区：
 
 ```text
 data/diagnosis/<会话ID>/
-├── .dsh -> <仓库>/harness          # 技能目录（只读）
+├── .dsh -> <仓库>/harness          # 技能目录（只读, DSH 按 .dsh/skills 发现）
 ├── AGENTS.md -> <仓库>/harness/AGENTS.md
-├── .sessions/                       # DSH 会话日志
+├── home/.dsh/                       # 该会话独立的 DSH_HOME（settings.yaml + sessions/）
 └── uploads/<任务ID>/...             # 用户选中的日志（软链接）
 ```
+
+ACP 能力：`session/new`、`session/resume`、`session/prompt`、`session/cancel`、
+`session/set_config_option`（`model` / `reasoning_effort`）、`session/close`。
 
 相关环境变量：
 
@@ -42,8 +46,8 @@ DSH 有两条模型通道，平台都支持：
 
 | 通道 | 供应商 | 配置方式 |
 | --- | --- | --- |
-| `deepseek-official` | DeepSeek 官方 / 协议兼容网关 | 环境变量 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_PROTOCOL`，模型目录用 `DEEPSEEK_MODELS_JSON` |
-| pi-ai 路由 | OpenAI / Anthropic / Google / xAI / Groq / Mistral / Moonshot / Z.AI / OpenRouter / 自定义网关 | `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers`，ACP 入口用 `DSH_PROVIDER` 选择路由 |
+| `deepseek-official` | DeepSeek 官方 / 协议兼容网关 | `DEEPSEEK_API_KEY`（可选 `DEEPSEEK_BASE_URL`），模型目录写入会话 `settings.yaml` 的 `llm-deepseek`；未配置 Key 时可用本机登录的 `deepseek-account` |
+| pi-ai 路由 | OpenAI / Anthropic / Google / xAI / Groq / Mistral / Moonshot / Z.AI / OpenRouter / 自定义网关 | `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers`，会话内用 ACP `model` 配置项切换（取值形如 `["zai","glm-5.3-flashx"]`） |
 
 每个诊断会话有独立的 `$DSH_HOME`，后端在启动 ACP 前写入：
 
@@ -62,8 +66,9 @@ llm-pi-ai:
 连接凭据按供应商独立保存，模型选择与推理强度是独立配置：换模型不需要重新连接供应商。
 推理强度由 DSH 目录能力决定，选中模型后通过 ACP 的 `session/set_config_option`
 （`configId: reasoning_effort`）在会话上应用；模型不支持时不提供该选项。
-多供应商路由由 `deploy/agent/loginsight-acp.mjs` 提供（容器内命令 `dsh-acp-loginsight`），
-DeepSeek 通道仍使用官方 `dsh-acp`。
+模型与推理强度都在会话上通过 `session/set_config_option` 设置：
+`model` 的取值必须原样取自 `session/new` / `session/resume` 返回的
+`configOptions`（按 provider 分组），不要自行拼接。
 
 ## 独立调试（可选）
 

@@ -1,9 +1,11 @@
 """模型供应商注册表: 用户配置 -> DSH 路由 / 模型发现.
 
-DSH 有两条模型通道:
-- deepseek-official: 原生 DeepSeek 适配器, 接受 baseURL + messages/chat-completions 协议;
-- pi-ai 路由: openai / anthropic / openrouter 等, 由 settings.yaml 的
-  llm-pi-ai.providers 声明, 由 ACP 入口按 DSH_PROVIDER 选择.
+DSH 有两条模型通道 (见 @deepseek-ai/dsh 的 acp profile):
+- deepseek-official: 官方 DeepSeek 路由 (Messages), 也接受协议兼容网关;
+  未配置 API Key 时可退回本机登录的 deepseek-account 账号通道;
+- pi-ai 路由: openai / anthropic / openrouter 等, 由每个会话 $DSH_HOME 下
+  settings.yaml 的 llm-pi-ai.providers 声明, 会话内用 ACP 的 model
+  配置项切换.
 
 模型 id 与显示名称都以供应商 /models 接口返回为准, 这里只保留默认值.
 """
@@ -128,6 +130,18 @@ DEFAULT_MODELS = {
 
 def spec_of(provider: str) -> ProviderSpec:
     return PROVIDERS.get((provider or "").strip(), PROVIDERS["deepseek"])
+
+
+def route_of(provider: str, protocol: str = "") -> str:
+    """DSH 模型路由名.
+
+    DeepSeek 官方通道走 `deepseek-official` (Messages); 选了 chat-completions
+    的协议兼容网关改走 pi-ai 的 `deepseek-compat` 路由.
+    """
+    spec = spec_of(provider)
+    if spec.native == "deepseek" and (protocol or "messages") not in ("", "messages"):
+        return "deepseek-compat"
+    return spec.route
 
 
 def default_model(provider: str) -> tuple[str, str]:

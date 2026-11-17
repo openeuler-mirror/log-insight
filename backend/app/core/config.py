@@ -55,8 +55,7 @@ class Settings(BaseSettings):
 
     # 智能诊断智能体 (DeepSeek Harness, 通过 ACP 驱动)
     AGENT_ENABLED: bool = True
-    AGENT_ACP_CMD: str = "dsh-acp"                 # ACP 服务端 (deepseek-official 路由)
-    AGENT_ACP_MULTI_CMD: str = "dsh-acp-loginsight"  # 可选供应商的 ACP 入口 (pi-ai 路由)
+    AGENT_ACP_CMD: str = "dsh --profile acp"       # 官方 DSH ACP 服务端 (JSON-RPC stdio)
     AGENT_HARNESS_DIR: str = "./harness"           # 仓库内 skills / AGENTS.md
     AGENT_MODEL: str = "deepseek-flash"
     AGENT_API_KEY: str = ""                        # 留空时回退 DEEPSEEK_API_KEY 环境变量
