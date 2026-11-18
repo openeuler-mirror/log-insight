@@ -1,15 +1,11 @@
 <script setup lang="ts">
-/* 输入框上方的任务 dock: 诊断步骤、工具进度与排队消息 */
+/* 输入框上方的任务 dock: 工具进度与排队消息 */
 import { computed, ref, watch } from 'vue'
 import FoldChevron from './FoldChevron.vue'
-import type { PlanBlock, ToolBlock } from '@/api/diagnosis'
-import Icon, { type IconName } from '@/components/Icon.vue'
+import type { ToolBlock } from '@/api/diagnosis'
 import { toolLabel } from './toolLabel'
 
-const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
-
 const props = defineProps<{
-  plan: PlanBlock | null
   tools: ToolBlock[]
   running: boolean
   queue: { id: number; text: string; files: { name: string }[] }[]
@@ -22,12 +18,9 @@ const emit = defineEmits<{
 
 const expanded = ref(false)
 
-const entries = computed(() => props.plan?.entries ?? [])
-const doneCount = computed(() => entries.value.filter((e) => e.status === 'completed').length)
-const doing = computed(() => entries.value.find((e) => e.status === 'in_progress'))
 const toolsDone = computed(() => props.tools.filter((t) => t.status === 'done').length)
 const visible = computed(
-  () => props.running || entries.value.length > 0 || props.tools.length > 0 || props.queue.length > 0,
+  () => props.running || props.tools.length > 0 || props.queue.length > 0,
 )
 
 /* 排队消息行内编辑: 同一时刻只编辑一条; editing 跟随条目 id,
@@ -64,11 +57,8 @@ watch(
   <div v-if="visible" class="dock" :class="{ run: running }">
     <button class="head" type="button" @click="expanded = !expanded">
       <span class="dot" :class="{ run: running }"></span>
-      <span v-if="doing" class="now">{{ doing.content }}</span>
-      <span v-else-if="running" class="now">正在处理…</span>
-      <span v-else class="now">
-        {{ entries.length ? `任务 ${doneCount}/${entries.length} 完成` : '本轮已完成' }}
-      </span>
+      <span v-if="running" class="now">正在处理…</span>
+      <span v-else class="now">本轮已完成</span>
       <span v-if="tools.length" class="meta">{{ tools.length }} 个工具 · {{ toolsDone }} 完成</span>
       <span v-if="queue.length" class="meta meta--queue">排队 {{ queue.length }} 条</span>
       <FoldChevron :open="expanded" />
@@ -112,14 +102,6 @@ watch(
         </div>
       </div>
 
-      <ol v-if="entries.length" class="steps">
-        <li v-for="(entry, i) in entries" :key="i" :class="entry.status">
-          <span class="mark">
-            <Icon :name="STEP_MARK[entry.status] ?? 'circle'" :size="12" />
-          </span>
-          <span class="text">{{ entry.content }}</span>
-        </li>
-      </ol>
       <div v-if="tools.length" class="tools">
         <span
           v-for="tool in tools"
@@ -299,34 +281,6 @@ watch(
 .q-btn--danger:hover {
   border-color: var(--danger);
   color: var(--danger);
-}
-.steps {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-3);
-}
-.steps li {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-}
-.steps li.in_progress {
-  color: var(--text-1);
-  font-weight: 500;
-}
-.steps li.completed {
-  color: var(--text-3);
-  text-decoration: line-through;
-}
-.mark {
-  flex: none;
-  width: 12px;
-  text-align: center;
-  display: inline-flex;
-  align-items: center;
 }
 .tools {
   display: flex;

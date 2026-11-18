@@ -1,9 +1,9 @@
 """读取模型可选的推理强度: 启动短生命周期 ACP 会话, 用 DSH 目录能力回答."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
+import shlex
 import shutil
 from pathlib import Path
 
@@ -36,8 +36,9 @@ async def reasoning_options(provider: str, model: str, api_base: str = "") -> di
     key = (spec.id, api_base, model)
     if key in _cache:
         return _cache[key]
-    command = settings.AGENT_ACP_CMD if spec.native == "deepseek" else settings.AGENT_ACP_MULTI_CMD
-    if shutil.which(command) is None:
+    command = settings.AGENT_ACP_CMD
+    argv = shlex.split(command)
+    if not argv or shutil.which(argv[0]) is None:
         return {"levels": [], "default": ""}
     ws = _probe_dir(spec.id, model)
     conn = AcpConnection(
@@ -49,11 +50,10 @@ async def reasoning_options(provider: str, model: str, api_base: str = "") -> di
     )
     try:
         await conn.start()
-        res = await conn.new_session_result(ws, ready_timeout=25)
-        # DSH 不同版本用 effort / reasoning_effort
+        res = await conn.new_session_result(ws)
         option = next(
             (o for o in res.get("configOptions") or []
-             if o.get("id") in ("effort", "reasoning_effort")),
+             if o.get("id") == "reasoning_effort"),
             None,
         )
         levels = [

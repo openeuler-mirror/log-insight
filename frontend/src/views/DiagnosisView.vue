@@ -38,7 +38,6 @@ import {
   type FileRef,
   type KbBlock,
   type MessageBlock,
-  type PlanBlock,
   type SessionInfo,
   type ToolBlock,
 } from '@/api/diagnosis'
@@ -516,7 +515,6 @@ type RunState = {
   queue: QueuedItem[]
   running: boolean
   phase: string
-  plan: PlanBlock['entries']
   tools: ToolBlock[]
   usage: { input: number; output: number; total: number }
   /* 在飞轮次的流式消息 (未落库), 切回该会话时重新挂到列表末尾 */
@@ -530,7 +528,6 @@ function emptyRun(): RunState {
     queue: [],
     running: false,
     phase: '',
-    plan: [],
     tools: [],
     usage: { input: 0, output: 0, total: 0 },
     live: null,
@@ -559,7 +556,6 @@ const draft = computed({
 })
 const running = computed(() => activeRun.value.running)
 const phase = computed(() => activeRun.value.phase)
-const runPlan = computed(() => activeRun.value.plan)
 const runTools = computed(() => activeRun.value.tools)
 const queue = computed(() => activeRun.value.queue)
 const streamUsage = computed(() => activeRun.value.usage)
@@ -682,7 +678,7 @@ async function addSession() {
 }
 
 /* ---------------- 一轮诊断 ---------------- */
-/* draft / running / phase / plan / tools / usage 都是当前会话运行态的只读视图 */
+/* draft / running / phase / tools / usage 都是当前会话运行态的只读视图 */
 
 const usageTotals = computed(() => {
   let input = 0
@@ -711,25 +707,12 @@ const modelInfo = computed(() => ({
   ...usageTotals.value,
 }))
 
-const todos = computed(() =>
-  runPlan.value.map((e) => ({
-    text: e.content,
-    status: e.status === 'completed' ? ('done' as const) : e.status === 'in_progress' ? ('doing' as const) : ('todo' as const),
-  })),
-)
-
 const inspectorTools = computed(() =>
   runTools.value.map((t) => ({
     name: t.title || t.name || '工具',
     target: (t.input || '').replace(/\s+/g, ' ').slice(0, 80),
     status: t.status,
   })),
-)
-
-const todoDone = computed(() => todos.value.filter((t) => t.status === 'done').length)
-
-const runPlanBlock = computed<PlanBlock | null>(() =>
-  runPlan.value.length ? { kind: 'plan', entries: runPlan.value } : null,
 )
 
 function numOf(obj: Record<string, unknown>, keys: string[]): number {
@@ -743,7 +726,6 @@ function numOf(obj: Record<string, unknown>, keys: string[]): number {
 
 function resetRun(sid: string) {
   const run = runOf(sid)
-  run.plan = []
   run.tools = []
   run.usage.input = 0
   run.usage.output = 0
@@ -796,25 +778,31 @@ function upsertTool(msg: ChatMessage, run: RunState, data: RawToolEvent) {
       : data.status === 'failed'
         ? 'failed'
         : 'running'
-  const block = msg.blocks.find((b): b is ToolBlock => b.kind === 'tool' && b.id === data.id)
-  const normalized: ToolBlock = {
-    kind: 'tool',
-    id: data.id,
-    name: data.name || data.title || '工具',
-    title: data.title || '',
-    toolKind: data.toolKind,
-    status: statusValue,
-    input: data.input || '',
-    output: data.output || '',
-  }
-  if (block) {
-    Object.assign(block, normalized)
+  let block = msg.blocks.find((b): b is ToolBlock => b.kind === 'tool' && b.id === data.id)
+  if (!block) {
+    block = {
+      kind: 'tool',
+      id: data.id,
+      name: data.name || data.title || '工具',
+      title: data.title || '',
+      toolKind: data.toolKind,
+      status: statusValue,
+      input: data.input || '',
+      output: data.output || '',
+    }
+    msg.blocks.push(block)
   } else {
-    msg.blocks.push(normalized)
+    /* 增量 update 往往只带 status/output, 不能把已有标题清空 */
+    if (data.name) block.name = data.name
+    if (data.title) block.title = data.title
+    if (data.toolKind) block.toolKind = data.toolKind
+    if (data.input) block.input = data.input
+    if (data.output) block.output = data.output
+    block.status = statusValue
   }
   const row = run.tools.find((t) => t.id === data.id)
-  if (row) Object.assign(row, normalized)
-  else run.tools.push(normalized)
+  if (row) Object.assign(row, block)
+  else run.tools.push({ ...block } as ToolBlock)
 }
 
 function addUsage(run: RunState, raw: unknown) {
@@ -960,11 +948,6 @@ function applyStreamEvent(live: ChatMessage, run: RunState, event: string, data:
     appendText(live, 'thought', data.text ?? '')
   } else if (event === 'tool') {
     upsertTool(live, run, data as RawToolEvent)
-  } else if (event === 'plan') {
-    run.plan = data.entries ?? []
-    const block = live.blocks.find((b): b is PlanBlock => b.kind === 'plan')
-    if (block) block.entries = run.plan
-    else live.blocks.push({ kind: 'plan', entries: run.plan })
   } else if (event === 'usage') {
     addUsage(run, data.usage)
   } else if (event === 'error') {
@@ -1254,7 +1237,6 @@ const phaseText = computed(() => {
         <DiagnosisInspector
           v-if="statusOpen"
           :model-info="modelInfo"
-          :todos="todos"
           :tools="inspectorTools"
         />
       </section>
@@ -1410,7 +1392,6 @@ const phaseText = computed(() => {
         <div class="composer-inner">
           <div v-if="dropActive" class="drop-mask">松开鼠标，把文件加入本次提问</div>
           <ComposerTaskDock
-            :plan="runPlanBlock"
             :tools="runTools"
             :running="running"
             :queue="queue"
@@ -2048,42 +2029,6 @@ const phaseText = computed(() => {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-}
-.blk-plan {
-  margin: 6px 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-3);
-}
-.blk-plan-title {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-.plan-row {
-  display: flex;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--text-2);
-}
-.plan-mark {
-  flex: none;
-  width: 12px;
-  color: var(--text-4);
-}
-.plan--completed .plan-mark {
-  color: var(--success);
-}
-.plan--completed {
-  color: var(--text-3);
-  text-decoration: line-through;
-}
-.plan--in_progress .plan-mark,
-.plan--in_progress {
-  color: var(--primary);
-  font-weight: 600;
 }
 .blk-error {
   margin-top: 6px;

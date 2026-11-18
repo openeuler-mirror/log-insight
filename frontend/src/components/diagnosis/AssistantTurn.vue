@@ -1,14 +1,12 @@
 <script setup lang="ts">
-/* 一轮助手回复: 正文常显, 思考/工具/计划折叠, 轮末用量行 */
+/* 一轮助手回复: 正文常显, 思考/工具折叠, 轮末用量行 */
 import { computed, ref, watch } from 'vue'
 import FoldChevron from './FoldChevron.vue'
 import FoldSection from './FoldSection.vue'
-import type { ChatMessage, KbBlock, PlanBlock, ToolBlock } from '@/api/diagnosis'
-import Icon, { type IconName } from '@/components/Icon.vue'
+import type { ChatMessage, KbBlock, ToolBlock } from '@/api/diagnosis'
+import Icon from '@/components/Icon.vue'
 import MarkdownView from '@/components/MarkdownView.vue'
 import { toolLabel } from './toolLabel'
-
-const STEP_MARK: Record<string, IconName> = { completed: 'check', in_progress: 'activity' }
 
 const props = defineProps<{ message: ChatMessage; running?: boolean }>()
 
@@ -32,13 +30,10 @@ const thoughts = computed(() =>
 const tools = computed(() =>
   props.message.blocks.filter((b): b is ToolBlock => b.kind === 'tool'),
 )
-const plans = computed(() =>
-  props.message.blocks.filter((b): b is PlanBlock => b.kind === 'plan'),
-)
 const kbBlock = computed(() =>
   props.message.blocks.find((b): b is KbBlock => b.kind === 'kb'),
 )
-const processCount = computed(() => thoughts.value.length + tools.value.length + plans.value.length)
+const processCount = computed(() => thoughts.value.length + tools.value.length)
 const openState = computed(() => expanded.value || !!props.running)
 const toolsDone = computed(() => tools.value.filter((t) => t.status === 'done').length)
 
@@ -98,15 +93,6 @@ const fmt = (n: number) => n.toLocaleString('en-US')
       <div v-if="openState" class="p-body">
         <FoldSection v-for="(t, i) in thoughts" :key="`t${i}`" title="思考" :default-open="!!running">
           <div class="thought-text">{{ t }}</div>
-        </FoldSection>
-
-        <FoldSection v-for="plan in plans" :key="`p${plan.entries.length}`" title="诊断步骤" :default-open="true">
-          <ol class="steps">
-            <li v-for="(entry, i) in plan.entries" :key="i" :class="entry.status">
-              <span class="mark"><Icon :name="STEP_MARK[entry.status] ?? 'circle'" :size="12" /></span>
-              <span>{{ entry.content }}</span>
-            </li>
-          </ol>
         </FoldSection>
 
         <div v-for="tool in tools" :key="tool.id" class="tool" :class="tool.status">
@@ -214,30 +200,6 @@ const fmt = (n: number) => n.toLocaleString('en-US')
   white-space: pre-wrap;
   max-height: 240px;
   overflow: auto;
-}
-.steps {
-  list-style: none;
-  margin-top: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-3);
-}
-.steps li {
-  display: flex;
-  gap: 6px;
-}
-.steps li.in_progress {
-  color: var(--text-1);
-  font-weight: 500;
-}
-.steps .mark {
-  flex: none;
-  width: 12px;
-  text-align: center;
-  display: inline-flex;
-  align-items: center;
 }
 .tool {
   border: 1px solid var(--border);

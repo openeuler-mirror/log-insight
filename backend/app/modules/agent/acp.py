@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
 from collections import deque
 from pathlib import Path
@@ -56,12 +57,15 @@ class AcpConnection:
 
     # ---------- 生命周期 ----------
     async def start(self) -> None:
-        exe = shutil.which(self.command)
+        argv = shlex.split(self.command)
+        if not argv:
+            raise AcpError("未配置智能体运行时命令")
+        exe = shutil.which(argv[0])
         if exe is None:
             raise AcpError(
-                f"未找到智能体运行时 {self.command}，请确认镜像已安装 deepseek-harness-acp")
+                f"未找到智能体运行时 {argv[0]}，请确认镜像已安装 @deepseek-ai/dsh")
         self.proc = await asyncio.create_subprocess_exec(
-            exe,
+            exe, *argv[1:],
             cwd=str(self.cwd),
             env=self.env,
             stdin=asyncio.subprocess.PIPE,
@@ -127,73 +131,39 @@ class AcpConnection:
             (json.dumps({"jsonrpc": "2.0", "method": method, "params": params}) + "\n").encode())
         await self.proc.stdin.drain()
 
-    async def _request_when_ready(self, method: str, params: dict,
-                                  *, timeout: float, ready_timeout: float = 8.0) -> dict:
-        """pi-ai 路由由 settings 异步注册; 首次请求等它就绪, 避免 provider 未注册."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + ready_timeout
-        while True:
-            try:
-                return await self.request(method, params, timeout=timeout)
-            except AcpError as exc:
-                if "no adapter registered" not in str(exc) or loop.time() >= deadline:
-                    raise
-                await asyncio.sleep(0.25)
-
-    async def new_session(self, cwd: Path,
-                          mcp_servers: list[dict] | None = None) -> str:
-        res = await self.new_session_result(cwd, mcp_servers)
-        sid = res.get("sessionId") or res.get("session_id")
-        if not sid:
-            raise AcpError("session/new 未返回 sessionId")
-        return str(sid)
-
     async def new_session_result(self, cwd: Path,
-                                 mcp_servers: list[dict] | None = None,
-                                 *, ready_timeout: float = 8.0) -> dict:
-        return await self._request_when_ready("session/new", {
+                                 mcp_servers: list[dict] | None = None) -> dict:
+        """新建会话; 返回 {sessionId, configOptions}."""
+        return await self.request("session/new", {
             "cwd": str(cwd),
             "mcpServers": mcp_servers or [],
-        }, timeout=30, ready_timeout=ready_timeout)
+        }, timeout=30)
+
+    async def resume_session(self, session_id: str, cwd: Path,
+                             mcp_servers: list[dict] | None = None) -> dict:
+        """恢复已持久化的会话; 返回 {configOptions} (不回放历史更新)."""
+        return await self.request("session/resume", {
+            "sessionId": session_id,
+            "cwd": str(cwd),
+            "mcpServers": mcp_servers or [],
+        }, timeout=30)
+
+    async def close_session(self, session_id: str) -> None:
+        await self.request("session/close", {"sessionId": session_id}, timeout=15)
 
     async def set_config_option(self, session_id: str, config_id: str,
                                 value: str) -> dict:
-        """DSH 会话配置项 (model / effort), 由 ACP 校验取值."""
+        """会话配置项 (model / reasoning_effort), 取值由 ACP 校验."""
         return await self.request("session/set_config_option", {
             "sessionId": session_id,
             "configId": config_id,
             "value": value,
         }, timeout=20)
 
-    async def set_reasoning(self, session_id: str, value: str,
-                            options: list[dict] | None = None) -> str:
-        """设置推理强度; 配置项 id 随 DSH 版本不同 (effort / reasoning_effort).
-
-        返回实际生效的 id; 会话没有该配置项时返回空串.
-        """
-        if not value:
-            return ""
-        ids = [str(o.get("id") or "") for o in options or []]
-        candidates = [cid for cid in ("effort", "reasoning_effort")
-                      if not ids or cid in ids]
-        last: AcpError | None = None
-        for cid in candidates:
-            try:
-                await self.set_config_option(session_id, cid, value)
-                return cid
-            except AcpError as exc:
-                last = exc
-        if last is not None:
-            raise last
-        return ""
-
-    async def load_session(self, session_id: str, cwd: Path,
-                           mcp_servers: list[dict] | None = None) -> None:
-        await self._request_when_ready("session/load", {
-            "sessionId": session_id,
-            "cwd": str(cwd),
-            "mcpServers": mcp_servers or [],
-        }, timeout=30)
+    async def set_reasoning(self, session_id: str, value: str) -> None:
+        """设置推理强度; 模型不支持时由调用方忽略错误."""
+        if value:
+            await self.set_config_option(session_id, "reasoning_effort", value)
 
     async def prompt(self, session_id: str, text: str, *,
                      timeout: float = 600) -> dict:
@@ -324,10 +294,40 @@ def _yaml(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def _write_settings(base_dir: Path, *, route: str, label: str, model: str,
-                    model_name: str, api_base: str, protocol: str,
-                    api: str) -> None:
-    """写 llm-pi-ai 路由: 每个会话独立 DSH_HOME, 请求时重新读取."""
+def _dsh_home(base_dir: Path) -> Path:
+    home = base_dir / "home" / ".dsh"
+    home.mkdir(parents=True, exist_ok=True)
+    # 本机已登录 DSH 账号时复用该登录态 (容器内通常不存在, 不影响 API Key 通道)
+    source = Path.home() / ".dsh" / ".credentials.yaml"
+    target = home / ".credentials.yaml"
+    if source.is_file() and not target.exists():
+        try:
+            target.symlink_to(source)
+        except OSError:
+            pass
+    return home
+
+
+def _write_deepseek_settings(home: Path, *, model: str, model_name: str,
+                             api_base: str = "") -> None:
+    """llm-deepseek 路由: 固定单模型目录, 兼容官方 API 与协议兼容网关."""
+    lines = [
+        "llm-deepseek:",
+        f"  apiKeyEnv: {_yaml('DEEPSEEK_API_KEY')}",
+    ]
+    if api_base:
+        lines.append(f"  baseURL: {_yaml(api_base)}")
+    lines += [
+        "  models:",
+        f"    - id: {_yaml(model)}",
+        f"      name: {_yaml(model_name or model)}",
+    ]
+    (home / "settings.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_pi_ai_settings(home: Path, *, route: str, label: str, model: str,
+                          model_name: str, api_base: str, api: str) -> None:
+    """llm-pi-ai 路由: 每个会话独立 DSH_HOME, 进程启动时读取."""
     lines = [
         "llm-pi-ai:",
         "  providers:",
@@ -344,9 +344,7 @@ def _write_settings(base_dir: Path, *, route: str, label: str, model: str,
         f"        - id: {_yaml(model)}",
         f"          name: {_yaml(model_name or model)}",
     ]
-    dsh_home = base_dir / "home" / ".dsh"
-    dsh_home.mkdir(parents=True, exist_ok=True)
-    (dsh_home / "settings.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (home / "settings.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def build_env(base_dir: Path, *, api_key: str, model: str,
@@ -354,14 +352,15 @@ def build_env(base_dir: Path, *, api_key: str, model: str,
               permission_mode: str = "workspace-write",
               provider: str = "deepseek", model_name: str = "") -> dict[str, str]:
     """构造 ACP 子进程环境 (只暴露必要变量, 不继承服务端全部环境)."""
-    from app.modules.agent.providers import PI_AI_API, display_name, spec_of
+    from app.modules.agent.providers import (
+        PI_AI_API, display_name, route_of, spec_of)
 
     spec = spec_of(provider)
+    home = _dsh_home(base_dir)
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": str(base_dir / "home"),
-        "DSH_HOME": str(base_dir / "home" / ".dsh"),
-        "DSH_SESSIONS_ROOT": str(base_dir / ".sessions"),
+        "DSH_HOME": str(home),
         "DSH_PERMISSION_MODE": permission_mode,
         "NO_COLOR": "1",
         "TERM": "dumb",
@@ -374,30 +373,21 @@ def build_env(base_dir: Path, *, api_key: str, model: str,
             if value:
                 env[name] = value
     label = display_name(spec.id, model, model_name)
-    if spec.native == "deepseek":
-        env.update({
-            "DEEPSEEK_API_KEY": api_key,
-            "DEEPSEEK_MODEL": model,
-            "DEEPSEEK_PROTOCOL": protocol if protocol in spec.protocols else "messages",
-            "DEEPSEEK_MODELS_JSON": json.dumps(
-                [{"id": model, "name": label, "contextWindow": 1000000}],
-                ensure_ascii=False),
-        })
+    route = route_of(spec.id, protocol)
+    if spec.native == "deepseek" and route == "deepseek-official":
+        if api_key:
+            env["DEEPSEEK_API_KEY"] = api_key
         if api_base:
             env["DEEPSEEK_BASE_URL"] = api_base
+        _write_deepseek_settings(home, model=model, model_name=label, api_base=api_base)
     else:
-        # pi-ai 路由: 由入口脚本按 DSH_PROVIDER 选择, 密钥走独立环境变量
-        env.update({
-            "DSH_PROVIDER": spec.route,
-            "DSH_MODEL": model,
-            "DSH_LLM_API_KEY": api_key,
-        })
-        _write_settings(
-            base_dir, route=spec.route, label=spec.label, model=model,
+        # pi-ai 路由 (含 DeepSeek 兼容网关): 密钥走独立环境变量
+        env["DSH_LLM_API_KEY"] = api_key
+        if not api_base and route == "deepseek-compat":
+            api_base = "https://api.deepseek.com/v1"
+        _write_pi_ai_settings(
+            home, route=route, label=spec.label, model=model,
             model_name=label, api_base=api_base,
-            protocol=protocol,
-            api=PI_AI_API.get(protocol, "openai-completions") if spec.requires_base else "",
+            api=PI_AI_API.get(protocol, "openai-completions"),
         )
-    (base_dir / "home" / ".dsh").mkdir(parents=True, exist_ok=True)
-    (base_dir / ".sessions").mkdir(parents=True, exist_ok=True)
     return env
