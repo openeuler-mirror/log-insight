@@ -1,5 +1,5 @@
 /* 本地文件系统浏览 API (后端 /api/fs): 目录树 / 列表 / 文件内容 / 原始二进制 / 变更监听 */
-import { get, TOKEN_KEY } from '@/api/http'
+import { del, get, put, TOKEN_KEY } from '@/api/http'
 
 export interface FsEntry {
   name: string
@@ -51,7 +51,12 @@ export const fetchList = (path: string) =>
 
 /** 读取文件内容(图片只返回元信息, 前端走 rawUrl 取二进制) */
 export const fetchFile = (path: string) => get<FsReadResult>('/fs/read', { path })
-
+/** 写入文本文件(仅允许会话工作区内的本机导入副本, 用于编辑后同步给助手) */
+export const writeFile = (path: string, content: string) =>
+  put<{ path: string; size: number }>('/fs/file', { path, content })
+/** 删除目录或文件(仅允许白名单根内, 且不能删根本身) */
+export const deleteEntry = (path: string) =>
+  del<{ ok: boolean }>(`/fs/entry?path=${encodeURIComponent(path)}`)
 /** 带 token 的 URL: EventSource / <img> 无法携带 Header, 后端支持 ?token= 认证 */
 function tokenUrl(base: string, path: string): string {
   const token = localStorage.getItem(TOKEN_KEY) ?? ''

@@ -1,0 +1,627 @@
+/* 浅色阅读主题：全站统一（.shell--paper 挂载在 DefaultLayout 根节点）
+   参考极简浅色阅读模式：
+   - 纯白纸面 + 极浅灰侧栏（#ffffff / #f7f7f8）
+   - 紫水晶强调色 #705dcf（白底对比度约 4.9:1）
+   - 1px hairline 描边、极小圆角、几乎无阴影
+   - 细滚动条、低对比度分割线 */
+.shell--paper {
+  color-scheme: light;
+  --topbar-h: 48px;
+
+  /* 强调色 */
+  --primary: #705dcf;
+  --primary-hover: #5b49b8;
+  --primary-soft: rgba(112, 93, 207, 0.1);
+  --primary-tint: rgba(112, 93, 207, 0.05);
+
+  /* 背景层次 */
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-3: #f7f7f8;
+  --border: #e6e6e9;
+  --border-strong: #d5d5da;
+
+  /* 文本层次 */
+  --text-1: #2e3338;
+  --text-2: #575c62;
+  --text-3: #6b7076;
+  --text-4: #767b81;
+
+  /* 状态色 */
+  --success: #2e9e5b;
+  --success-soft: rgba(46, 158, 91, 0.1);
+  --success-deep: #1f7a44;
+  --warning: #b9741a;
+  --warning-soft: rgba(185, 116, 26, 0.1);
+  --warning-deep: #96590d;
+  --danger: #d04343;
+  --danger-soft: rgba(208, 67, 67, 0.09);
+  --danger-deep: #ab2f2f;
+
+  /* 形状：小圆角与零阴影 */
+  --radius: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+  --shadow-1: none;
+  --shadow-2: 0 12px 32px rgba(15, 23, 42, 0.12);
+
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ---------- 全局控件在浅色下的修正 ---------- */
+.shell--paper ::selection {
+  background: rgba(112, 93, 207, 0.18);
+  color: inherit;
+}
+
+.shell--paper .o-btn {
+  background: #f7f7f8;
+  border: 1px solid #e2e2e6;
+  color: var(--text-1);
+}
+.shell--paper .o-btn:hover {
+  background: #efeff2;
+  border-color: #d3d3d9;
+  color: #1b1f23;
+}
+.shell--paper .o-btn--primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+.shell--paper .o-btn--primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: #ffffff;
+}
+.shell--paper .o-btn--text {
+  background: transparent;
+  border: none;
+  color: var(--primary);
+}
+.shell--paper .o-btn--text:hover {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+.shell--paper .o-btn--danger {
+  background: transparent;
+  color: var(--danger);
+}
+.shell--paper .o-btn--danger:hover {
+  background: var(--danger-soft);
+  border-color: rgba(208, 67, 67, 0.35);
+  color: var(--danger-deep);
+}
+.shell--paper .o-btn:disabled {
+  opacity: 0.45;
+}
+
+.shell--paper .o-input,
+.shell--paper .o-select,
+.shell--paper .o-textarea {
+  background: #ffffff;
+  border-color: #e0e0e4;
+  color: var(--text-1);
+}
+.shell--paper .o-input::placeholder,
+.shell--paper .o-textarea::placeholder {
+  color: var(--text-4);
+}
+.shell--paper input:focus,
+.shell--paper select:focus,
+.shell--paper textarea:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 2px rgba(112, 93, 207, 0.14);
+}
+
+.shell--paper .o-badge--outline {
+  background: transparent;
+  border-color: #e0e0e4;
+  color: var(--text-2);
+}
+
+.shell--paper .o-empty {
+  color: var(--text-3);
+}
+
+/* ---------- 全站容器：hairline 描边替代柔和阴影 ---------- */
+.shell--paper .o-card,
+.shell--paper .o-kpi,
+.shell--paper .o-banner,
+.shell--paper .o-table-wrap,
+.shell--paper .o-page-nav {
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+.shell--paper a .o-card:hover,
+.shell--paper .o-card--float:hover {
+  transform: none;
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+.shell--paper .o-modal {
+  border: 1px solid var(--border);
+}
+.shell--paper .o-table th,
+.shell--paper .o-table--sticky-action th:last-child {
+  background: #fafafb;
+}
+.shell--paper .o-expand-tr > td {
+  background: #fafafb;
+}
+.shell--paper .o-badge--grey {
+  background: var(--surface-3);
+}
+
+/* ---------- 全站排印：标题字重与字距 ---------- */
+.shell--paper .o-page-head h2,
+.shell--paper .o-modal__title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- 阅读栏：700px 可读行宽 ---------- */
+.shell--paper .chat .chat-head {
+  height: 40px;
+  background: #ffffff;
+  border-bottom: 1px solid #eaeaec;
+}
+.shell--paper .chat .session-title-text {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+}
+.shell--paper .chat .chat-list {
+  padding: 40px 32px 96px;
+  gap: 40px;
+}
+.shell--paper .chat .chat-list > .msg,
+.shell--paper .chat .chat-list > .welcome {
+  width: 100%;
+  max-width: 700px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.shell--paper .chat .composer-inner {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 12px 0 14px;
+}
+/* 输入区与正文同宽，顶部只留一条 hairline */
+.shell--paper .chat .composer {
+  background: #ffffff;
+  border-top: 1px solid #eaeaec;
+}
+.shell--paper .chat .composer-text {
+  background: #ffffff;
+  border-color: #e0e0e4;
+  border-radius: 5px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.shell--paper .chat .composer-text:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px rgba(112, 93, 207, 0.3);
+}
+.shell--paper .chat .composer-hint {
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+
+/* 空状态：居中引导，弱化装饰 */
+.shell--paper .chat .welcome {
+  padding: 0;
+  text-align: center;
+}
+.shell--paper .chat .welcome-ico {
+  font-size: 28px;
+  color: #b9b9c2;
+}
+.shell--paper .chat .welcome h2 {
+  margin-top: 6px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #1b1f23;
+}
+.shell--paper .chat .welcome > p {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-3);
+}
+.shell--paper .chat .example-grid {
+  gap: 8px;
+  margin-top: 20px;
+}
+.shell--paper .chat .example-card {
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid #e6e6e9;
+  border-radius: 4px;
+  color: var(--text-2);
+}
+.shell--paper .chat .example-card:hover {
+  background: rgba(112, 93, 207, 0.04);
+  border-color: rgba(112, 93, 207, 0.4);
+}
+.shell--paper .chat .example-card b {
+  font-size: 13px;
+  font-weight: 500;
+  color: #2e3338;
+}
+.shell--paper .chat .example-card span {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-4);
+}
+.shell--paper .chat .welcome-note {
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+/* ---------- 消息：左右头像分栏 ---------- */
+.shell--paper .chat .msg {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.shell--paper .chat .msg--user {
+  flex-direction: row-reverse;
+}
+.shell--paper .chat .msg-main {
+  max-width: calc(100% - 36px);
+}
+.shell--paper .chat .msg--user .msg-main {
+  align-items: flex-end;
+}
+.shell--paper .chat .msg-avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-top: 2px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: #ffffff;
+  user-select: none;
+}
+.shell--paper .chat .msg-avatar--assistant {
+  background: linear-gradient(135deg, #a294ff 0%, #705dcf 55%, #5746ad 100%);
+}
+.shell--paper .chat .msg-avatar--user {
+  background: hsl(212, 52%, 48%);
+}
+
+/* ---------- Markdown 阅读视图：阅读模式排版 ---------- */
+.shell--paper .md {
+  font-size: 14.5px;
+  line-height: 1.72;
+  letter-spacing: 0.004em;
+  color: var(--text-1);
+}
+/* 首尾元素不额外撑开留白（优先级需高于标题规则） */
+.shell--paper .md > :first-child {
+  margin-top: 0 !important;
+}
+.shell--paper .md > :last-child {
+  margin-bottom: 0 !important;
+}
+/* 标题：只有字重与留白，没有下划线 */
+.shell--paper .md :is(h1, h2, h3, h4, h5, h6) {
+  margin: 24px 0 9px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.008em;
+  color: #1b1f23;
+  border: none;
+  padding: 0;
+}
+.shell--paper .md h1 { font-size: 1.5em; }
+.shell--paper .md h2 { font-size: 1.28em; }
+.shell--paper .md h3 { font-size: 1.12em; }
+.shell--paper .md h4 { font-size: 1em; color: var(--text-2); }
+.shell--paper .md :is(h5, h6) { font-size: 0.92em; color: var(--text-3); }
+/* 段落：紧凑段间距 */
+.shell--paper .md p {
+  margin: 0 0 13px;
+}
+.shell--paper .md strong {
+  color: #111418;
+  font-weight: 600;
+}
+.shell--paper .md del {
+  color: var(--text-3);
+}
+/* 列表：1.45em 缩进，二级项目符号改空心圆 */
+.shell--paper .md :is(ul, ol) {
+  margin: 0 0 13px;
+  padding-left: 1.45em;
+}
+.shell--paper .md li {
+  margin: 4px 0;
+}
+.shell--paper .md li::marker {
+  color: var(--text-4);
+}
+.shell--paper .md ul ul {
+  list-style-type: circle;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+.shell--paper .md li > p {
+  margin: 0;
+}
+/* 引用块：只有一条灰紫竖线，不加底色 */
+.shell--paper .md blockquote {
+  margin: 0 0 13px;
+  padding: 1px 0 1px 14px;
+  border-left: 2px solid #cfc9e8;
+  background: transparent;
+  border-radius: 0;
+  color: var(--text-2);
+}
+.shell--paper .md blockquote > :last-child {
+  margin-bottom: 0;
+}
+/* 行内代码 */
+.shell--paper .md code {
+  background: #f4f4f6;
+  border: 1px solid #e6e6ea;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.86em;
+  color: #4e4470;
+}
+/* 代码块：比正文更浅的纸面，等宽行高更紧 */
+.shell--paper .md pre {
+  margin: 0 0 13px;
+  padding: 13px 15px;
+  background: #f7f7f8;
+  border: 1px solid #e9e9ec;
+  border-radius: 5px;
+  overflow: auto;
+}
+.shell--paper .md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #3c4043;
+  font-size: 12.5px;
+  line-height: 1.62;
+  white-space: pre;
+}
+/* 表格：仅保留横线，去掉格子感 */
+.shell--paper .md table {
+  border-collapse: collapse;
+  margin: 0 0 13px;
+  font-size: 0.94em;
+}
+.shell--paper .md :is(th, td) {
+  border: none;
+  border-bottom: 1px solid #ececef;
+  padding: 7px 12px;
+  vertical-align: top;
+}
+.shell--paper .md th {
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.9em;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border-bottom: 1px solid #dedee2;
+}
+.shell--paper .md tr:hover td {
+  background: rgba(15, 23, 42, 0.022);
+}
+.shell--paper .md a {
+  color: var(--primary-hover);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(91, 73, 184, 0.3);
+}
+.shell--paper .md a:hover {
+  border-bottom-color: var(--primary-hover);
+}
+.shell--paper .md hr {
+  border: 0;
+  border-top: 1px solid #e6e6e9;
+  margin: 24px 0;
+}
+.shell--paper .md img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+.shell--paper .md :is(input[type='checkbox']) {
+  accent-color: var(--primary);
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+.shell--paper .md li:has(> input[type='checkbox']:checked) {
+  color: var(--text-3);
+}
+/* 知识库引用里的 Markdown 保持小字号 */
+.shell--paper .md.cite-md {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.shell--paper .md.cite-md :is(h1, h2, h3, h4) {
+  margin: 12px 0 6px;
+  font-size: 1.02em;
+}
+
+/* ---------- 过程 / 工具 / 计划块 ---------- */
+.shell--paper .chat .process {
+  background: #f8f8f9;
+  border-color: #eaeaec;
+  border-radius: 4px;
+}
+.shell--paper .chat .p-head:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+.shell--paper .chat .tool {
+  background: #ffffff;
+  border-color: #e8e8eb;
+  border-radius: 3px;
+}
+.shell--paper .chat .thought-text {
+  border-left-color: #dcdce0;
+}
+.shell--paper .chat .usage {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+.shell--paper .chat .blk-thought {
+  background: #fafafb;
+  border-color: #ececef;
+  border-left-color: #dcdce0;
+}
+.shell--paper .chat .blk-tool {
+  background: #fbfbfc;
+  border-color: #ececef;
+  border-left-color: rgba(112, 93, 207, 0.5);
+}
+.shell--paper .chat .msg--user .bubble {
+  background: rgba(112, 93, 207, 0.05);
+  border-color: rgba(112, 93, 207, 0.16);
+  border-left-color: var(--primary);
+}
+
+/* 悬停提示：浅色主题下用深灰底 + 浅字 */
+.shell--paper .chat .copy-btn::after {
+  background: #2e3338;
+  color: #f5f5f6;
+  border: 1px solid #2e3338;
+}
+.shell--paper .chat .ctx-x:hover {
+  background: rgba(15, 23, 42, 0.07);
+}
+.shell--paper .chat .jump-bottom {
+  background: #ffffff;
+  border-color: #e0e0e4;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+
+/* 消息操作栏：统一靠右对齐 */
+.shell--paper .chat .msg-actions {
+  justify-content: flex-end;
+  gap: 2px;
+}
+.shell--paper .chat .blk-text {
+  font-size: 14.5px;
+  line-height: 1.72;
+}
+
+/* ---------- 侧栏：文件浏览器的紧凑排版 ---------- */
+.shell--paper .sidebar {
+  background: #f7f7f8;
+}
+.shell--paper .sidebar .side-sec-head {
+  height: 30px;
+  padding: 0 8px 0 10px;
+}
+.shell--paper .sidebar .side-sec-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #767b81;
+}
+.shell--paper .sidebar .side-count {
+  padding: 0 3px;
+  border: none;
+  background: transparent;
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.shell--paper .sidebar .tree-row {
+  height: 27px;
+  gap: 5px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+.shell--paper .sidebar .tree-name {
+  color: #4a4f55;
+}
+.shell--paper .sidebar .tree-row:hover {
+  background: rgba(15, 23, 42, 0.045);
+}
+.shell--paper .sidebar .tree-row:hover .tree-name {
+  color: #1b1f23;
+}
+.shell--paper .sidebar .tree-row.is-sel {
+  background: rgba(112, 93, 207, 0.1);
+}
+.shell--paper .sidebar .tree-row.is-sel .tree-name {
+  color: var(--primary-hover);
+  font-weight: 500;
+}
+.shell--paper .sidebar .tree-row.is-open {
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.shell--paper .sidebar .tree-size {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-4);
+}
+.shell--paper .sidebar .hist-row {
+  padding: 6px 6px 6px 9px;
+  border-radius: 3px;
+}
+.shell--paper .sidebar .hist-row:hover {
+  background: rgba(15, 23, 42, 0.045);
+}
+.shell--paper .sidebar .hist-row.is-active {
+  background: rgba(112, 93, 207, 0.1);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.shell--paper .sidebar .hist-title {
+  font-size: 13px;
+  color: #3f444a;
+}
+.shell--paper .sidebar .hist-row.is-active .hist-title {
+  color: var(--primary-hover);
+  font-weight: 500;
+}
+.shell--paper .sidebar .hist-meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+
+/* 阅读器：行号更淡，纸面更浅 */
+.shell--paper .drawer .rd-ln {
+  color: #9aa0a6;
+  background: #f7f7f8;
+}
+
+/* 细滚动条：默认隐藏轨道，仅悬停时可见 */
+.shell--paper * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+}
+.shell--paper ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.shell--paper ::-webkit-scrollbar-track,
+.shell--paper ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.shell--paper ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.16);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+.shell--paper ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.3);
+  background-clip: padding-box;
+}

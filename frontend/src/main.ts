@@ -5,6 +5,7 @@ import { router } from './router'
 import { permissionDirective } from './directives/permission'
 import './styles/tokens.css'
 import './styles/base.css'
+import './styles/paper.css'
 
 const app = createApp(App)
 app.use(createPinia())

@@ -100,6 +100,8 @@ export interface SessionInfo {
   kbTopK: number
   /* 会话绑定的本地目录 (文件栏), 空=未选择 */
   localRoot: string
+  /* 本机导入的会话工作区根 (文件栏「本机导入」面板), 空=还没导入过 */
+  clientRoot: string
   /* 会话勾选的文件 (文件栏), 切回会话时恢复 */
   selectedFiles: Array<{ id: string; name: string; path: string; size?: string }>
   userId: number
@@ -243,6 +245,49 @@ export const deleteSession = (id: string) => del(`/diagnosis/sessions/${id}`)
 /* 批量删除: 只删自己的会话, 返回实际删除数 */
 export const batchDeleteSessions = (ids: string[]) =>
   post<{ deleted: number }>('/diagnosis/sessions/batch-delete', { ids })
+
+export interface ClientUploadResult {
+  root: string
+  /* 会话工作区根(client): 多次导入共用, 前端以它为树根实现追加 */
+  workspace: string
+  files: number
+  /* 同路径同大小已存在而跳过的数量 */
+  skipped: number
+  size: number
+}
+
+/** 把浏览器所选本机目录/文件分批追加到会话工作区, 返回工作区根路径 */
+export async function uploadClientDir(
+  sessionId: string,
+  items: Array<{ file: File; path: string }>,
+  meta: { rootName: string; force?: boolean },
+): Promise<ClientUploadResult> {
+  const form = new FormData()
+  for (const it of items) {
+    form.append('files', it.file, it.file.name)
+    form.append('paths', it.path)
+  }
+  form.append('root_name', meta.rootName)
+  if (meta.force) form.append('force', 'true')
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const resp = await fetch(`/api/diagnosis/sessions/${sessionId}/uploads`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  })
+  if (!resp.ok) {
+    let detail = `导入失败 (${resp.status})`
+    try {
+      const body = await resp.json()
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch {
+      /* 非 JSON 响应, 保留默认提示 */
+    }
+    throw new Error(detail)
+  }
+  return (await resp.json()) as ClientUploadResult
+}
+
 export const listMessages = (id: string) => get<ChatMessage[]>(`/diagnosis/sessions/${id}/messages`)
 /* 删除会话内单条消息 */
 export const deleteMessage = (sessionId: string, messageId: number) =>

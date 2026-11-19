@@ -11,20 +11,27 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from app.core.config import get_settings
-from app.core.deps import get_current_user, get_current_user_or_query
+from app.core.database import get_db
+from app.core.deps import get_current_user, get_current_user_or_query, is_platform_admin
+from app.models.diagnosis import DiagnosisSession
 from app.models.user import User
 
 router = APIRouter(prefix="/fs", tags=["fs"])
@@ -65,8 +72,14 @@ def _default_roots() -> list[Path]:
 def _roots() -> list[Path]:
     raw = (settings.FS_ROOTS or "").strip()
     if raw:
-        return [Path(seg.strip()).expanduser().resolve() for seg in raw.split(",") if seg.strip()]
-    return _default_roots()
+        roots = [Path(seg.strip()).expanduser().resolve() for seg in raw.split(",") if seg.strip()]
+    else:
+        roots = _default_roots()
+    # 本机目录导入后的会话工作区 (DATA_DIR/diagnosis/<会话>/client/...) 必须可被 /api/fs 浏览
+    workspace = (Path(settings.DATA_DIR) / "diagnosis").resolve()
+    if workspace not in roots:
+        roots.append(workspace)
+    return roots
 
 
 def _resolve(path: str) -> Path:
@@ -156,7 +169,10 @@ def _build_tree(root: Path, depth: int, max_nodes: int, max_children: int) -> tu
 @router.get("/roots")
 def list_roots(user: Annotated[User, Depends(get_current_user)]):
     """可浏览的根目录列表(默认用户主目录 + Windows 盘符)."""
-    roots = [{"name": r.name or str(r), "path": str(r)} for r in _roots() if r.exists()]
+    # 会话工作区仅供本机目录导入后按绝对路径访问, 不在服务器目录选择器中展示
+    workspace = (Path(settings.DATA_DIR) / "diagnosis").resolve()
+    roots = [{"name": r.name or str(r), "path": str(r)}
+             for r in _roots() if r.exists() and r != workspace]
     return {"roots": roots, "home": str(Path.home())}
 
 
@@ -186,6 +202,61 @@ def read_tree(
     return {"root": node, "truncated": truncated}
 
 
+def _client_workspace(target: Path) -> tuple[str, Path] | None:
+    """target 位于 <DATA_DIR>/diagnosis/<会话>/client 内时返回 (会话 id, client 根)."""
+    diag = (Path(settings.DATA_DIR) / "diagnosis").resolve()
+    try:
+        rel = target.relative_to(diag)
+    except ValueError:
+        return None
+    parts = rel.parts
+    if len(parts) < 2 or parts[1] != "client":
+        return None
+    try:
+        uuid.UUID(parts[0])
+    except ValueError:
+        return None
+    return parts[0], (diag / parts[0] / "client").resolve()
+
+
+async def _require_owned_workspace(db: AsyncSession, user: User, target: Path) -> Path:
+    """校验目标确属某个会话的 client 工作区, 且当前用户可管理该会话."""
+    ws = _client_workspace(target)
+    if ws is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "服务器文件为只读，仅支持操作本机导入到会话工作区的副本")
+    sid, client_root = ws
+    sess = (await db.execute(select(DiagnosisSession).where(
+        DiagnosisSession.id == sid))).scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "诊断会话不存在")
+    if not (is_platform_admin(user) or sess.user_id == user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "无权操作该会话的工作区文件")
+    return client_root
+
+
+@router.delete("/entry")
+async def delete_entry(path: str,
+                       db: Annotated[AsyncSession, Depends(get_db)],
+                       user: Annotated[User, Depends(get_current_user)]):
+    """删除文件/目录(递归): 服务器侧文件对诊断功能只读, 仅允许删除会话工作区中
+    client/... 内由本机导入的副本, 且不允许删除 client 根本身."""
+    target = _resolve(path)
+    client_root = await _require_owned_workspace(db, user, target)
+    if target == client_root:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "不允许删除工作区根目录")
+    if not target.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文件或目录不存在")
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except OSError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"删除失败: {e}") from e
+    return {"ok": True}
+
+
 @router.get("/read")
 def read_file(path: str, user: Annotated[User, Depends(get_current_user)]):
     """读取文件内容: 文本直接返回, 图片仅返回元信息(前端走 /fs/raw 取二进制)."""
@@ -213,6 +284,33 @@ def read_file(path: str, user: Annotated[User, Depends(get_current_user)]):
         return {"kind": "text", "lang": "text", **meta,
                 "content": f"# {f.name} ({st.st_size / 1024:.1f} KB)\n# 二进制文件, 未加载内容。\n"}
     return {"kind": "text", "lang": _lang_of(f.name), "content": raw.decode("utf-8", errors="replace"), **meta}
+
+
+class FsWriteBody(BaseModel):
+    path: str
+    content: str
+
+
+@router.put("/file")
+async def write_file(body: FsWriteBody,
+                     db: Annotated[AsyncSession, Depends(get_db)],
+                     user: Annotated[User, Depends(get_current_user)]):
+    """编辑保存: 只允许写会话工作区内的本机导入副本(服务器侧文件对诊断功能只读).
+    客户端编辑后前端会把内容同步到这里, 助手据此读到的始终是最新内容."""
+    target = _resolve(body.path)
+    await _require_owned_workspace(db, user, target)
+    if not target.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在")
+    data = body.content.encode("utf-8")
+    max_bytes = int(settings.FS_MAX_TEXT_MB * 1024 * 1024)
+    if len(data) > max_bytes:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            f"内容超过 {settings.FS_MAX_TEXT_MB} MB，未写入")
+    try:
+        target.write_bytes(data)
+    except OSError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"写入失败: {e}") from e
+    return {"path": str(target), "size": len(data)}
 
 
 @router.get("/raw")
