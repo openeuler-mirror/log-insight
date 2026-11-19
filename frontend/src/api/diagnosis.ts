@@ -251,7 +251,7 @@ export interface ClientUploadResult {
   /* 会话工作区根(client): 多次导入共用, 前端以它为树根实现追加 */
   workspace: string
   files: number
-  /* 同路径同大小已存在而跳过的数量 */
+  /* 同路径且内容一致(sha256 比对)已存在而跳过的数量 */
   skipped: number
   size: number
 }

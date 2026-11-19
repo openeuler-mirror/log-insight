@@ -728,7 +728,7 @@ async function selectSession(id: string) {
 
 async function refreshSessions() {
   try {
-    sessions.value = await listSessions()
+    sessions.value = await listSessions(teamsStore.activeTeamId ?? undefined)
     if (!sessions.value.some((s) => s.id === activeSessionId.value)) {
       const next = sessions.value[0]
       if (next) {
@@ -746,7 +746,8 @@ async function refreshSessions() {
 
 async function addSession() {
   try {
-    const s = await createSession('', status.value?.teamId || undefined)
+    const teamId = teamsStore.activeTeamId ?? status.value?.teamId ?? undefined
+    const s = await createSession('', teamId)
     sessions.value.unshift(s)
     activeSessionId.value = s.id
     messages.value = []
@@ -1107,9 +1108,9 @@ async function runTurn(
     if (!live.blocks.length && !live.error) {
       live.error = stopped ? '已停止本轮诊断' : '智能体没有返回内容'
     }
-    // 刷新会话标题与排序
+    // 刷新会话标题与排序 (仍限定当前团队, 否则会把其他团队的会话带出来)
     try {
-      sessions.value = await listSessions()
+      sessions.value = await listSessions(teamsStore.activeTeamId ?? undefined)
     } catch {
       /* 忽略 */
     }
@@ -1187,26 +1188,64 @@ function onDrop(e: DragEvent) {
   }
 }
 
-/* ---------------- 启动 ---------------- */
+/* ---------------- 启动 / 团队切换 ---------------- */
+/* 模型状态与会话同属当前团队作用域: 顶栏切换团队后整体重载 */
+let teamScopeSeq = 0
+
+async function loadTeamScope(teamId: number | null) {
+  const seq = ++teamScopeSeq
+  /* 先清空上一团队的会话与文件上下文, 避免切换瞬间仍展示旧内容 */
+  pickedModel.value = null
+  activeSessionId.value = ''
+  sessions.value = []
+  messages.value = []
+  tabs.value = []
+  fileCache.clear()
+  activeTabId.value = ''
+  drawerVisible.value = false
+  errorText.value = ''
+  try {
+    const [st] = await Promise.all([agentStatus(teamId ?? undefined), loadCatalog()])
+    if (seq !== teamScopeSeq) return
+    status.value = st
+  } catch (e) {
+    if (seq !== teamScopeSeq) return
+    errorText.value = apiError(e)
+    return
+  }
+  try {
+    const list = await listSessions(teamId ?? undefined)
+    if (seq !== teamScopeSeq) return
+    if (!list.length) {
+      /* 该团队还没有会话: 建一个空的, 上下文从零开始 */
+      const s = await createSession('', teamId ?? undefined)
+      if (seq !== teamScopeSeq) return
+      sessions.value = [s]
+      activeSessionId.value = s.id
+      resetLocal()
+      attached.value = []
+      lastSavedFileKey = ''
+      resetRun(s.id)
+      return
+    }
+    sessions.value = list
+    activeSessionId.value = list[0].id
+    await loadMessageList(list[0].id)
+  } catch (e) {
+    if (seq !== teamScopeSeq) return
+    errorText.value = apiError(e)
+  }
+}
+
+watch(() => teamsStore.activeTeamId, (id) => {
+  void loadTeamScope(id ?? null)
+})
+
 onMounted(async () => {
   document.addEventListener('click', closeLocalMenu)
   localPollTimer = window.setInterval(() => void syncLocalChanges(), 4000)
-  await refreshStatus()
-  void loadCatalog()
   void loadFiles()
-  try {
-    sessions.value = await listSessions()
-    if (!sessions.value.length) {
-      const s = await createSession('', status.value?.teamId || undefined)
-      sessions.value = [s]
-    }
-    const first = sessions.value[0]
-    activeSessionId.value = first.id
-    if (first.teamId) void refreshStatus(first.teamId)
-    await loadMessageList(activeSessionId.value)
-  } catch (e) {
-    errorText.value = apiError(e)
-  }
+  await loadTeamScope(teamsStore.activeTeamId ?? null)
 })
 
 onBeforeUnmount(() => {

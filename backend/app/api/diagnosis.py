@@ -466,6 +466,15 @@ async def _attachment(db: AsyncSession, user: User, ref: FileRef) -> Attachment:
                       name=path.name, abs_path=path, size=path.stat().st_size)
 
 
+def _file_sha256(path: Path) -> str:
+    """流式计算文件 sha256 (在线程中执行, 避免阻塞事件循环)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 @router.post("/sessions/{session_id}/uploads")
 async def upload_client_files(
     session_id: uuid.UUID,
@@ -478,7 +487,7 @@ async def upload_client_files(
 ):
     """导入浏览器所选本机目录/文件: 追加落盘到会话工作区, 返回工作区根路径.
 
-    多次导入共用同一个工作区根(client), 同路径文件按大小去重跳过;
+    多次导入共用同一个工作区根(client), 同路径且内容一致的文件按 sha256 去重跳过;
     前端以工作区根作为文件树根, 因此可以连续拖入多个目录/文件。
     force=True 时覆盖同路径副本(用于本机文件被外部改动后的同步, 大小可能不变)。
     """
@@ -503,22 +512,29 @@ async def upload_client_files(
             dest = (base / rel).resolve()
             if base not in dest.parents:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件相对路径越界")
-            # 去重: 同路径且大小一致视为已导入(强制同步时覆盖)
-            if not force and dest.is_file() and file.size is not None and dest.stat().st_size == file.size:
-                skipped += 1
-                continue
             existed = dest.exists()
             dest.parent.mkdir(parents=True, exist_ok=True)
-            # 先写临时文件再原子替换: 覆盖已导入副本时失败不会留下半截内容
-            tmp = dest.with_name(f".{dest.name}.uploading")
+            # 先写唯一临时文件再原子替换: 覆盖已导入副本时失败不会留下半截内容,
+            # 并发上传同一路径也不会互相覆盖临时文件
+            tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.uploading")
+            digest = hashlib.sha256()
+            size = 0
             try:
                 with open(tmp, "wb") as out:
                     while chunk := await file.read(1024 * 1024):
-                        total += len(chunk)
+                        size += len(chunk)
+                        total += len(chunk)  # 跳过的文件也计入预算, 防止绕过总量限制
                         if total > budget:
                             raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                                                 "导入文件总大小超出限制")
+                        digest.update(chunk)
                         await asyncio.to_thread(out.write, chunk)
+                # 去重: 以实际读到的字节数与内容哈希为准, 不信任 multipart 元数据里的 size
+                if (not force and dest.is_file() and dest.stat().st_size == size
+                        and await asyncio.to_thread(_file_sha256, dest) == digest.hexdigest()):
+                    tmp.unlink(missing_ok=True)
+                    skipped += 1
+                    continue
                 os.replace(tmp, dest)
             except Exception:
                 tmp.unlink(missing_ok=True)
@@ -853,8 +869,10 @@ async def delete_session(session_id: uuid.UUID,
     await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id == s.id))
     await db.delete(s)
     await db.commit()
-    # 连同会话工作区(含本机目录导入的副本)一起清理, 避免磁盘无限增长
-    shutil.rmtree(Path(settings.DATA_DIR) / "diagnosis" / str(sid), ignore_errors=True)
+    # 连同会话工作区(含本机目录导入的副本)一起清理, 避免磁盘无限增长;
+    # rmtree 可能遍历大量文件, 放到线程里执行避免阻塞事件循环
+    await asyncio.to_thread(
+        shutil.rmtree, Path(settings.DATA_DIR) / "diagnosis" / str(sid), True)
     return {"detail": "会话已删除"}
 
 
@@ -874,8 +892,15 @@ async def batch_delete_sessions(body: BatchDeleteSessionsIn,
     await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id.in_(ids)))
     await db.execute(sa_delete(DiagnosisSession).where(DiagnosisSession.id.in_(ids)))
     await db.commit()
-    for sid in ids:
-        shutil.rmtree(Path(settings.DATA_DIR) / "diagnosis" / str(sid), ignore_errors=True)
+    # 工作区清理放线程池执行, 避免大量文件删除阻塞事件循环;
+    # 分批提交 (8 个/批) 以免占满共享 to_thread 线程池, 拖慢同期的上传写入等操作
+    pending = list(ids)
+    while pending:
+        batch, pending = pending[:8], pending[8:]
+        await asyncio.gather(*(
+            asyncio.to_thread(shutil.rmtree, Path(settings.DATA_DIR) / "diagnosis" / str(sid), True)
+            for sid in batch
+        ))
     return {"deleted": len(ids)}
 
 

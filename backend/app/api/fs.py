@@ -72,18 +72,28 @@ def _default_roots() -> list[Path]:
 def _roots() -> list[Path]:
     raw = (settings.FS_ROOTS or "").strip()
     if raw:
-        roots = [Path(seg.strip()).expanduser().resolve() for seg in raw.split(",") if seg.strip()]
-    else:
-        roots = _default_roots()
-    # 本机目录导入后的会话工作区 (DATA_DIR/diagnosis/<会话>/client/...) 必须可被 /api/fs 浏览
-    workspace = (Path(settings.DATA_DIR) / "diagnosis").resolve()
-    if workspace not in roots:
-        roots.append(workspace)
-    return roots
+        return [Path(seg.strip()).expanduser().resolve() for seg in raw.split(",") if seg.strip()]
+    return _default_roots()
+
+
+def _workspace_root() -> Path:
+    return (Path(settings.DATA_DIR) / "diagnosis").resolve()
+
+
+def _in_workspace(p: Path) -> bool:
+    """是否位于会话工作区 (DATA_DIR/diagnosis) 内."""
+    try:
+        p.relative_to(_workspace_root())
+        return True
+    except ValueError:
+        return False
 
 
 def _resolve(path: str) -> Path:
-    """绝对路径 + 白名单校验, 不通过抛 403."""
+    """绝对路径 + 范围校验, 不通过抛 403.
+
+    工作区路径在此放行, 但必须由调用方再做会话归属校验 (_require_owned_workspace)。
+    """
     if not path:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "缺少 path 参数")
     p = Path(path).expanduser()
@@ -93,6 +103,8 @@ def _resolve(path: str) -> Path:
         rp = p.resolve()
     except OSError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"路径无效: {e}") from e
+    if _in_workspace(rp):
+        return rp
     for root in _roots():
         try:
             rp.relative_to(root)
@@ -166,39 +178,63 @@ def _build_tree(root: Path, depth: int, max_nodes: int, max_children: int) -> tu
     return walk(root, 0), truncated
 
 
+async def _resolve_readable(
+    path: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> Path:
+    """读接口统一入口: 白名单内放行; 会话工作区路径必须是当前用户自己的会话."""
+    target = _resolve(path)
+    if _in_workspace(target):
+        await _require_owned_workspace(db, user, target)
+    return target
+
+
+async def _resolve_readable_query(
+    path: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user_or_query)],
+) -> Path:
+    """同 _resolve_readable, 但支持 ?token= 认证 (EventSource / <img>)."""
+    target = _resolve(path)
+    if _in_workspace(target):
+        await _require_owned_workspace(db, user, target)
+    return target
+
+
 @router.get("/roots")
 def list_roots(user: Annotated[User, Depends(get_current_user)]):
-    """可浏览的根目录列表(默认用户主目录 + Windows 盘符)."""
-    # 会话工作区仅供本机目录导入后按绝对路径访问, 不在服务器目录选择器中展示
-    workspace = (Path(settings.DATA_DIR) / "diagnosis").resolve()
+    """可浏览的根目录列表(默认用户主目录 + Windows 盘符).
+
+    会话工作区即使被显式配进 FS_ROOTS 也不展示:
+    它仅供本机导入后按绝对路径访问, 列出来只会是一个点开即 403 的条目。
+    """
+    ws = _workspace_root()
     roots = [{"name": r.name or str(r), "path": str(r)}
-             for r in _roots() if r.exists() and r != workspace]
+             for r in _roots() if r.exists() and r != ws]
     return {"roots": roots, "home": str(Path.home())}
 
 
 @router.get("/list")
-def list_dir(path: str, user: Annotated[User, Depends(get_current_user)]):
+def list_dir(target: Annotated[Path, Depends(_resolve_readable)]):
     """单层目录列表(懒加载用): 目录优先 + 名称升序."""
-    d = _resolve(path)
-    if not d.is_dir():
+    if not target.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "目录不存在或不可访问")
-    entries = _read_dir(d)
+    entries = _read_dir(target)
     limit = settings.FS_LIST_MAX
-    return {"path": str(d), "entries": entries[:limit], "truncated": len(entries) > limit}
+    return {"path": str(target), "entries": entries[:limit], "truncated": len(entries) > limit}
 
 
 @router.get("/tree")
 def read_tree(
-    path: str,
-    user: Annotated[User, Depends(get_current_user)],
+    target: Annotated[Path, Depends(_resolve_readable)],
     depth: int | None = None,
 ):
     """一次性嵌套加载目录树; 超出阈值/预算的目录不带 children, 由前端懒加载."""
-    root = _resolve(path)
-    if not root.is_dir():
+    if not target.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "目录不存在或不可访问")
     d = settings.FS_TREE_MAX_DEPTH if depth is None else max(1, min(depth, 16))
-    node, truncated = _build_tree(root, d, settings.FS_TREE_MAX_NODES, settings.FS_EAGER_MAX_CHILDREN)
+    node, truncated = _build_tree(target, d, settings.FS_TREE_MAX_NODES, settings.FS_EAGER_MAX_CHILDREN)
     return {"root": node, "truncated": truncated}
 
 
@@ -258,9 +294,8 @@ async def delete_entry(path: str,
 
 
 @router.get("/read")
-def read_file(path: str, user: Annotated[User, Depends(get_current_user)]):
+def read_file(f: Annotated[Path, Depends(_resolve_readable)]):
     """读取文件内容: 文本直接返回, 图片仅返回元信息(前端走 /fs/raw 取二进制)."""
-    f = _resolve(path)
     if not f.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在或不可访问")
     try:
@@ -314,9 +349,8 @@ async def write_file(body: FsWriteBody,
 
 
 @router.get("/raw")
-def read_raw(path: str, user: Annotated[User, Depends(get_current_user_or_query)]):
+def read_raw(f: Annotated[Path, Depends(_resolve_readable_query)]):
     """原始二进制(图片预览): EventSource / <img> 无法带 Header, 支持 ?token= 认证."""
-    f = _resolve(path)
     if not f.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在或不可访问")
     media, _ = mimetypes.guess_type(f.name)
@@ -367,12 +401,10 @@ class _WatchHandler(FileSystemEventHandler):
 
 @router.get("/watch")
 async def watch_dir(
-    path: str,
     request: Request,
-    user: Annotated[User, Depends(get_current_user_or_query)],
+    root: Annotated[Path, Depends(_resolve_readable_query)],
 ):
     """SSE: 递归监听目录变化, 事件形如 {op, path, kind, dir} (+ src/src_dir for moved)."""
-    root = _resolve(path)
     if not root.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "目录不存在或不可访问")
 

@@ -118,6 +118,18 @@ export const useTeamsStore = defineStore('teams', {
     async updateTeam(id: string | number, name: string, desc: string) {
       await put(`/teams/${id}`, { name, desc })
     },
+    async deleteTeam(id: string | number) {
+      await del(`/teams/${id}`)
+      delete this.details[String(id)]
+      this.appliedTeamIds = this.appliedTeamIds.filter((x) => x !== Number(id))
+      await this.fetchTeams()
+      if (String(this.activeTeamId) === String(id)) {
+        const next = useRbacStore().isPlatformAdmin
+          ? this.teams[0]
+          : this.teams.find((t) => !!this.myRoleOf(t.id))
+        this.setActiveTeam(next?.id ?? null)
+      }
+    },
     async invite(teamId: string | number, toUserId: number, roleId: string) {
       await post(`/teams/${teamId}/invite`, { user_id: toUserId, role: roleId })
     },

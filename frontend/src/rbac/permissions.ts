@@ -14,6 +14,7 @@ export const PERMISSIONS: PermDef[] = [
   { key: 'team:remove', group: '团队', label: '移除成员' },
   { key: 'team:role', group: '团队', label: '调整成员角色' },
   { key: 'team:approve', group: '团队', label: '审批申请' },
+  { key: 'team:delete', group: '团队', label: '删除团队' },
   { key: 'task:view', group: '解析任务', label: '查看解析任务' },
   { key: 'task:create', group: '解析任务', label: '创建解析任务' },
   { key: 'task:execute', group: '解析任务', label: '执行解析' },
