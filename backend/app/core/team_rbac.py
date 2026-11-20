@@ -14,6 +14,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("team:remove", "团队", "移除成员"),
     ("team:role", "团队", "调整成员角色"),
     ("team:approve", "团队", "审批申请"),
+    ("team:delete", "团队", "删除团队"),
     ("task:view", "解析任务", "查看解析任务"),
     ("task:create", "解析任务", "创建解析任务"),
     ("task:execute", "解析任务", "执行解析"),
@@ -51,6 +52,6 @@ def team_role_has_perm(role: str, perm: str) -> bool:
 # 审计动作中文标签 (与前端 TeamAuditPanel 的 ACTIONS 下拉对齐)
 AUDIT_ACTIONS = [
     "登录平台", "创建团队", "编辑团队", "申请加入团队", "邀请加入团队",
-    "处理团队邀请", "处理加入申请", "调整成员角色", "移除团队成员",
+    "处理团队邀请", "处理加入申请", "调整成员角色", "移除团队成员", "删除团队",
     "创建解析任务", "执行解析任务", "删除解析任务", "使用 LLM 分析",
 ]

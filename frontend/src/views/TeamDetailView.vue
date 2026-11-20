@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useTeamsStore, type TeamDetail } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
 import { fmtTime } from '@/parser/types'
@@ -14,6 +14,7 @@ import TeamUsagePanel from '@/components/team/TeamUsagePanel.vue'
 import RulesView from '@/views/RulesView.vue'
 
 const route = useRoute()
+const rr = useRouter()
 const teamsStore = useTeamsStore()
 const rbac = useRbacStore()
 
@@ -113,6 +114,32 @@ async function saveTeam() {
   }
 }
 
+/* ---------- 删除团队 ---------- */
+const showDelete = ref(false)
+const deleteName = ref('')
+const deleteErr = ref('')
+const deleting = ref(false)
+function openDelete() {
+  deleteName.value = ''
+  deleteErr.value = ''
+  showDelete.value = true
+}
+async function confirmDelete() {
+  if (!team.value || deleteName.value.trim() !== team.value.name) return
+  deleting.value = true
+  deleteErr.value = ''
+  try {
+    await teamsStore.deleteTeam(team.value.id)
+    showDelete.value = false
+    if (!teamsStore.activeTeamId) rr.push('/dashboard')
+    else if (route.params.id) rr.push('/teams')
+  } catch (e) {
+    deleteErr.value = apiError(e)
+  } finally {
+    deleting.value = false
+  }
+}
+
 /* ---------- 成员与审批 ---------- */
 const memberErr = ref('')
 const pendingApplies = computed(() => team.value?.pendingApplies ?? [])
@@ -205,7 +232,10 @@ async function revoke(userId: number, name: string) {
         </h2>
         <div class="sub">{{ team.desc }} · 建于 {{ (team.createdAt || '').slice(0, 10) }}</div>
       </div>
-      <button v-if="can('team:role')" class="o-btn" @click="openEdit">团队设置</button>
+      <div class="o-row" style="gap: 8px">
+        <button v-if="can('team:role')" class="o-btn" @click="openEdit">团队设置</button>
+        <button v-if="can('team:delete')" class="o-btn o-btn--danger" @click="openDelete">删除团队</button>
+      </div>
     </div>
 
     <nav class="o-page-nav">
@@ -342,6 +372,32 @@ async function revoke(userId: number, name: string) {
         <div class="o-modal__foot">
           <button class="o-btn" @click="showEdit = false">取消</button>
           <button class="o-btn o-btn--primary" @click="saveTeam">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除团队弹窗（输入团队名称二次确认） -->
+    <div v-if="showDelete" class="o-modal-mask" @click.self="showDelete = false">
+      <div class="o-modal">
+        <div class="o-modal__title">删除团队 — {{ team.name }}</div>
+        <div class="o-text-3" style="font-size: 13px; line-height: 1.75">
+          删除后不可恢复：团队成员、团队规则、知识库、大模型配置、解析任务及上传文件将一并清除；
+          智能诊断历史会话与用量记录会保留，但不再归属该团队。
+        </div>
+        <div class="o-form-item" style="margin-top: 14px">
+          <label class="o-form-item__label required">输入团队名称确认</label>
+          <input v-model="deleteName" class="o-input" :placeholder="team.name" />
+        </div>
+        <div v-if="deleteErr" class="o-badge o-badge--danger">{{ deleteErr }}</div>
+        <div class="o-modal__foot">
+          <button class="o-btn" @click="showDelete = false">取消</button>
+          <button
+            class="o-btn o-btn--danger"
+            :disabled="deleting || deleteName.trim() !== team.name"
+            @click="confirmDelete"
+          >
+            {{ deleting ? '删除中…' : '确认删除' }}
+          </button>
         </div>
       </div>
     </div>

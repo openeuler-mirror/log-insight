@@ -3,20 +3,27 @@
 对齐 witty-log-analyzer 团队体系: 双角色 (team_admin/member)、邀请与申请审批流.
 创建者与团队管理员权限已合一, Team.owner_user_id 仅用于标识创建人 (不可被移除).
 """
+import shutil
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (InviteRequest, MemberInfo, MemberRoleUpdate, NoticeInfo,
                              TaskInfo, TaskListPage, TeamCreate, TeamDetail, TeamInfo,
                              TeamUpdate)
 from app.core.audit import log_audit
+from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.deps import (ensure_team_perm, get_current_user, load_team_role,
-                           require_team_perm)
-from app.models.task import Task, TaskType
+from app.core.deps import (ensure_team_perm, get_current_user, get_redis,
+                           load_team_role, require_team_perm)
+from app.models.analyze import ParsedEventRecord
+from app.models.audit import AuditLog
+from app.models.metric import MetricPoint
+from app.models.task import Report, Task, TaskStatus, TaskType
 from app.models.team import Team, TeamMember, TeamNotice
 from app.models.user import User
 
@@ -213,6 +220,53 @@ async def update_team(
     agg = (await _team_aggregates(db, [team_id])).get(team_id, {"members": 0, "tasks": 0})
     _, my_role = await load_team_role(db, user, team_id)
     return _team_info(team, agg, my_role)
+
+
+@router.delete("/{team_id}")
+async def delete_team(
+    team_id: int,
+    trio: Annotated[tuple, Depends(require_team_perm("team:delete"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[object, Depends(get_redis)],
+):
+    """删除团队 (团队管理员): 成员/规则/知识库/模型配置按外键级联清理,
+    任务及其上传文件、知识库磁盘文件在此显式回收; 诊断会话与用量记录保留但解除团队归属."""
+    user, team, _ = trio
+    team_name = team.name
+
+    tasks = (await db.execute(
+        select(Task.id, Task.storage_path, Task.status)
+        .where(Task.team_id == team_id))).all()
+    task_ids = [row[0] for row in tasks]
+    for row in tasks:
+        if row[2] in (TaskStatus.pending, TaskStatus.running):
+            await redis.set(f"cancel:{row[0]}", "1", ex=3600)
+    if task_ids:
+        # ORM 层未配置级联, 与 DELETE /tasks/{id} 保持一致显式清理
+        await db.execute(sa_delete(Report).where(Report.task_id.in_(task_ids)))
+        await db.execute(sa_delete(ParsedEventRecord).where(
+            ParsedEventRecord.task_id.in_(task_ids)))
+        await db.execute(sa_delete(MetricPoint).where(
+            MetricPoint.task_id.in_([str(t) for t in task_ids])))
+        await db.execute(sa_delete(Task).where(Task.team_id == team_id))
+    # 审计历史保留, 仅解除团队关联 (audit_logs.team_id 无级联)
+    await db.execute(update(AuditLog).where(AuditLog.team_id == team_id)
+                     .values(team_id=None))
+    log_audit(db, user, "删除团队", team_name)
+    await db.delete(team)
+    await db.commit()
+
+    for _, storage_path, _ in tasks:
+        if not storage_path:
+            continue
+        path = Path(storage_path)
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+    shutil.rmtree(Path(get_settings().DATA_DIR) / "kb" / str(team_id),
+                  ignore_errors=True)
+    return {"detail": "团队已删除"}
 
 
 async def _notice_infos(db: AsyncSession, query) -> list[NoticeInfo]:

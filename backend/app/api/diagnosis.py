@@ -1,10 +1,14 @@
 """智能诊断 API: 会话管理 / 文件浏览 / DSH 智能体流式对话."""
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
+import re
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -12,7 +16,7 @@ from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy import delete as sa_delete, func, select, update as sa_update
@@ -47,6 +51,25 @@ TEXT_EXT = {".log", ".txt", ".json", ".jsonl", ".csv", ".conf", ".ini", ".yaml",
             ".xml", ".out", ".err", ".sar", ".dmesg", ".md"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 ARCHIVE_EXT = {".zip", ".gz", ".tgz", ".tar", ".bz2", ".xz", ".7z"}
+
+# 本机目录导入: 单次请求文件数上限 (前端一次选择可能拆成多批)
+CLIENT_UPLOAD_MAX_FILES = 500
+
+
+def _safe_rel_path(raw: str) -> Path:
+    """清洗浏览器上传的相对路径: 去盘符/根, 拒绝 `..` 与异常长度."""
+    text = (raw or "").replace("\\", "/").strip()
+    if "\x00" in text:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件路径包含非法字符")
+    text = re.sub(r"^[A-Za-z]:", "", text).lstrip("/")
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件相对路径为空")
+    if any(p == ".." for p in parts):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件相对路径非法")
+    if len(parts) > 32 or any(len(p) > 255 for p in parts):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件路径层级或名称过长")
+    return Path(*parts)
 
 
 class SessionCreate(BaseModel):
@@ -127,12 +150,15 @@ def _iso(dt: datetime | None) -> str:
 
 def _session_info(s: DiagnosisSession, *, team_name: str = "", owner_name: str = "",
                   can_manage: bool = True, message_count: int = 0) -> dict:
+    # 本机导入的会话工作区: 存在时才返回, 前端据此还原「本机导入」面板
+    client_dir = Path(settings.DATA_DIR) / "diagnosis" / str(s.id) / "client"
     return {"id": str(s.id), "title": s.title, "model": s.model,
             "team_id": s.team_id, "provider": s.provider,
             "model_name": s.model_name, "reasoning": s.reasoning,
             "selected_kb_ids": list(s.selected_kb_ids or []),
             "kb_top_k": int(s.kb_top_k or 10),
             "local_root": s.local_root or "",
+            "client_root": str(client_dir.resolve()) if client_dir.is_dir() else "",
             "selected_files": list(s.selected_files or []),
             "user_id": s.user_id, "owner_name": owner_name,
             "team_name": team_name, "can_manage": can_manage,
@@ -413,7 +439,9 @@ def _local_attachment(ref: FileRef) -> Attachment:
     path = Path(ref.path)
     if not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "本地文件不存在")
-    return Attachment(task_id="local", task_name="本地文件", name=path.name,
+    # 按父目录生成稳定 task_id: 同名文件来自不同目录时不会在会话工作区互相覆盖
+    folder = hashlib.sha1(str(path.parent).encode("utf-8")).hexdigest()[:10]
+    return Attachment(task_id=f"local-{folder}", task_name="本地文件", name=path.name,
                       abs_path=path, size=path.stat().st_size)
 
 
@@ -436,6 +464,97 @@ async def _attachment(db: AsyncSession, user: User, ref: FileRef) -> Attachment:
                 break
     return Attachment(task_id=str(task.id), task_name=task.name or task.filename,
                       name=path.name, abs_path=path, size=path.stat().st_size)
+
+
+def _file_sha256(path: Path) -> str:
+    """流式计算文件 sha256 (在线程中执行, 避免阻塞事件循环)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@router.post("/sessions/{session_id}/uploads")
+async def upload_client_files(
+    session_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+    files: list[UploadFile] = File(...),
+    paths: list[str] = Form(...),
+    root_name: str = Form(""),
+    force: bool = Form(False),
+):
+    """导入浏览器所选本机目录/文件: 追加落盘到会话工作区, 返回工作区根路径.
+
+    多次导入共用同一个工作区根(client), 同路径且内容一致的文件按 sha256 去重跳过;
+    前端以工作区根作为文件树根, 因此可以连续拖入多个目录/文件。
+    force=True 时覆盖同路径副本(用于本机文件被外部改动后的同步, 大小可能不变)。
+    """
+    s = await _load_session(db, user, session_id, manage=True)
+    if not files:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未选择文件")
+    if len(files) != len(paths):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件与路径数量不一致")
+    if len(files) > CLIENT_UPLOAD_MAX_FILES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"单次最多导入 {CLIENT_UPLOAD_MAX_FILES} 个文件")
+    base = (Path(settings.DATA_DIR) / "diagnosis" / str(s.id) / "client").resolve()
+    name = _safe_rel_path(root_name).name if root_name else ""
+    budget = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    total = 0
+    saved = 0
+    skipped = 0
+    created: list[Path] = []
+    try:
+        for file, raw in zip(files, paths):
+            rel = _safe_rel_path(raw)
+            dest = (base / rel).resolve()
+            if base not in dest.parents:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件相对路径越界")
+            existed = dest.exists()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            # 先写唯一临时文件再原子替换: 覆盖已导入副本时失败不会留下半截内容,
+            # 并发上传同一路径也不会互相覆盖临时文件
+            tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.uploading")
+            digest = hashlib.sha256()
+            size = 0
+            try:
+                with open(tmp, "wb") as out:
+                    while chunk := await file.read(1024 * 1024):
+                        size += len(chunk)
+                        total += len(chunk)  # 跳过的文件也计入预算, 防止绕过总量限制
+                        if total > budget:
+                            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                                "导入文件总大小超出限制")
+                        digest.update(chunk)
+                        await asyncio.to_thread(out.write, chunk)
+                # 去重: 以实际读到的字节数与内容哈希为准, 不信任 multipart 元数据里的 size
+                if (not force and dest.is_file() and dest.stat().st_size == size
+                        and await asyncio.to_thread(_file_sha256, dest) == digest.hexdigest()):
+                    tmp.unlink(missing_ok=True)
+                    skipped += 1
+                    continue
+                os.replace(tmp, dest)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            if not existed:
+                created.append(dest)
+            saved += 1
+    except Exception:
+        # 本批次失败只回滚本次新建的文件; 已覆盖的历史副本保持原样(写入是原子的)
+        for p in created:
+            p.unlink(missing_ok=True)
+        raise
+    finally:
+        for file in files:
+            await file.close()
+
+    root = base / name if name else base
+    root.mkdir(parents=True, exist_ok=True)
+    return {"root": str(root), "workspace": str(base), "files": saved,
+            "skipped": skipped, "size": total}
 
 
 # ---------- 运行时状态 / 用户模型配置 ----------
@@ -746,9 +865,14 @@ async def delete_session(session_id: uuid.UUID,
                          db: Annotated[AsyncSession, Depends(get_db)],
                          user: Annotated[User, Depends(get_current_user)]):
     s = await _load_session(db, user, session_id, manage=True)
+    sid = s.id
     await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id == s.id))
     await db.delete(s)
     await db.commit()
+    # 连同会话工作区(含本机目录导入的副本)一起清理, 避免磁盘无限增长;
+    # rmtree 可能遍历大量文件, 放到线程里执行避免阻塞事件循环
+    await asyncio.to_thread(
+        shutil.rmtree, Path(settings.DATA_DIR) / "diagnosis" / str(sid), True)
     return {"detail": "会话已删除"}
 
 
@@ -768,6 +892,15 @@ async def batch_delete_sessions(body: BatchDeleteSessionsIn,
     await db.execute(sa_delete(DiagnosisMessage).where(DiagnosisMessage.session_id.in_(ids)))
     await db.execute(sa_delete(DiagnosisSession).where(DiagnosisSession.id.in_(ids)))
     await db.commit()
+    # 工作区清理放线程池执行, 避免大量文件删除阻塞事件循环;
+    # 分批提交 (8 个/批) 以免占满共享 to_thread 线程池, 拖慢同期的上传写入等操作
+    pending = list(ids)
+    while pending:
+        batch, pending = pending[:8], pending[8:]
+        await asyncio.gather(*(
+            asyncio.to_thread(shutil.rmtree, Path(settings.DATA_DIR) / "diagnosis" / str(sid), True)
+            for sid in batch
+        ))
     return {"deleted": len(ids)}
 
 
