@@ -183,6 +183,8 @@ def _friendly_error(message: str) -> str:
         return "模型服务连接失败：请检查供应商、接口地址与网络"
     if "401" in low or "unauthorized" in low or "invalid api key" in low or "auth" in low:
         return "模型密钥无效：请在供应商连接中重新填写"
+    if "智能体响应超时" in (message or ""):
+        return "本轮诊断超过时间上限，检测子会话可能还在跑。请稍后查看 detection.json，或重新发起分析。"
     if "timeout" in low or "timed out" in low or "超时" in low:
         return "模型服务响应超时：请检查接口地址与网络，或稍后重试"
     if "not found" in low and "model" in low:

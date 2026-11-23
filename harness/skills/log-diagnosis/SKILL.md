@@ -22,7 +22,7 @@ whenToUse: 用户要求分析日志、定位故障、解释报错、排查 CPU/�
 父会话只做分诊。下面第 2 到第 5 步和第 7 步必须按 `AGENTS.md` 派子会话。`detection.json` 还不存在时，禁止父会话检索或阅读日志正文，禁止先写结论。
 
 1. 列出 `uploads/` 下的文件。
-2. 对文本日志派检测子会话，使用 `witty-log-detection`，默认关键词检测；用户要找未知模式时再在任务里写明用聚类。
+2. 对文本日志派检测子会话。任务里写明只执行 `python3 .dsh/skills/witty-log-detection/scripts/detect.py --out detection.json <路径>`，不要读技能源码。用户要找未知模式时再写明把 `--type` 改成聚类。
 3. 出现 kernel panic、oops、Call Trace、BUG、lockup 时再派崩溃特征子会话，使用 `crash-feature-extract`。`matched_crash` 为 false 则回到普通日志。
 4. 工作区里同时有 vmcore 和本地 vmlinux 时再派 vmcore 子会话，使用 `vmcore-analysis`。没有 vmlinux 不要下载符号。
 5. 需要对照上游 commit 或 issue 时再派上游对照子会话，使用 `gitcode`。没有 Token 就写「未核对上游」。

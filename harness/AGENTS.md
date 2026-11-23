@@ -8,7 +8,7 @@
 
 只有用户明确要求分析日志、排查故障或出报告，并且 `uploads/` 里已经有日志时，才进入下面的取证。取证必须走技能，禁止父会话自己读完日志后直接给结论。
 
-给用户的回复只写一次。调用工具之前不要先写开场白，避免同一段话出现两遍。
+给用户的回复只写一次。调用工具之前不要先写开场白，避免同一段话出现两遍。不要调用 `todo_write`，也不要维护任务清单。进度只看 `detection.json`、`kb_context.md`、`report.html` 有没有落地。
 
 回答里不要出现服务器绝对路径、工作区目录或本机主机名。提到日志时只用用户能看到的相对路径，例如 `uploads/<任务>/<文件名>`。
 
@@ -50,7 +50,7 @@
 
 派发时把对应边界写进任务，不要让子会话自己改选技能。
 
-检测任务：只使用 `witty-log-detection`，默认关键词；只有父会话写了「找未知模式」才用聚类。把异常写入 `detection.json`，保留文件、行号、原因、摘录、分数。不要下结论，不要读知识库，不要调用 `subagent`。
+检测任务：只执行 `python3 .dsh/skills/witty-log-detection/scripts/detect.py --out detection.json <日志相对路径>`。默认关键词；只有父会话写了「找未知模式」才在命令里加 `--type log_detection_base_on_clustering`。禁止阅读该技能的源码、README 和配置，禁止自己写调用脚本。不要下结论，不要读知识库，不要调用 `subagent`。
 
 崩溃特征任务：在 `crash-feature-extract` 目录执行 `python3 extract.py --file <路径>`，把 stdout 原样写入 `crash_features.json`。`matched_crash` 为 false 时不要补充猜测。不要检索知识库，不要调用 `subagent`。
 

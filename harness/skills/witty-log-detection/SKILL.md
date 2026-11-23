@@ -15,7 +15,13 @@ allowed-tools: Bash(python3:*) Bash(pip:*) Bash(curl:*) Bash(cat:*) Bash(ls:*) B
 
 # witty-log-detection
 
-Use this skill when the user asks to analyze a log file for anomalies, errors, or suspicious patterns. It is especially useful for `vmcore-dmesg.txt`, system logs, and application logs.
+直接跑下面这一条命令，然后读它写出的 `detection.json`。不要阅读本技能的源码、README、配置或解析器，不要自己写客户端，不要改数据库路径。
+
+```bash
+python3 .dsh/skills/witty-log-detection/scripts/detect.py --out detection.json <日志相对路径>
+```
+
+默认是关键词检测。只有任务里写了「找未知模式」时，才把 `--type` 改成 `log_detection_base_on_clustering`。命令结束前不要并行做别的事。失败时把 stderr 原样汇报，不要改脚本重试。
 
 ## Agent Contract
 

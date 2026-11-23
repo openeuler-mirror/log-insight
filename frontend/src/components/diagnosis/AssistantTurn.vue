@@ -36,7 +36,11 @@ const thoughts = computed(() =>
     .map((b) => b.text),
 )
 const tools = computed(() =>
-  props.message.blocks.filter((b): b is ToolBlock => b.kind === 'tool'),
+  props.message.blocks.filter((b): b is ToolBlock => {
+    if (b.kind !== 'tool') return false
+    const name = (b.name || '').toLowerCase().replace(/[_-]/g, '')
+    return name !== 'todowrite' && name !== 'todo'
+  }),
 )
 const kbBlock = computed(() =>
   props.message.blocks.find((b): b is KbBlock => b.kind === 'kb'),
