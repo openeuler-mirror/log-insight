@@ -282,7 +282,7 @@ onMounted(async () => {
 }
 .card:hover {
   border-color: var(--primary);
-  box-shadow: 0 4px 14px rgba(30, 111, 255, .08);
+  box-shadow: 0 4px 14px rgba(112, 93, 207, 0.08);
 }
 .card-set {
   position: absolute;

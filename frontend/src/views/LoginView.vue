@@ -54,7 +54,7 @@ function submit() {
 </script>
 
 <template>
-  <div class="login">
+  <div class="login shell--paper">
     <div class="panel">
       <div class="brand">
         <span class="mark">L</span>
@@ -124,10 +124,8 @@ function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(700px 360px at 12% 0%, rgba(30, 111, 255, 0.14), transparent 60%),
-    radial-gradient(600px 300px at 90% 100%, rgba(77, 143, 255, 0.16), transparent 60%),
-    var(--bg);
+  background: var(--surface-3);
+  color: var(--text-1);
   padding: 24px;
 }
 .panel {
@@ -136,8 +134,8 @@ function submit() {
   max-height: calc(100vh - 48px);
   overflow: auto;
   background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-2);
   padding: 32px 36px;
 }
 .brand {
@@ -147,21 +145,22 @@ function submit() {
   margin-bottom: 22px;
 }
 .mark {
-  width: 46px;
-  height: 46px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius);
   background: var(--primary);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 600;
 }
 .brand h1 {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--primary);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
 }
 .brand p {
   font-size: 12.5px;
@@ -181,8 +180,8 @@ function submit() {
   flex: 1;
 }
 .o-btn--lg {
-  height: 42px;
-  font-size: 15px;
+  height: 40px;
+  font-size: 14px;
   justify-content: center;
   margin-top: 6px;
 }
@@ -191,7 +190,7 @@ function submit() {
   align-items: center;
   gap: 12px;
   margin: 22px 0 14px;
-  color: var(--text-4);
+  color: var(--text-3);
   font-size: 12px;
 }
 .divider::before,
@@ -217,13 +216,11 @@ function submit() {
   cursor: pointer;
   text-align: left;
   font: inherit;
-  transition: all 0.2s;
+  transition: background 0.15s, border-color 0.15s;
 }
 .account:hover {
   border-color: var(--primary);
-  background: var(--primary-soft);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-1);
+  background: var(--primary-tint);
 }
 .avatar {
   width: 34px;
@@ -257,7 +254,8 @@ function submit() {
 }
 .foot {
   margin-top: 18px;
-  color: var(--text-4);
+  font-size: 12px;
+  color: var(--text-3);
   text-align: center;
 }
 .spin {

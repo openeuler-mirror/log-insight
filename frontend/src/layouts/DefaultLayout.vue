@@ -122,7 +122,10 @@ function openTeamBrowser() {
 </script>
 
 <template>
-  <div class="shell" @click="menuOpen = false; noticeOpen = false; teamMenuOpen = false">
+  <div
+    class="shell shell--paper"
+    @click="menuOpen = false; noticeOpen = false; teamMenuOpen = false"
+  >
     <header class="topbar" @click.stop>
       <div class="left">
         <span class="logo" @click="rr.push('/dashboard')">log-insight</span>
@@ -533,5 +536,106 @@ function openTeamBrowser() {
 .main--flush {
   max-width: none;
   padding: var(--topbar-h) 0 0;
+}
+
+/* ---------- 浅色极简风格顶栏（全站） ---------- */
+.shell--paper {
+  background: var(--bg);
+}
+.shell--paper .topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+}
+.shell--paper .left {
+  gap: 22px;
+}
+.shell--paper .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+/* 品牌紫色菱形标记 */
+.shell--paper .logo::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, #a99bff 0%, #705dcf 55%, #5746ad 100%);
+  transform: rotate(45deg);
+  box-shadow: 0 0 8px rgba(112, 93, 207, 0.3);
+}
+.shell--paper .logo:hover {
+  color: #1b1f23;
+}
+.shell--paper .nav-item {
+  padding: 5px 10px;
+  border-radius: 4px;
+  color: var(--text-3);
+  font-size: 13px;
+  transition: background 0.12s, color 0.12s;
+}
+.shell--paper .nav-item:hover {
+  color: var(--text-1);
+  background: rgba(15, 23, 42, 0.045);
+}
+.shell--paper .nav-item.is-active {
+  color: var(--text-1);
+  background: rgba(15, 23, 42, 0.06);
+  font-weight: 500;
+}
+.shell--paper .team-btn {
+  background: transparent;
+  border-color: #e2e2e6;
+  color: var(--text-2);
+}
+.shell--paper .team-btn:hover,
+.shell--paper .team-btn.active {
+  background: rgba(15, 23, 42, 0.045);
+  border-color: #d3d3d9;
+  color: var(--text-1);
+}
+.shell--paper .bell {
+  color: var(--text-2);
+}
+.shell--paper .bell:hover {
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-1);
+}
+.shell--paper .user-btn:hover {
+  background: rgba(15, 23, 42, 0.045);
+}
+.shell--paper .name {
+  font-weight: 500;
+  color: var(--text-1);
+}
+.shell--paper .team-menu,
+.shell--paper .notice-panel,
+.shell--paper .user-menu {
+  background: #ffffff;
+  border-color: #e4e4e8;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+}
+.shell--paper .team-menu__head,
+.shell--paper .notice-head,
+.shell--paper .user-info {
+  border-color: var(--border);
+}
+.shell--paper .team-row:hover,
+.shell--paper .menu-row:hover {
+  background: rgba(15, 23, 42, 0.045);
+  color: var(--text-1);
+}
+.shell--paper .team-row.active {
+  background: rgba(112, 93, 207, 0.08);
+  color: var(--primary);
+}
+.shell--paper .menu-row.danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 </style>

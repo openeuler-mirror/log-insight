@@ -11,20 +11,27 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from app.core.config import get_settings
-from app.core.deps import get_current_user, get_current_user_or_query
+from app.core.database import get_db
+from app.core.deps import get_current_user, get_current_user_or_query, is_platform_admin
+from app.models.diagnosis import DiagnosisSession
 from app.models.user import User
 
 router = APIRouter(prefix="/fs", tags=["fs"])
@@ -69,8 +76,24 @@ def _roots() -> list[Path]:
     return _default_roots()
 
 
+def _workspace_root() -> Path:
+    return (Path(settings.DATA_DIR) / "diagnosis").resolve()
+
+
+def _in_workspace(p: Path) -> bool:
+    """是否位于会话工作区 (DATA_DIR/diagnosis) 内."""
+    try:
+        p.relative_to(_workspace_root())
+        return True
+    except ValueError:
+        return False
+
+
 def _resolve(path: str) -> Path:
-    """绝对路径 + 白名单校验, 不通过抛 403."""
+    """绝对路径 + 范围校验, 不通过抛 403.
+
+    工作区路径在此放行, 但必须由调用方再做会话归属校验 (_require_owned_workspace)。
+    """
     if not path:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "缺少 path 参数")
     p = Path(path).expanduser()
@@ -80,6 +103,8 @@ def _resolve(path: str) -> Path:
         rp = p.resolve()
     except OSError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"路径无效: {e}") from e
+    if _in_workspace(rp):
+        return rp
     for root in _roots():
         try:
             rp.relative_to(root)
@@ -153,43 +178,124 @@ def _build_tree(root: Path, depth: int, max_nodes: int, max_children: int) -> tu
     return walk(root, 0), truncated
 
 
+async def _resolve_readable(
+    path: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> Path:
+    """读接口统一入口: 白名单内放行; 会话工作区路径必须是当前用户自己的会话."""
+    target = _resolve(path)
+    if _in_workspace(target):
+        await _require_owned_workspace(db, user, target)
+    return target
+
+
+async def _resolve_readable_query(
+    path: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user_or_query)],
+) -> Path:
+    """同 _resolve_readable, 但支持 ?token= 认证 (EventSource / <img>)."""
+    target = _resolve(path)
+    if _in_workspace(target):
+        await _require_owned_workspace(db, user, target)
+    return target
+
+
 @router.get("/roots")
 def list_roots(user: Annotated[User, Depends(get_current_user)]):
-    """可浏览的根目录列表(默认用户主目录 + Windows 盘符)."""
-    roots = [{"name": r.name or str(r), "path": str(r)} for r in _roots() if r.exists()]
+    """可浏览的根目录列表(默认用户主目录 + Windows 盘符).
+
+    会话工作区即使被显式配进 FS_ROOTS 也不展示:
+    它仅供本机导入后按绝对路径访问, 列出来只会是一个点开即 403 的条目。
+    """
+    ws = _workspace_root()
+    roots = [{"name": r.name or str(r), "path": str(r)}
+             for r in _roots() if r.exists() and r != ws]
     return {"roots": roots, "home": str(Path.home())}
 
 
 @router.get("/list")
-def list_dir(path: str, user: Annotated[User, Depends(get_current_user)]):
+def list_dir(target: Annotated[Path, Depends(_resolve_readable)]):
     """单层目录列表(懒加载用): 目录优先 + 名称升序."""
-    d = _resolve(path)
-    if not d.is_dir():
+    if not target.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "目录不存在或不可访问")
-    entries = _read_dir(d)
+    entries = _read_dir(target)
     limit = settings.FS_LIST_MAX
-    return {"path": str(d), "entries": entries[:limit], "truncated": len(entries) > limit}
+    return {"path": str(target), "entries": entries[:limit], "truncated": len(entries) > limit}
 
 
 @router.get("/tree")
 def read_tree(
-    path: str,
-    user: Annotated[User, Depends(get_current_user)],
+    target: Annotated[Path, Depends(_resolve_readable)],
     depth: int | None = None,
 ):
     """一次性嵌套加载目录树; 超出阈值/预算的目录不带 children, 由前端懒加载."""
-    root = _resolve(path)
-    if not root.is_dir():
+    if not target.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "目录不存在或不可访问")
     d = settings.FS_TREE_MAX_DEPTH if depth is None else max(1, min(depth, 16))
-    node, truncated = _build_tree(root, d, settings.FS_TREE_MAX_NODES, settings.FS_EAGER_MAX_CHILDREN)
+    node, truncated = _build_tree(target, d, settings.FS_TREE_MAX_NODES, settings.FS_EAGER_MAX_CHILDREN)
     return {"root": node, "truncated": truncated}
 
 
+def _client_workspace(target: Path) -> tuple[str, Path] | None:
+    """target 位于 <DATA_DIR>/diagnosis/<会话>/client 内时返回 (会话 id, client 根)."""
+    diag = (Path(settings.DATA_DIR) / "diagnosis").resolve()
+    try:
+        rel = target.relative_to(diag)
+    except ValueError:
+        return None
+    parts = rel.parts
+    if len(parts) < 2 or parts[1] != "client":
+        return None
+    try:
+        uuid.UUID(parts[0])
+    except ValueError:
+        return None
+    return parts[0], (diag / parts[0] / "client").resolve()
+
+
+async def _require_owned_workspace(db: AsyncSession, user: User, target: Path) -> Path:
+    """校验目标确属某个会话的 client 工作区, 且当前用户可管理该会话."""
+    ws = _client_workspace(target)
+    if ws is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "服务器文件为只读，仅支持操作本机导入到会话工作区的副本")
+    sid, client_root = ws
+    sess = (await db.execute(select(DiagnosisSession).where(
+        DiagnosisSession.id == sid))).scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "诊断会话不存在")
+    if not (is_platform_admin(user) or sess.user_id == user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "无权操作该会话的工作区文件")
+    return client_root
+
+
+@router.delete("/entry")
+async def delete_entry(path: str,
+                       db: Annotated[AsyncSession, Depends(get_db)],
+                       user: Annotated[User, Depends(get_current_user)]):
+    """删除文件/目录(递归): 服务器侧文件对诊断功能只读, 仅允许删除会话工作区中
+    client/... 内由本机导入的副本, 且不允许删除 client 根本身."""
+    target = _resolve(path)
+    client_root = await _require_owned_workspace(db, user, target)
+    if target == client_root:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "不允许删除工作区根目录")
+    if not target.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文件或目录不存在")
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except OSError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"删除失败: {e}") from e
+    return {"ok": True}
+
+
 @router.get("/read")
-def read_file(path: str, user: Annotated[User, Depends(get_current_user)]):
+def read_file(f: Annotated[Path, Depends(_resolve_readable)]):
     """读取文件内容: 文本直接返回, 图片仅返回元信息(前端走 /fs/raw 取二进制)."""
-    f = _resolve(path)
     if not f.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在或不可访问")
     try:
@@ -215,10 +321,36 @@ def read_file(path: str, user: Annotated[User, Depends(get_current_user)]):
     return {"kind": "text", "lang": _lang_of(f.name), "content": raw.decode("utf-8", errors="replace"), **meta}
 
 
+class FsWriteBody(BaseModel):
+    path: str
+    content: str
+
+
+@router.put("/file")
+async def write_file(body: FsWriteBody,
+                     db: Annotated[AsyncSession, Depends(get_db)],
+                     user: Annotated[User, Depends(get_current_user)]):
+    """编辑保存: 只允许写会话工作区内的本机导入副本(服务器侧文件对诊断功能只读).
+    客户端编辑后前端会把内容同步到这里, 助手据此读到的始终是最新内容."""
+    target = _resolve(body.path)
+    await _require_owned_workspace(db, user, target)
+    if not target.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在")
+    data = body.content.encode("utf-8")
+    max_bytes = int(settings.FS_MAX_TEXT_MB * 1024 * 1024)
+    if len(data) > max_bytes:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            f"内容超过 {settings.FS_MAX_TEXT_MB} MB，未写入")
+    try:
+        target.write_bytes(data)
+    except OSError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"写入失败: {e}") from e
+    return {"path": str(target), "size": len(data)}
+
+
 @router.get("/raw")
-def read_raw(path: str, user: Annotated[User, Depends(get_current_user_or_query)]):
+def read_raw(f: Annotated[Path, Depends(_resolve_readable_query)]):
     """原始二进制(图片预览): EventSource / <img> 无法带 Header, 支持 ?token= 认证."""
-    f = _resolve(path)
     if not f.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "文件不存在或不可访问")
     media, _ = mimetypes.guess_type(f.name)
@@ -269,12 +401,10 @@ class _WatchHandler(FileSystemEventHandler):
 
 @router.get("/watch")
 async def watch_dir(
-    path: str,
     request: Request,
-    user: Annotated[User, Depends(get_current_user_or_query)],
+    root: Annotated[Path, Depends(_resolve_readable_query)],
 ):
     """SSE: 递归监听目录变化, 事件形如 {op, path, kind, dir} (+ src/src_dir for moved)."""
-    root = _resolve(path)
     if not root.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "目录不存在或不可访问")
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* 智能诊断: 对话优先
-   左: 资料栏(日志树 + 运行状态)   中: 诊断对话   右: 按需展开的日志原文 */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+   左: 资料栏(日志树 + 运行状态)   中: 按需展开的日志原文   右: 诊断对话 */
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Ref } from 'vue'
 import DiagnosisFileTree from '@/components/DiagnosisFileTree.vue'
 import DiagnosisFileReader from '@/components/DiagnosisFileReader.vue'
 import DiagnosisInspector from '@/components/DiagnosisInspector.vue'
@@ -17,6 +17,7 @@ import { copyText } from '@/utils/clipboard'
 import { useTeamsStore } from '@/stores/teams'
 import { useRbacStore } from '@/stores/rbac'
 import type { Attach, FilePayload, ReaderTab } from '@/components/diagnosis/diagnosisFiles'
+import { hasLocalHandles, localHandleCount, pollLocalChanges, refreshLocalStamp } from '@/components/diagnosis/localHandles'
 import { apiError } from '@/api/http'
 import { fetchFile as fetchFsFile, rawUrl, watchUrl, type FsChange } from '@/api/fs'
 import {
@@ -35,6 +36,7 @@ import {
   readFile as fetchFileContent,
   saveTeamSelection,
   sendMessage,
+  uploadClientDir,
   type AgentStatus,
   type CatalogTeam,
   type ChatMessage,
@@ -72,7 +74,7 @@ function onMove(e: MouseEvent) {
   if (!dragging) return
   const dx = e.clientX - dragStartX
   if (dragging === 'left') leftW.value = clamp(dragStartW + dx, LEFT_MIN, LEFT_MAX)
-  else drawerW.value = clamp(dragStartW - dx, DRAWER_MIN, DRAWER_MAX)
+  else drawerW.value = clamp(dragStartW + dx, DRAWER_MIN, DRAWER_MAX)
 }
 function stopDrag() {
   dragging = null
@@ -102,6 +104,8 @@ const errorText = ref('')
 
 const teamsStore = useTeamsStore()
 const rbac = useRbacStore()
+/* 用户头像取名字首字；未加载时退化为「我」 */
+const userInitial = computed(() => rbac.currentUser?.name?.slice(0, 1) || '我')
 const ready = computed(() => !!status.value?.ready)
 const modelLabel = computed(() => status.value?.modelName || status.value?.model || '—')
 const modelEmpty = computed(() => !catalog.value.some((t) => t.models.length))
@@ -155,9 +159,15 @@ async function onModelChange(payload: { teamId: number; modelRowId: number; reas
 const fileNodes = ref<FileNode[]>([])
 const filesLoading = ref(false)
 const attached = ref<Attach[]>([])
-/* 文件树的勾选由 attached 驱动, 会话切换时用会话记录还原 */
-const attachedIds = computed(() => attached.value.map((a) => a.id))
+/* 两棵树的勾选由 attached 按归属拆分驱动: 团队日志 / 本机导入互不覆盖 */
+const logSelectedIds = computed(() =>
+  attached.value.filter((a) => !isUnder(a.path, clientWatch.root.value)).map((a) => a.id),
+)
+const clientSelectedIds = computed(() =>
+  attached.value.filter((a) => isUnder(a.path, clientWatch.root.value)).map((a) => a.id),
+)
 const treeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
+const clientTreeRef = ref<InstanceType<typeof DiagnosisFileTree> | null>(null)
 
 /* ---------------- 排队发送 ---------------- */
 /* 处理中新消息进入排队, 当前轮结束或被中止后依次自动发送 */
@@ -174,33 +184,10 @@ async function loadFiles() {
   }
 }
 
-/* 刷新文件列表: 任务日志重拉接口, 本地目录通过 rootSeq 自增触发整树重载 */
+/* 刷新文件列表: 团队日志重拉接口, 本地面板通过 seq 自增触发整树重载 */
 function refreshFiles() {
   if (sourceMode.value === 'log') void loadFiles()
-  else if (rootPath.value) rootSeq.value++
-}
-
-/* 勾选变化: 树上已加载的节点直接给 Attach, 未加载(深层/会话恢复)的沿用旧记录 */
-function onTreeSelect(files: Attach[], ids: string[]) {
-  const prev = new Map(attached.value.map((a) => [a.id, a]))
-  const known = new Map(files.map((f) => [f.id, f]))
-  attached.value = ids.map((id) => known.get(id) ?? prev.get(id) ?? {
-    id,
-    name: id.split(/[\\/]/).pop() || id,
-    path: id,
-  })
-  scheduleSaveFiles()
-}
-function detachFile(id: string) {
-  attached.value = attached.value.filter((a) => a.id !== id)
-  treeRef.value?.deselect(id)
-  scheduleSaveFiles()
-}
-function clearAttached() {
-  attached.value = []
-  treeRef.value?.clear()
-  /* 模板「清空」按钮直接绑定本函数, 清空也要持久化, 否则刷新/切回勾选复原 */
-  scheduleSaveFiles()
+  else clientWatch.seq.value++
 }
 
 /* 勾选持久化到会话: 连续勾选做 200ms 去抖, 避免频繁 PATCH */
@@ -242,113 +229,216 @@ async function saveSessionFiles() {
   if (updated) lastSavedFileKey = key
 }
 
-/* ---------------- 文件树数据源: 任务日志 / 本地目录 ----------------
+/* ---------------- 文件树数据源: 团队日志 / 本地目录 ----------------
    本地目录由后端 /api/fs 提供, watchdog 递归监听所选目录并经 SSE 推送变更;
    前端据此刷新受影响的已加载目录, 并对已打开且无未保存编辑的文件自动重载最新内容。 */
 const sourceMode = ref<'log' | 'local'>('log')
-const rootPath = ref('')
-const rootSeq = ref(0)
-const fsEvents = ref<FsChange[]>([])
-let fsSource: EventSource | null = null
-let fsCursor = 0
 
 /* 事件缓存上限: 超出后丢弃最旧的一段, 防止长时间运行无界增长 */
 const FS_EVENTS_MAX = 2000
 
-function startWatch(path: string) {
-  fsSource?.close()
-  fsSource = null
-  if (!path) return
-  const es = new EventSource(watchUrl(path))
-  es.addEventListener('change', (e) => {
-    try {
-      fsEvents.value.push(JSON.parse((e as MessageEvent).data) as FsChange)
-      if (fsEvents.value.length > FS_EVENTS_MAX) fsEvents.value.splice(0, fsEvents.value.length - FS_EVENTS_MAX)
-    } catch {
-      /* 忽略异常事件包 */
-    }
-  })
-  fsSource = es
+/* 本机导入面板的数据源: 根目录、加载序号与磁盘变更监听集中在一处 */
+interface FsWatch {
+  root: Ref<string>
+  seq: Ref<number>
+  events: Ref<FsChange[]>
+  /* 重新绑定根目录: 清空事件缓存与游标, seq 自增以便重选同一目录也触发重载 */
+  bind: (path: string) => void
+  start: () => void
+  stop: () => void
+  drain: (onEvent: (ev: FsChange) => void) => void
 }
 
-/* 重新选择目录: 释放上一次目录的事件缓存与待重载队列后重启监听(rootSeq 自增以便重选同一目录也生效),
-   目录绑定与勾选清空合并为一次 PATCH 持久化到当前会话 */
-function pickRoot(path: string) {
-  rootPath.value = path
-  rootSeq.value++
-  fsEvents.value = []
-  fsCursor = 0
-  dirtyPaths.clear()
-  if (reloadTimer !== null) {
-    window.clearTimeout(reloadTimer)
-    reloadTimer = null
+function createFsWatch(): FsWatch {
+  const root = ref('')
+  const seq = ref(0)
+  const events = ref<FsChange[]>([])
+  let source: EventSource | null = null
+  let cursor = 0
+  const stop = () => {
+    source?.close()
+    source = null
   }
-  startWatch(path)
-  /* 目录变了, 旧的勾选路径已失效 */
-  clearAttached()
-  void saveSessionRoot(path)
+  const start = () => {
+    stop()
+    if (!root.value) return
+    const es = new EventSource(watchUrl(root.value))
+    es.addEventListener('change', (e) => {
+      try {
+        events.value.push(JSON.parse((e as MessageEvent).data) as FsChange)
+        if (events.value.length > FS_EVENTS_MAX) events.value.splice(0, events.value.length - FS_EVENTS_MAX)
+      } catch {
+        /* 忽略异常事件包 */
+      }
+    })
+    source = es
+  }
+  const bind = (path: string) => {
+    stop()
+    root.value = path
+    events.value = []
+    cursor = 0
+    seq.value++
+    start()
+  }
+  const drain = (onEvent: (ev: FsChange) => void) => {
+    const list = events.value
+    /* 事件数组被截断(超出上限)后游标越界, 重置重新对齐 */
+    if (cursor > list.length) cursor = 0
+    for (; cursor < list.length; cursor++) onEvent(list[cursor])
+  }
+  return { root, seq, events, bind, start, stop, drain }
 }
 
-/* 目录绑定到会话: root 与清空后的勾选一次提交, 切回该会话时自动恢复目录 */
-async function saveSessionRoot(path: string) {
-  const sid = activeSessionId.value
-  if (!sid) return
-  /* clearAttached 的去抖保存与本次合并提交内容一致, 先对齐基准避免重复 PATCH */
-  lastSavedFileKey = filesKey()
-  await patchAndMergeSession(sid, { localRoot: path, selectedFiles: [] })
+const clientWatch = createFsWatch()
+
+/* 路径归属判断(分隔符/大小写不敏感): 勾选与事件刷新按面板划分 */
+function isUnder(path: string, root: string) {
+  if (!root) return false
+  const norm = (s: string) => s.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+  const r = norm(root)
+  const p = norm(path)
+  return p === r || p.startsWith(r + '\\')
 }
 
-/* 会话切换: 恢复该会话绑定的本地目录(存在则自动切到本地目录模式), 无绑定则清空 */
+/* 本机导入完成: 切换「本机导入」面板的根 */
+function pickClientRoot(path: string) {
+  /* 句柄按完整工作区路径做键, 切换/新导入不会误匹配, 无需在此丢弃旧句柄 */
+  clientWatch.bind(path)
+}
+
+/* 资源管理器导入: 选择本机文件 / 文件夹(由文件树负责上传与句柄登记) */
+const localMenuOpen = ref(false)
+
+function pickLocal(kind: 'file' | 'directory') {
+  localMenuOpen.value = false
+  void clientTreeRef.value?.pickLocal(kind)
+}
+function closeLocalMenu() {
+  localMenuOpen.value = false
+}
+
+/* ---------------- 本机文件外部变更同步 ---------------- */
+/* 本机原文件被其他进程改写后, 轮询句柄指纹发现变更并重新上传覆盖会话副本;
+   后端写盘触发 SSE, 文件栏与已打开的阅读器据此自动刷新(编辑中的草稿不受影响)。 */
+let localPollTimer: number | null = null
+let localSyncing = false
+let lastLocalPollAt = 0
+
+/* 工作区根下的相对路径, 不在该根下返回空 */
+function relUnder(root: string, path: string) {
+  const norm = (s: string) => s.replace(/\//g, '\\').replace(/\\+$/, '')
+  const r = norm(root)
+  const p = norm(path)
+  if (!r || !p.toLowerCase().startsWith(r.toLowerCase() + '\\')) return ''
+  return p.slice(r.length + 1)
+}
+
+async function syncLocalChanges() {
+  if (localSyncing || document.hidden) return
+  if (!hasLocalHandles() || !activeSessionId.value) return
+  const root = clientWatch.root.value
+  if (!root) return
+  /* 句柄多时拉长实际轮询间隔(定时器仍每 4s 触发), 避免大目录反复全量 stat */
+  const count = localHandleCount()
+  const interval = count > 500 ? 15000 : count > 100 ? 8000 : 4000
+  if (Date.now() - lastLocalPollAt < interval) return
+  lastLocalPollAt = Date.now()
+  localSyncing = true
+  try {
+    for (const ch of await pollLocalChanges()) {
+      const rel = relUnder(root, ch.path)
+      if (!rel) continue
+      try {
+        /* force: 外部改动可能保持同样大小, 不能按「同大小去重」跳过 */
+        await uploadClientDir(activeSessionId.value, [{ file: ch.file, path: rel }], {
+          rootName: '',
+          force: true,
+        })
+        /* 同步成功才推进指纹(取本次上传的指纹); 失败保留旧指纹, 下一轮仍能重新发现同一改动 */
+        await refreshLocalStamp(ch.path, {
+          lastModified: ch.file.lastModified,
+          size: ch.file.size,
+        })
+      } catch {
+        /* 同步失败(体积/权限)忽略: 本机文件不受影响, 下一轮轮询会重试 */
+      }
+    }
+  } finally {
+    localSyncing = false
+  }
+}
+
+/* 编辑内容已写回本机: 同步标签, 后续磁盘变更按最新内容判断是否覆盖 */
+function onFileSaved(tab: ReaderTab, text: string) {
+  tab.content = text
+  tab.original = text
+}
+
+/* 会话切换: 还原本机工作区, 并恢复该会话勾选的文件 */
 function applySessionRoot(sess?: SessionInfo) {
-  const path = sess?.localRoot || ''
-  /* 勾选随会话持久化: 切换会话还原该会话勾选的文件 */
+  /* 勾选随会话持久化 */
   attached.value = (sess?.selectedFiles ?? []) as Attach[]
   /* 恢复即已持久化的内容, 树同步 emit 回环时跳过冗余 PATCH */
   lastSavedFileKey = filesKey()
-  fsSource?.close()
-  fsSource = null
-  fsEvents.value = []
-  fsCursor = 0
   dirtyPaths.clear()
-  rootPath.value = path
-  rootSeq.value++
-  if (path) {
-    sourceMode.value = 'local'
-    startWatch(path)
-  }
+  const clientPath = sess?.clientRoot || ''
+  /* 切会话时保留已导入的句柄: 键含完整工作区路径, 切回来仍可继续编辑本机文件 */
+  clientWatch.bind(clientPath)
+  if (clientPath) sourceMode.value = 'local'
 }
 
-/* 释放本地目录数据源的全部瞬时状态并断开监听 */
+/* 释放本地目录数据源的全部瞬时状态并断开监听(已导入的句柄保留, 刷新/切回仍可编辑) */
 function resetLocal() {
-  fsSource?.close()
-  fsSource = null
-  fsEvents.value = []
-  fsCursor = 0
+  clientWatch.bind('')
   dirtyPaths.clear()
   if (reloadTimer !== null) {
     window.clearTimeout(reloadTimer)
     reloadTimer = null
   }
-  rootPath.value = ''
-  rootSeq.value++
 }
 
-/* 切换数据源: 保留已选本地目录与勾选, 切回时重载树并恢复监听;
-   目录与勾选都属于会话, 只有换目录/切会话/新建会话时才变化 */
+/* 切换数据源: 保留本机导入面板的根与勾选, 切回时重载树并恢复监听 */
 function setSource(mode: 'log' | 'local') {
   if (mode === sourceMode.value) return
   sourceMode.value = mode
-  if (mode === 'local') {
-    if (rootPath.value) {
-      fsEvents.value = []
-      fsCursor = 0
-      rootSeq.value++
-      startWatch(rootPath.value)
-    }
-  } else {
-    fsSource?.close()
-    fsSource = null
-  }
+  if (mode === 'local') clientWatch.start()
+  else clientWatch.stop()
+}
+
+/* ---------------- 勾选: 团队日志 / 本机导入各管各的, 互不覆盖 ---------------- */
+/* 文件归属: 本机导入面板(工作区) / 团队日志 */
+const ownsClient = (a: Attach) => isUnder(a.path, clientWatch.root.value)
+const ownsLog = (a: Attach) => !ownsClient(a)
+
+/* 勾选变化: 只替换本面板归属的文件, 其余面板的勾选原样保留;
+   树上已加载的节点直接给 Attach, 未加载(深层/会话恢复)的沿用旧记录 */
+function applySelection(files: Attach[], ids: string[], owns: (a: Attach) => boolean) {
+  const prev = new Map(attached.value.map((a) => [a.id, a]))
+  const known = new Map(files.map((f) => [f.id, f]))
+  const next = ids.map((id) => known.get(id) ?? prev.get(id) ?? {
+    id,
+    name: id.split(/[\\/]/).pop() || id,
+    path: id,
+  })
+  attached.value = [...attached.value.filter((a) => !owns(a)), ...next]
+  scheduleSaveFiles()
+}
+const onTreeSelect = (files: Attach[], ids: string[]) => applySelection(files, ids, ownsLog)
+const onClientSelect = (files: Attach[], ids: string[]) => applySelection(files, ids, ownsClient)
+
+function detachFile(id: string) {
+  attached.value = attached.value.filter((a) => a.id !== id)
+  treeRef.value?.deselect(id)
+  clientTreeRef.value?.deselect(id)
+  scheduleSaveFiles()
+}
+function clearAttached() {
+  attached.value = []
+  treeRef.value?.clear()
+  clientTreeRef.value?.clear()
+  /* 模板「清空」按钮直接绑定本函数, 清空也要持久化, 否则刷新/切回勾选复原 */
+  scheduleSaveFiles()
 }
 
 /* 已打开文件随磁盘变化自动重载(有未保存编辑时不覆盖); 同名批量事件做去抖合并 */
@@ -383,36 +473,30 @@ function scheduleReload(path: string) {
   }, 300)
 }
 
-watch(
-  () => fsEvents.value.length,
-  () => {
-    const list = fsEvents.value
-    /* 事件数组被截断(超出上限)后游标越界, 重置重新对齐 */
-    if (fsCursor > list.length) fsCursor = 0
-    for (; fsCursor < list.length; fsCursor++) {
-      const ev = list[fsCursor]
-      if (ev.kind !== 'file') continue
-      const target = ev.src ?? ev.path
-      const t = tabs.value.find((x) => x.id === target)
-      if (!t) continue
-      if (ev.op === 'deleted') {
-        if (t.content === t.original) closeTab(t.id)
-        continue
-      }
-      if (ev.op === 'moved') {
-        const oldId = t.id
-        const name = ev.path.split(/[\\/]/).pop() ?? t.name
-        if (activeTabId.value === oldId) activeTabId.value = ev.path
-        t.id = ev.path
-        t.name = name
-        t.path = ev.path
-        fileCache.delete(oldId)
-        fileCache.set(ev.path, t)
-      }
-      scheduleReload(t.id)
-    }
-  },
-)
+/* 两个面板各自的磁盘变更: 只影响本面板已打开的文件 */
+function onFsEvent(ev: FsChange) {
+  if (ev.kind !== 'file') return
+  const target = ev.src ?? ev.path
+  const t = tabs.value.find((x) => x.id === target)
+  if (!t) return
+  if (ev.op === 'deleted') {
+    if (t.content === t.original) closeTab(t.id)
+    return
+  }
+  if (ev.op === 'moved') {
+    const oldId = t.id
+    const name = ev.path.split(/[\\/]/).pop() ?? t.name
+    if (activeTabId.value === oldId) activeTabId.value = ev.path
+    t.id = ev.path
+    t.name = name
+    t.path = ev.path
+    fileCache.delete(oldId)
+    fileCache.set(ev.path, t)
+  }
+  scheduleReload(t.id)
+}
+
+watch(() => clientWatch.events.value.length, () => clientWatch.drain(onFsEvent))
 
 /* ---------------- 中间阅读器 ---------------- */
 const tabs = ref<ReaderTab[]>([])
@@ -572,13 +656,13 @@ function reopenDrawer() {
   if (tabs.value.length) drawerVisible.value = true
 }
 function attachFromReader(tab: ReaderTab) {
-  if (treeRef.value) {
-    treeRef.value.select(tab.id)
+  const a: Attach = { id: tab.id, name: tab.name, path: tab.path, size: tab.size }
+  const tree = ownsClient(a) ? clientTreeRef.value : treeRef.value
+  if (tree) {
+    tree.select(tab.id)
     return
   }
-  if (!attached.value.some((a) => a.id === tab.id)) {
-    attached.value.push({ id: tab.id, name: tab.name, path: tab.path, size: tab.size })
-  }
+  if (!attached.value.some((x) => x.id === tab.id)) attached.value.push(a)
 }
 
 /* ---------------- 会话 ---------------- */
@@ -747,7 +831,7 @@ async function selectSession(id: string) {
 
 async function refreshSessions() {
   try {
-    sessions.value = await listSessions()
+    sessions.value = await listSessions(teamsStore.activeTeamId ?? undefined)
     if (!sessions.value.some((s) => s.id === activeSessionId.value)) {
       const next = sessions.value[0]
       if (next) {
@@ -765,7 +849,8 @@ async function refreshSessions() {
 
 async function addSession() {
   try {
-    const s = await createSession('', status.value?.teamId || undefined)
+    const teamId = teamsStore.activeTeamId ?? status.value?.teamId ?? undefined
+    const s = await createSession('', teamId)
     sessions.value.unshift(s)
     activeSessionId.value = s.id
     messages.value = []
@@ -1127,9 +1212,9 @@ async function runTurn(
     if (!live.blocks.length && !live.error) {
       live.error = stopped ? '已停止本轮诊断' : '智能体没有返回内容'
     }
-    // 刷新会话标题与排序
+    // 刷新会话标题与排序 (仍限定当前团队, 否则会把其他团队的会话带出来)
     try {
-      sessions.value = await listSessions()
+      sessions.value = await listSessions(teamsStore.activeTeamId ?? undefined)
     } catch {
       /* 忽略 */
     }
@@ -1207,33 +1292,77 @@ function onDrop(e: DragEvent) {
   }
 }
 
-/* ---------------- 启动 ---------------- */
-onMounted(async () => {
-  await refreshStatus()
-  void loadCatalog()
-  void loadFiles()
+/* ---------------- 启动 / 团队切换 ---------------- */
+/* 模型状态与会话同属当前团队作用域: 顶栏切换团队后整体重载 */
+let teamScopeSeq = 0
+
+async function loadTeamScope(teamId: number | null) {
+  const seq = ++teamScopeSeq
+  /* 先清空上一团队的会话与文件上下文, 避免切换瞬间仍展示旧内容 */
+  pickedModel.value = null
+  activeSessionId.value = ''
+  sessions.value = []
+  messages.value = []
+  tabs.value = []
+  fileCache.clear()
+  activeTabId.value = ''
+  drawerVisible.value = false
+  errorText.value = ''
   try {
-    sessions.value = await listSessions()
-    if (!sessions.value.length) {
-      const s = await createSession('', status.value?.teamId || undefined)
-      sessions.value = [s]
-    }
-    const first = sessions.value[0]
-    activeSessionId.value = first.id
-    if (first.teamId) void refreshStatus(first.teamId)
-    await loadMessageList(activeSessionId.value)
+    const [st] = await Promise.all([agentStatus(teamId ?? undefined), loadCatalog()])
+    if (seq !== teamScopeSeq) return
+    status.value = st
   } catch (e) {
+    if (seq !== teamScopeSeq) return
+    errorText.value = apiError(e)
+    return
+  }
+  try {
+    const list = await listSessions(teamId ?? undefined)
+    if (seq !== teamScopeSeq) return
+    if (!list.length) {
+      /* 该团队还没有会话: 建一个空的, 上下文从零开始 */
+      const s = await createSession('', teamId ?? undefined)
+      if (seq !== teamScopeSeq) return
+      sessions.value = [s]
+      activeSessionId.value = s.id
+      resetLocal()
+      attached.value = []
+      lastSavedFileKey = ''
+      resetRun(s.id)
+      return
+    }
+    sessions.value = list
+    activeSessionId.value = list[0].id
+    await loadMessageList(list[0].id)
+  } catch (e) {
+    if (seq !== teamScopeSeq) return
     errorText.value = apiError(e)
   }
+}
+
+watch(() => teamsStore.activeTeamId, (id) => {
+  void loadTeamScope(id ?? null)
+})
+
+onMounted(async () => {
+  document.addEventListener('click', closeLocalMenu)
+  localPollTimer = window.setInterval(() => void syncLocalChanges(), 4000)
+  void loadFiles()
+  await loadTeamScope(teamsStore.activeTeamId ?? null)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('click', closeLocalMenu)
+  if (localPollTimer !== null) {
+    window.clearInterval(localPollTimer)
+    localPollTimer = null
+  }
   stopDrag()
   /* 离开页面时中止所有在飞轮次 (含后台会话) */
   stopTracePoll()
   for (const run of Object.values(runs)) run.ctl?.abort()
-  fsSource?.close()
-  fsSource = null
+  clientWatch.stop()
   if (reloadTimer !== null) window.clearTimeout(reloadTimer)
 })
 
@@ -1283,7 +1412,7 @@ const phaseText = computed(() => {
               :class="{ 'is-on': sourceMode === 'log' }"
               @click="setSource('log')"
             >
-              任务日志
+              团队日志
             </button>
             <button
               class="src-btn"
@@ -1302,28 +1431,57 @@ const phaseText = computed(() => {
           </button>
         </header>
         <div v-show="filesOpen" class="tree-wrap">
-        <DiagnosisFileTree
-          ref="treeRef"
-          :source="sourceMode"
-          :nodes="fileNodes"
-          :loading="filesLoading"
-          :root-path="rootPath"
-          :root-seq="rootSeq"
-          :events="fsEvents"
-          :active-id="activeTabId"
-          :selected-ids="attachedIds"
-          @open="openFile"
-          @select="onTreeSelect"
-          @pick-root="pickRoot"
-        >
-          <template #empty>
-            <div class="side-empty">
-              <p class="side-empty-t">还没有可分析的日志</p>
-              <p class="side-empty-s">上传日志后，勾选即可让助手直接读取原文。</p>
-              <router-link class="o-btn o-btn--sm" to="/teams">去上传日志</router-link>
+          <div v-show="sourceMode === 'log'" class="tree-pane">
+            <div class="tree-bar">
+              <router-link class="o-btn o-btn--sm" to="/teams">上传日志</router-link>
+              <span class="tree-bar-tip">上传日志包后在此勾选</span>
             </div>
-          </template>
-        </DiagnosisFileTree>
+            <DiagnosisFileTree
+              ref="treeRef"
+              source="log"
+              :nodes="fileNodes"
+              :loading="filesLoading"
+              :active-id="activeTabId"
+              :selected-ids="logSelectedIds"
+              @open="openFile"
+              @select="onTreeSelect"
+            >
+              <template #empty>
+                <div class="side-empty">
+                  <p class="side-empty-t">还没有可分析的日志</p>
+                  <p class="side-empty-s">上传日志后，勾选即可让助手直接读取原文。</p>
+                </div>
+              </template>
+            </DiagnosisFileTree>
+          </div>
+          <!-- 本机导入: 选择客户端文件上传到会话工作区, 勾选与团队日志互不覆盖 -->
+          <div v-show="sourceMode === 'local'" class="tree-pane">
+            <div class="tree-bar">
+              <div class="tree-pick" @click.stop>
+                <button class="o-btn o-btn--sm" @click="localMenuOpen = !localMenuOpen">
+                  打开资源管理器
+                </button>
+                <div v-if="localMenuOpen" class="tree-menu">
+                  <button class="tree-menu-i" @click="pickLocal('file')">选择文件…</button>
+                  <button class="tree-menu-i" @click="pickLocal('directory')">选择文件夹…</button>
+                </div>
+              </div>
+              <span class="tree-bar-tip">导入本次诊断工作区</span>
+            </div>
+            <DiagnosisFileTree
+              ref="clientTreeRef"
+              source="local"
+              :root-path="clientWatch.root.value"
+              :root-seq="clientWatch.seq.value"
+              :events="clientWatch.events.value"
+              :active-id="activeTabId"
+              :session-id="activeSessionId"
+              :selected-ids="clientSelectedIds"
+              @open="openFile"
+              @select="onClientSelect"
+              @pick-root="pickClientRoot"
+            />
+          </div>
         </div>
       </section>
 
@@ -1353,7 +1511,52 @@ const phaseText = computed(() => {
       @mousedown="startDrag('left', $event)"
     ></div>
 
-    <!-- ============ 中: 诊断对话 ============ -->
+    <!-- ============ 中: 按需展开的日志原文 ============ -->
+    <aside v-if="drawerVisible" class="drawer" :style="{ width: drawerW + 'px' }">
+      <div class="drawer-head">
+        <b>{{ drawerTitle }}</b>
+        <span v-if="!traceOpen" class="o-text-3">默认只读</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="关闭" @click="closeDrawer"><Icon name="close" :size="13" /></button>
+      </div>
+      <div v-if="traceOpen" class="trace-pane">
+        <p v-if="traceError" class="trace-error">{{ traceError }}</p>
+        <p v-else-if="!trace" class="trace-muted">正在读取…</p>
+        <template v-else>
+          <p class="trace-muted">{{ trace.status === 'running' ? '运行中' : trace.status === 'failed' ? '失败' : '已完成' }}</p>
+          <section v-if="trace.input" class="trace-block">
+            <b>输入</b>
+            <pre>{{ trace.input }}</pre>
+          </section>
+          <section v-for="(step, i) in trace.steps" :key="i" class="trace-block">
+            <b>{{ step.kind === 'thought' ? '思考' : (step.name || '工具') }}</b>
+            <span v-if="step.kind === 'tool'" class="trace-muted">{{ step.status === 'running' ? '运行中' : step.status === 'failed' ? '失败' : '完成' }}</span>
+            <pre>{{ step.text }}</pre>
+          </section>
+          <section v-if="trace.output" class="trace-block">
+            <b>结果</b>
+            <pre>{{ trace.output }}</pre>
+          </section>
+        </template>
+      </div>
+      <DiagnosisFileReader
+        v-else
+        :tabs="tabs"
+        :active-id="activeTabId"
+        @activate="activeTabId = $event"
+        @close="closeTab"
+        @attach="attachFromReader"
+        @saved="onFileSaved"
+      />
+    </aside>
+    <div
+      v-if="drawerVisible"
+      class="resizer resizer--drawer"
+      title="拖动调整日志面板宽度"
+      @mousedown="startDrag('drawer', $event)"
+    ></div>
+
+    <!-- ============ 右: 诊断对话 ============ -->
     <main class="chat">
       <header class="chat-head">
         <div class="head-left">
@@ -1395,7 +1598,15 @@ const phaseText = computed(() => {
 
           <template v-else>
           <div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
-            <div class="avatar" :class="`avatar--${m.role}`">{{ m.role === 'user' ? '我' : 'AI' }}</div>
+            <span
+              class="msg-avatar"
+              :class="`msg-avatar--${m.role}`"
+              :style="m.role === 'user' ? { background: `hsl(${rbac.currentUser?.avatarHue ?? 212}, 52%, 46%)` } : undefined"
+              aria-hidden="true"
+            >
+              <Icon v-if="m.role === 'assistant'" name="bolt" :size="14" />
+              <template v-else>{{ userInitial }}</template>
+            </span>
             <div class="msg-main">
               <div class="bubble">
                 <span
@@ -1582,50 +1793,6 @@ const phaseText = computed(() => {
         </div>
       </div>
     </main>
-
-    <!-- ============ 右: 按需展开的日志原文 ============ -->
-    <div
-      v-if="drawerVisible"
-      class="resizer resizer--drawer"
-      title="拖动调整日志面板宽度"
-      @mousedown="startDrag('drawer', $event)"
-    ></div>
-    <aside v-if="drawerVisible" class="drawer" :style="{ width: drawerW + 'px' }">
-      <div class="drawer-head">
-        <b>{{ drawerTitle }}</b>
-        <span class="o-text-3">只读</span>
-        <span class="spacer"></span>
-        <button class="icon-btn" title="关闭" @click="closeDrawer"><Icon name="close" :size="13" /></button>
-      </div>
-      <div v-if="traceOpen" class="trace-pane">
-        <p v-if="traceError" class="trace-error">{{ traceError }}</p>
-        <p v-else-if="!trace" class="trace-muted">正在读取…</p>
-        <template v-else>
-          <p class="trace-muted">{{ trace.status === 'running' ? '运行中' : trace.status === 'failed' ? '失败' : '已完成' }}</p>
-          <section v-if="trace.input" class="trace-block">
-            <b>输入</b>
-            <pre>{{ trace.input }}</pre>
-          </section>
-          <section v-for="(step, i) in trace.steps" :key="i" class="trace-block">
-            <b>{{ step.kind === 'thought' ? '思考' : (step.name || '工具') }}</b>
-            <span v-if="step.kind === 'tool'" class="trace-muted">{{ step.status === 'running' ? '运行中' : step.status === 'failed' ? '失败' : '完成' }}</span>
-            <pre>{{ step.text }}</pre>
-          </section>
-          <section v-if="trace.output" class="trace-block">
-            <b>结果</b>
-            <pre>{{ trace.output }}</pre>
-          </section>
-        </template>
-      </div>
-      <DiagnosisFileReader
-        v-else
-        :tabs="tabs"
-        :active-id="activeTabId"
-        @activate="activeTabId = $event"
-        @close="closeTab"
-        @attach="attachFromReader"
-      />
-    </aside>
   </div>
 </template>
 
@@ -1634,7 +1801,7 @@ const phaseText = computed(() => {
   height: calc(100vh - var(--topbar-h));
   min-height: 380px;
   display: flex;
-  background: var(--surface);
+  background: var(--bg);
   overflow: hidden;
 }
 
@@ -1643,26 +1810,25 @@ const phaseText = computed(() => {
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text-2);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s;
+  transition: background 0.12s, color 0.12s;
 }
 .icon-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-1);
 }
 .icon-btn.is-on {
-  border-color: transparent;
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: rgba(15, 23, 42, 0.07);
+  color: var(--text-1);
 }
 
 /* ---------- 侧栏拖拽分隔线 ---------- */
@@ -1671,7 +1837,7 @@ const phaseText = computed(() => {
   width: 5px;
   position: relative;
   cursor: col-resize;
-  background: var(--surface-3);
+  background: transparent;
 }
 .resizer::after {
   content: '';
@@ -1714,6 +1880,70 @@ const phaseText = computed(() => {
   display: flex;
   flex-direction: column;
 }
+/* 每个数据源一个面板: 横向占满, 各自滚动 */
+.tree-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 面板顶部操作条: 上传日志 / 打开资源管理器 */
+.tree-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+/* 两个面板的操作按钮固定同一高度: button 与 router-link(a) 的行高来源不同, 不设死会差几像素 */
+.tree-bar .o-btn {
+  height: 24px;
+  padding: 0 10px;
+  line-height: 24px;
+}
+.tree-bar-tip {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-pick {
+  position: relative;
+  flex: none;
+}
+.tree-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 128px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.tree-menu-i {
+  padding: 6px 8px;
+  border: none;
+  border-radius: calc(var(--radius) - 1px);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.tree-menu-i:hover {
+  background: var(--surface-3);
+  color: var(--primary);
+}
 .side-sec--history {
   flex: 0 1 auto;
   max-height: 38%;
@@ -1723,13 +1953,13 @@ const phaseText = computed(() => {
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 38px;
+  height: 34px;
   padding: 0 8px 0 10px;
   cursor: pointer;
   user-select: none;
 }
 .side-sec-head:hover {
-  background: var(--surface);
+  background: rgba(15, 23, 42, 0.03);
 }
 .side-sec-head :deep(.o-fold) {
   width: 20px;
@@ -1741,18 +1971,21 @@ const phaseText = computed(() => {
 }
 .side-sec-title {
   flex: none;
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: var(--text-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 .side-count {
   flex: none;
-  padding: 0 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--surface);
-  color: var(--text-3);
-  font-size: 11px;
-  line-height: 17px;
+  background: transparent;
+  color: var(--text-4);
+  font-size: 10.5px;
+  line-height: 15px;
 }
 .side-state {
   min-width: 0;
@@ -1921,7 +2154,7 @@ const phaseText = computed(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1929,7 +2162,7 @@ const phaseText = computed(() => {
 }
 .msg {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: flex-start;
 }
 .msg--user {
@@ -1937,45 +2170,51 @@ const phaseText = computed(() => {
 }
 .msg-main {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
-  max-width: 86%;
-}
-.msg--assistant .msg-main {
-  max-width: 94%;
+  max-width: calc(100% - 36px);
 }
 .msg--user .msg-main {
-  max-width: 78%;
+  align-items: flex-end;
 }
-.avatar {
+/* 头像: 助手在左, 用户在右; 仅作身份标记, 不参与正文排版 */
+.msg-avatar {
   flex: none;
   width: 26px;
   height: 26px;
+  margin-top: 2px;
   border-radius: 50%;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
   font-weight: 600;
+  line-height: 1;
   color: #fff;
+  user-select: none;
 }
-.avatar--assistant {
-  background: linear-gradient(135deg, #1e6fff, #6f4dff);
+.msg-avatar--assistant {
+  background: linear-gradient(135deg, #a294ff 0%, #705dcf 55%, #5746ad 100%);
 }
-.avatar--user {
-  background: hsl(212, 60%, 48%);
+.msg-avatar--user {
+  background: hsl(212, 52%, 48%);
 }
+/* AI: 无边框的阅读视图正文; 用户: callout 式引用块 */
 .bubble {
   max-width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   min-width: 0;
 }
 .msg--user .bubble {
-  background: var(--primary-soft);
-  border-color: var(--primary-tint);
+  padding: 10px 14px;
+  background: rgba(112, 93, 207, 0.05);
+  border: 1px solid rgba(112, 93, 207, 0.16);
+  border-left: 2px solid var(--primary);
+  border-radius: 0 4px 4px 0;
 }
 .msg-live {
   margin-bottom: 6px;
@@ -1990,9 +2229,9 @@ const phaseText = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: var(--surface);
+  background: var(--surface-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 3px;
   padding: 2px 8px;
   font-size: 11px;
   color: var(--text-2);
@@ -2022,12 +2261,12 @@ const phaseText = computed(() => {
   width: 22px;
   height: 20px;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
   color: var(--text-4);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.12s, color 0.12s;
 }
 .copy-btn::after {
   content: attr(data-tip);
@@ -2051,11 +2290,11 @@ const phaseText = computed(() => {
   transform: translateX(-50%) translateY(0);
 }
 .copy-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-1);
 }
 .copy-btn--del:hover:not(:disabled) {
-  border-color: var(--danger);
+  background: var(--danger-soft);
   color: var(--danger);
 }
 .copy-btn--del:disabled {
@@ -2063,11 +2302,10 @@ const phaseText = computed(() => {
   cursor: not-allowed;
 }
 .copy-btn.is-ok {
-  border-color: var(--success);
   color: var(--success);
 }
 .blk-text {
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
@@ -2076,11 +2314,12 @@ const phaseText = computed(() => {
   margin-top: 8px;
 }
 .blk-thought {
-  margin: 6px 0;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 6px 9px;
-  background: var(--surface-3);
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 3px;
+  padding: 8px 11px;
+  background: rgba(15, 23, 42, 0.025);
   font-size: 12px;
   color: var(--text-3);
 }
@@ -2098,12 +2337,12 @@ const phaseText = computed(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 6px 0;
-  padding: 7px 9px;
-  background: var(--surface-3);
+  margin: 8px 0;
+  padding: 8px 11px;
+  background: rgba(15, 23, 42, 0.025);
   border: 1px solid var(--border);
   border-left: 2px solid var(--primary);
-  border-radius: var(--radius);
+  border-radius: 3px;
   font-size: 12px;
 }
 .tool-dot {
@@ -2434,7 +2673,8 @@ const phaseText = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 12px;
+  height: 42px;
+  padding: 0 14px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   position: relative;
@@ -2460,7 +2700,7 @@ const phaseText = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-1);
 }
 .model-chip {
@@ -2763,12 +3003,12 @@ const phaseText = computed(() => {
   .drawer {
     position: absolute;
     top: 0;
-    right: 0;
+    left: 0;
     bottom: 0;
     z-index: 60;
     max-width: 80%;
     border-radius: 0;
-    box-shadow: -14px 0 32px rgba(15, 23, 42, 0.16);
+    box-shadow: 14px 0 32px rgba(15, 23, 42, 0.16);
   }
   .resizer--drawer {
     display: none;
