@@ -31,7 +31,17 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 async def resolve_embed_cred(db: AsyncSession, kb: KnowledgeBase) -> dict | None:
-    """解析 Embedding 凭据：库级 Key 优先，其次才回退团队 LLM 供应商."""
+    """解析 Embedding 凭据：团队模型编号优先，其次旧库自带配置."""
+    if kb.embed_model_id:
+        from app.models.team import TeamEmbedModel
+        row = await db.get(TeamEmbedModel, kb.embed_model_id)
+        if row is None or row.team_id != kb.team_id:
+            return None
+        api_key = decrypt_secret(row.api_key_enc) if row.api_key_enc else ""
+        if not api_key or not (row.model or "").strip():
+            return None
+        return {"model": row.model.strip(), "api_key": api_key, "api_base": row.api_base or ""}
+
     if not kb.vector_enabled:
         return None
     cfg = kb.embedding_config or {}
@@ -64,6 +74,20 @@ async def resolve_embed_cred(db: AsyncSession, kb: KnowledgeBase) -> dict | None
         return None
     api_base = api_base or (row.api_base if row else "") or spec_of(provider).default_base or ""
     return {"model": model, "api_key": api_key, "api_base": str(api_base)}
+
+
+async def probe_embedding(api_base: str, api_key: str, model: str) -> None:
+    """用一条短文本确认接口能返回向量。失败抛出 RuntimeError。"""
+    import asyncio
+    try:
+        vecs = await asyncio.wait_for(
+            asyncio.to_thread(_embed_sync, ["ping"], api_base, api_key, model),
+            timeout=20,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("语义模型连接超时") from exc
+    if not vecs or not vecs[0]:
+        raise RuntimeError("语义模型未返回向量")
 
 
 async def embed_texts(texts: list[str], *, cred: dict) -> list[list[float]]:

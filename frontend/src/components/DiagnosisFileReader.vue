@@ -75,6 +75,7 @@ const footLabel = computed(() => {
   const t = active.value
   if (!t) return ''
   if (t.kind === 'image') return '图片'
+  if (t.kind === 'html') return '报告预览'
   if (t.kind === 'notice') return '文件说明'
   const doc = docKind(t)
   if (doc && isRendered(t) && !isEditing(t)) return doc === 'markdown' ? 'Markdown 预览' : '网页预览'
@@ -215,7 +216,11 @@ const copyPath = async () => {
           @click="toggleRender(active)"
         >{{ isRendered(active) ? '源码' : docKind(active) === 'markdown' ? '预览' : '网页预览' }}</button>
         <button class="o-btn o-btn--sm" title="复制文件路径" @click="copyPath">复制路径</button>
-        <button class="o-btn o-btn--sm o-btn--primary" @click="emit('attach', active)">加入本次提问</button>
+        <button
+          v-if="!active.id.startsWith('artifact:')"
+          class="o-btn o-btn--sm o-btn--primary"
+          @click="emit('attach', active)"
+        >加入本次提问</button>
       </div>
     </div>
 
@@ -231,6 +236,14 @@ const copyPath = async () => {
       <div v-else-if="active.kind === 'image'" class="rd-image">
         <img :src="active.content" :alt="active.name" />
       </div>
+
+      <iframe
+        v-else-if="active.kind === 'html'"
+        class="rd-html"
+        sandbox=""
+        :srcdoc="active.content"
+        :title="active.name"
+      ></iframe>
 
       <div v-else-if="active.kind === 'notice'" class="rd-blank">
         <div class="rd-blank-ico"><Icon name="archive" :size="30" /></div>
@@ -407,6 +420,13 @@ const copyPath = async () => {
   max-height: 100%;
   border-radius: var(--radius);
   box-shadow: var(--shadow-1);
+}
+.rd-html {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
 }
 .rd-msg {
   flex: none;

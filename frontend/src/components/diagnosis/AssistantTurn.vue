@@ -9,6 +9,14 @@ import MarkdownView from '@/components/MarkdownView.vue'
 import { toolLabel } from './toolLabel'
 
 const props = defineProps<{ message: ChatMessage; running?: boolean }>()
+const emit = defineEmits<{ openTool: [tool: ToolBlock] }>()
+
+function toolCaption(tool: ToolBlock) {
+  const base = toolLabel(tool.name || tool.title)
+  if ((tool.name || '').toLowerCase() !== 'subagent') return base
+  const matched = tool.input.match(/"description"\s*:\s*"([^"]*)"/)
+  return matched?.[1] ? `${base} · ${matched[1]}` : base
+}
 
 const expanded = ref(false)
 const kbOpen = ref(false)
@@ -28,7 +36,11 @@ const thoughts = computed(() =>
     .map((b) => b.text),
 )
 const tools = computed(() =>
-  props.message.blocks.filter((b): b is ToolBlock => b.kind === 'tool'),
+  props.message.blocks.filter((b): b is ToolBlock => {
+    if (b.kind !== 'tool') return false
+    const name = (b.name || '').toLowerCase().replace(/[_-]/g, '')
+    return name !== 'todowrite' && name !== 'todo'
+  }),
 )
 const kbBlock = computed(() =>
   props.message.blocks.find((b): b is KbBlock => b.kind === 'kb'),
@@ -60,6 +72,37 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 
 <template>
   <div class="turn">
+    <div v-if="processCount" class="process">
+      <button class="p-head" type="button" @click="expanded = !expanded">
+        <FoldChevron :open="openState" />
+        <span class="p-title">
+          {{ running ? '正在执行' : '过程' }} · {{ processCount }} 项
+        </span>
+        <span v-if="tools.length" class="p-meta">工具 {{ toolsDone }}/{{ tools.length }}</span>
+      </button>
+
+      <div v-if="openState" class="p-body">
+        <FoldSection v-for="(t, i) in thoughts" :key="`t${i}`" title="思考" :default-open="!!running">
+          <div class="thought-text">{{ t }}</div>
+        </FoldSection>
+
+        <div v-for="tool in tools" :key="tool.id" class="tool" :class="tool.status">
+          <button class="tool-head" type="button" @click="emit('openTool', tool)">
+            <span class="tool-dot"></span>
+            <span class="tool-name">{{ toolCaption(tool) }}</span>
+            <span class="tool-status">{{ tool.status === 'done' ? '完成' : tool.status === 'failed' ? '失败' : '运行中' }}</span>
+          </button>
+          <div v-if="tool.input" class="tool-line">{{ tool.input }}</div>
+          <FoldSection v-if="tool.output" title="查看输出">
+            <pre>{{ tool.output }}</pre>
+          </FoldSection>
+        </div>
+      </div>
+    </div>
+
+    <MarkdownView v-if="text" class="text" :text="text" />
+    <div v-else-if="running && !processCount" class="typing">正在思考…</div>
+
     <div v-if="kbBlock && (kbBlock.citations?.length || kbBlock.note)" class="kb">
       <button type="button" class="kb-head" @click="kbOpen = !kbOpen">
         <FoldChevron :open="kbOpen" />
@@ -80,37 +123,6 @@ const fmt = (n: number) => n.toLocaleString('en-US')
         </details>
       </div>
     </div>
-
-    <div v-if="processCount" class="process">
-      <button class="p-head" type="button" @click="expanded = !expanded">
-        <FoldChevron :open="openState" />
-        <span class="p-title">
-          {{ running ? '正在执行' : '过程' }} · {{ processCount }} 项
-        </span>
-        <span v-if="tools.length" class="p-meta">工具 {{ toolsDone }}/{{ tools.length }}</span>
-      </button>
-
-      <div v-if="openState" class="p-body">
-        <FoldSection v-for="(t, i) in thoughts" :key="`t${i}`" title="思考" :default-open="!!running">
-          <div class="thought-text">{{ t }}</div>
-        </FoldSection>
-
-        <div v-for="tool in tools" :key="tool.id" class="tool" :class="tool.status">
-          <div class="tool-head">
-            <span class="tool-dot"></span>
-            <span class="tool-name">{{ toolLabel(tool.name || tool.title) }}</span>
-            <span class="tool-status">{{ tool.status === 'done' ? '完成' : tool.status === 'failed' ? '失败' : '运行中' }}</span>
-          </div>
-          <div v-if="tool.input" class="tool-line">{{ tool.input }}</div>
-          <FoldSection v-if="tool.output" title="查看输出">
-            <pre>{{ tool.output }}</pre>
-          </FoldSection>
-        </div>
-      </div>
-    </div>
-
-    <MarkdownView v-if="text" class="text" :text="text" />
-    <div v-else-if="running && !processCount" class="typing">正在思考…</div>
 
     <div v-if="message.error" class="err">{{ message.error }}</div>
 
@@ -211,7 +223,14 @@ const fmt = (n: number) => n.toLocaleString('en-US')
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  font: inherit;
   font-size: 12px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 .tool-dot {
   width: 6px;

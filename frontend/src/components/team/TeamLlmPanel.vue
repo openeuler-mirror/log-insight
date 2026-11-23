@@ -3,12 +3,17 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { apiError } from '@/api/http'
 import {
+  createEmbedModel,
+  deleteEmbedModel,
   deleteTeamProvider,
   getTeamRerank,
+  listEmbedModels,
   listTeamModels,
   listTeamProviders,
   saveTeamProvider,
   saveTeamRerank,
+  updateEmbedModel,
+  type TeamEmbedModel,
   type TeamModel,
   type TeamProvider,
   type TeamRerankConfig,
@@ -36,6 +41,18 @@ const rrKey = ref('')
 const rrBusy = ref(false)
 const rrMsg = ref('')
 const rrFailed = ref(false)
+
+const embedModels = ref<TeamEmbedModel[]>([])
+const emName = ref('')
+const emModel = ref('')
+const emBase = ref('')
+const emKey = ref('')
+const emDefault = ref(false)
+const emEditing = ref<number | null>(null)
+const emLocked = ref(false)
+const emBusy = ref(false)
+const emMsg = ref('')
+const emFailed = ref(false)
 
 const current = computed(() => providers.value.find((p) => p.id === provider.value))
 const connected = computed(() => !!current.value?.connected)
@@ -115,15 +132,108 @@ async function saveRerank() {
   }
 }
 
+async function loadEmbedModels() {
+  try {
+    embedModels.value = await listEmbedModels(props.teamId)
+  } catch {
+    embedModels.value = []
+  }
+}
+
+function resetEmbedForm() {
+  emEditing.value = null
+  emLocked.value = false
+  emName.value = ''
+  emModel.value = ''
+  emBase.value = ''
+  emKey.value = ''
+  emDefault.value = !embedModels.value.some((m) => m.isDefault)
+  emMsg.value = ''
+  emFailed.value = false
+}
+
+function editEmbed(row: TeamEmbedModel) {
+  emEditing.value = row.id
+  emLocked.value = row.inUse
+  emName.value = row.displayName
+  emModel.value = row.model
+  emBase.value = row.apiBase
+  emKey.value = ''
+  emDefault.value = row.isDefault
+  emMsg.value = ''
+  emFailed.value = false
+}
+
+async function saveEmbed() {
+  emBusy.value = true
+  emMsg.value = ''
+  emFailed.value = false
+  try {
+    const body = {
+      displayName: emName.value.trim(),
+      model: emModel.value.trim(),
+      apiBase: emBase.value.trim(),
+      apiKey: emKey.value.trim() || undefined,
+      isDefault: emDefault.value,
+    }
+    if (emEditing.value == null) {
+      if (!body.apiKey) throw new Error('请填写 API Key')
+      await createEmbedModel(props.teamId, { ...body, apiKey: body.apiKey })
+    } else {
+      await updateEmbedModel(props.teamId, emEditing.value, body)
+    }
+    await loadEmbedModels()
+    resetEmbedForm()
+    emMsg.value = '语义模型已保存'
+  } catch (e) {
+    emMsg.value = apiError(e)
+    emFailed.value = true
+  } finally {
+    emBusy.value = false
+  }
+}
+
+async function removeEmbed(row: TeamEmbedModel) {
+  if (row.inUse || !confirm(`删除语义模型「${row.displayName}」？`)) return
+  emMsg.value = ''
+  emFailed.value = false
+  try {
+    await deleteEmbedModel(props.teamId, row.id)
+    if (emEditing.value === row.id) resetEmbedForm()
+    await loadEmbedModels()
+  } catch (e) {
+    emMsg.value = apiError(e)
+    emFailed.value = true
+  }
+}
+
+async function makeEmbedDefault(row: TeamEmbedModel) {
+  try {
+    await updateEmbedModel(props.teamId, row.id, {
+      displayName: row.displayName,
+      model: row.model,
+      apiBase: row.apiBase,
+      isDefault: true,
+    })
+    await loadEmbedModels()
+  } catch (e) {
+    emMsg.value = apiError(e)
+    emFailed.value = true
+  }
+}
+
 watch(() => props.teamId, () => {
   void loadProviders()
   void loadRerank()
+  void loadEmbedModels()
 })
 onMounted(async () => {
   try {
     await loadProviders()
     applyFields()
     await loadRerank()
+    await loadEmbedModels()
+    resetEmbedForm()
   } catch (e) {
     message.value = apiError(e)
     failed.value = true
@@ -308,6 +418,56 @@ function onModelsChanged() {
       </div>
     </div>
 
+    <div class="llm-card">
+      <div class="form-row">
+        <label>语义检索</label>
+        <p class="hint" style="margin:0">新建知识库时从这里选择。已有库引用的项不能改模型 ID，也不能删除。</p>
+      </div>
+      <table v-if="embedModels.length" class="embed-table">
+        <thead>
+          <tr><th>显示名</th><th>模型 ID</th><th>地址</th><th>密钥</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in embedModels" :key="row.id">
+            <td>{{ row.displayName }}<em v-if="row.isDefault"> 默认</em></td>
+            <td>{{ row.model }}</td>
+            <td>{{ row.apiBase || '—' }}</td>
+            <td>{{ row.keyHint || '—' }}</td>
+            <td class="ops">
+              <button class="o-btn" type="button" @click="editEmbed(row)">编辑</button>
+              <button v-if="!row.isDefault" class="o-btn" type="button" @click="makeEmbedDefault(row)">设为默认</button>
+              <button v-if="!row.inUse" class="o-btn" type="button" @click="removeEmbed(row)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="form-row">
+        <label>{{ emEditing == null ? '新增' : '编辑' }}</label>
+        <input v-model="emName" class="o-input" placeholder="显示名，如 默认语义模型" />
+      </div>
+      <div class="form-row">
+        <label>模型 ID</label>
+        <input v-model="emModel" class="o-input" :readonly="emLocked" placeholder="如 text-embedding-v3" />
+      </div>
+      <div class="form-row">
+        <label>接口地址</label>
+        <input v-model="emBase" class="o-input" placeholder="https://api.example.com/v1" />
+      </div>
+      <div class="form-row">
+        <label>API Key</label>
+        <input v-model="emKey" class="o-input" type="password" autocomplete="off" :placeholder="emEditing == null ? '必填' : '留空保持原密钥'" />
+      </div>
+      <label class="row" style="gap:8px">
+        <input v-model="emDefault" type="checkbox" />
+        <span>作为团队默认</span>
+      </label>
+      <div class="row">
+        <button class="o-btn" type="button" :disabled="emBusy" @click="saveEmbed">{{ emBusy ? '检查并保存…' : '保存' }}</button>
+        <button v-if="emEditing != null" class="o-btn" type="button" @click="resetEmbedForm">取消编辑</button>
+      </div>
+      <div v-if="emMsg" class="msg" :class="{ err: emFailed }">{{ emMsg }}</div>
+    </div>
+
     <TeamModelDialog
       :open="dialogOpen"
       :team-id="teamId"
@@ -353,6 +513,9 @@ function onModelsChanged() {
   flex-direction: column;
   gap: 6px;
 }
+.embed-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.embed-table th, .embed-table td { border-bottom: 1px solid var(--border); padding: 6px 4px; text-align: left; vertical-align: top; }
+.embed-table .ops { white-space: nowrap; display: flex; gap: 6px; }
 .form-row label {
   font-size: 12.5px;
   font-weight: 600;

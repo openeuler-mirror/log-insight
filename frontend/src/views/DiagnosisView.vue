@@ -25,15 +25,19 @@ import {
   createSession,
   deleteMessage,
   fetchCatalog,
+  downloadArtifact,
+  fetchToolTrace,
   listFiles,
   listMessages,
   listSessions,
   patchSession,
+  readArtifact,
   readFile as fetchFileContent,
   saveTeamSelection,
   sendMessage,
   uploadClientDir,
   type AgentStatus,
+  type ArtifactBlock,
   type CatalogTeam,
   type ChatMessage,
   type FileNode,
@@ -42,6 +46,7 @@ import {
   type MessageBlock,
   type SessionInfo,
   type ToolBlock,
+  type ToolTrace,
 } from '@/api/diagnosis'
 
 /* ---------------- 侧栏 / 日志面板宽度 ---------------- */
@@ -538,6 +543,85 @@ async function openFile(f: Attach, payload?: FilePayload) {
     fileCache.set(f.id, tab)
     tabs.value.push(tab)
     activeTabId.value = tab.id
+    traceOpen.value = false
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
+}
+
+const traceOpen = ref(false)
+const trace = ref<ToolTrace | null>(null)
+const traceError = ref('')
+let traceTimer: number | null = null
+
+const drawerTitle = computed(() => {
+  if (traceOpen.value) {
+    if (!trace.value) return '工具调用'
+    if (trace.value.name === 'subagent') return trace.value.title || '子会话'
+    return trace.value.title || trace.value.name || '工具调用'
+  }
+  const tab = tabs.value.find((t) => t.id === activeTabId.value)
+  if (tab?.id.startsWith('artifact:')) return '诊断报告'
+  return '日志原文'
+})
+function artifactBlocks(m: ChatMessage) {
+  return m.blocks.filter((b): b is Extract<MessageBlock, { kind: 'artifact' }> => b.kind === 'artifact')
+}
+
+function stopTracePoll() {
+  if (traceTimer !== null) {
+    window.clearInterval(traceTimer)
+    traceTimer = null
+  }
+}
+
+async function loadTrace(callId: string) {
+  const sid = activeSessionId.value
+  if (!sid) return
+  try {
+    const row = await fetchToolTrace(sid, callId)
+    if (activeSessionId.value !== sid || !traceOpen.value) return
+    trace.value = row
+    traceError.value = ''
+    if (row.status !== 'running') stopTracePoll()
+  } catch (e) {
+    if (activeSessionId.value !== sid) return
+    traceError.value = apiError(e)
+    stopTracePoll()
+  }
+}
+
+function openToolTrace(tool: ToolBlock) {
+  drawerVisible.value = true
+  traceOpen.value = true
+  trace.value = null
+  traceError.value = ''
+  stopTracePoll()
+  void loadTrace(tool.id)
+  if (tool.status === 'running') {
+    traceTimer = window.setInterval(() => void loadTrace(tool.id), 1000)
+  }
+}
+
+async function openArtifact(item: ArtifactBlock) {
+  const sid = activeSessionId.value
+  if (!sid) return
+  try {
+    const body = await readArtifact(sid, item.path)
+    await openFile(
+      { id: `artifact:${item.path}`, name: item.name, path: item.name, size: fmtSize(item.size) },
+      { kind: body.kind === 'html' ? 'html' : 'text', content: body.content, lang: body.kind },
+    )
+  } catch (e) {
+    errorText.value = apiError(e)
+  }
+}
+
+async function saveArtifact(item: ArtifactBlock) {
+  const sid = activeSessionId.value
+  if (!sid) return
+  try {
+    await downloadArtifact(sid, item.path)
   } catch (e) {
     errorText.value = apiError(e)
   }
@@ -551,6 +635,8 @@ function closeTab(id: string) {
 }
 function closeDrawer() {
   drawerVisible.value = false
+  traceOpen.value = false
+  stopTracePoll()
 }
 function reopenDrawer() {
   if (tabs.value.length) drawerVisible.value = true
@@ -719,6 +805,8 @@ async function loadMessageList(id: string) {
 
 async function selectSession(id: string) {
   if (id === activeSessionId.value) return
+  stopTracePoll()
+  traceOpen.value = false
   /* 允许切走正在诊断的会话: 该轮次在后台继续, 切回来重新挂上进度 */
   activeSessionId.value = id
   const sess = sessions.value.find((s) => s.id === id)
@@ -1037,8 +1125,19 @@ function applyStreamEvent(live: ChatMessage, run: RunState, event: string, data:
     addUsage(run, data.usage)
   } else if (event === 'error') {
     live.error = data.message ?? '诊断失败'
+  } else if (event === 'artifact') {
+    const items = (data.items as { name: string; path: string; size: number }[] | undefined) || []
+    for (const item of items) {
+      if (live.blocks.some((b) => b.kind === 'artifact' && b.path === item.path)) continue
+      live.blocks.push({ kind: 'artifact', name: item.name, path: item.path, size: item.size })
+    }
   } else if (event === 'done') {
     if (data.messageId) live.id = data.messageId
+    const items = (data.artifacts as { name: string; path: string; size: number }[] | undefined) || []
+    for (const item of items) {
+      if (live.blocks.some((b) => b.kind === 'artifact' && b.path === item.path)) continue
+      live.blocks.push({ kind: 'artifact', name: item.name, path: item.path, size: item.size })
+    }
     mergeUsage(live, run, data.usage)
   }
 }
@@ -1256,6 +1355,7 @@ onBeforeUnmount(() => {
   }
   stopDrag()
   /* 离开页面时中止所有在飞轮次 (含后台会话) */
+  stopTracePoll()
   for (const run of Object.values(runs)) run.ctl?.abort()
   clientWatch.stop()
   if (reloadTimer !== null) window.clearTimeout(reloadTimer)
@@ -1409,12 +1509,33 @@ const phaseText = computed(() => {
     <!-- ============ 中: 按需展开的日志原文 ============ -->
     <aside v-if="drawerVisible" class="drawer" :style="{ width: drawerW + 'px' }">
       <div class="drawer-head">
-        <b>日志原文</b>
-        <span class="o-text-3">默认只读</span>
+        <b>{{ drawerTitle }}</b>
+        <span v-if="!traceOpen" class="o-text-3">默认只读</span>
         <span class="spacer"></span>
-        <button class="icon-btn" title="关闭日志原文" @click="closeDrawer"><Icon name="close" :size="13" /></button>
+        <button class="icon-btn" title="关闭" @click="closeDrawer"><Icon name="close" :size="13" /></button>
+      </div>
+      <div v-if="traceOpen" class="trace-pane">
+        <p v-if="traceError" class="trace-error">{{ traceError }}</p>
+        <p v-else-if="!trace" class="trace-muted">正在读取…</p>
+        <template v-else>
+          <p class="trace-muted">{{ trace.status === 'running' ? '运行中' : trace.status === 'failed' ? '失败' : '已完成' }}</p>
+          <section v-if="trace.input" class="trace-block">
+            <b>输入</b>
+            <pre>{{ trace.input }}</pre>
+          </section>
+          <section v-for="(step, i) in trace.steps" :key="i" class="trace-block">
+            <b>{{ step.kind === 'thought' ? '思考' : (step.name || '工具') }}</b>
+            <span v-if="step.kind === 'tool'" class="trace-muted">{{ step.status === 'running' ? '运行中' : step.status === 'failed' ? '失败' : '完成' }}</span>
+            <pre>{{ step.text }}</pre>
+          </section>
+          <section v-if="trace.output" class="trace-block">
+            <b>结果</b>
+            <pre>{{ trace.output }}</pre>
+          </section>
+        </template>
       </div>
       <DiagnosisFileReader
+        v-else
         :tabs="tabs"
         :active-id="activeTabId"
         @activate="activeTabId = $event"
@@ -1499,8 +1620,17 @@ const phaseText = computed(() => {
                   v-if="m.role === 'assistant'"
                   :message="m"
                   :running="running && m.id === 'live'"
+                  @open-tool="openToolTrace"
                 />
-                <template v-else>
+                <div v-if="m.role === 'assistant' && artifactBlocks(m).length" class="artifacts">
+                  <div v-for="item in artifactBlocks(m)" :key="item.path" class="artifact">
+                    <Icon name="file" :size="12" />
+                    <span>{{ item.name }}</span>
+                    <button class="o-btn o-btn--sm" type="button" @click="openArtifact(item)">查看</button>
+                    <button class="o-btn o-btn--sm" type="button" @click="saveArtifact(item)">下载</button>
+                  </div>
+                </div>
+                <template v-if="m.role !== 'assistant'">
                   <p v-for="(b, i) in textBlocks(m)" :key="i" class="blk-text">{{ b.text }}</p>
                 </template>
               </div>
@@ -2815,6 +2945,45 @@ const phaseText = computed(() => {
   flex: 1;
   min-height: 0;
   height: auto;
+}
+.artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.artifact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.trace-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.trace-block b {
+  font-size: 12px;
+}
+.trace-block pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.trace-muted {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.trace-error {
+  color: var(--danger, #b42318);
+  font-size: 12px;
 }
 
 @media (max-width: 1100px) {

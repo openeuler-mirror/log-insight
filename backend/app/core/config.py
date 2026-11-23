@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     AGENT_PROTOCOL: str = "messages"               # messages / chat-completions
     AGENT_PERMISSION_MODE: str = "workspace-write" # workspace-write / danger-full-access
     AGENT_AUTO_APPROVE: bool = True                # 自动放行工作区内工具调用
-    AGENT_TIMEOUT_SECONDS: int = 600               # 单轮诊断超时
+    AGENT_TIMEOUT_SECONDS: int = 3600              # 单轮诊断超时，含子会话检测
     AGENT_STREAM_MAX_BYTES: int = 4 * 1024 * 1024  # 单文件预览上限
 
     # 指标

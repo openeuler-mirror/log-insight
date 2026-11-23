@@ -15,9 +15,23 @@ whenToUse: 用户要求分析日志、定位故障、解释报错、排查 CPU/�
 - 对象：主机 / 服务 / 进程 / 路径 / 请求。
 - 已有材料：本次工作区里有哪些日志，覆盖什么时间段。
 
-## 2. 先看全局，再钻细节
+## 2. 按日志类型取证
 
-按以下顺序取证，拿到足够证据就停止，不要为了"看全"而通读大文件：
+只在用户要求分析已有日志时使用本技能。问候、闲聊和能力说明不要进入本流程。
+
+父会话只做分诊。下面第 2 到第 5 步和第 7 步必须按 `AGENTS.md` 派子会话。`detection.json` 还不存在时，禁止父会话检索或阅读日志正文，禁止先写结论。
+
+1. 列出 `uploads/` 下的文件。
+2. 对文本日志派检测子会话。任务里写明只执行 `python3 .dsh/skills/witty-log-detection/scripts/detect.py --out detection.json <路径>`，不要读技能源码。用户要找未知模式时再写明把 `--type` 改成聚类。
+3. 出现 kernel panic、oops、Call Trace、BUG、lockup 时再派崩溃特征子会话，使用 `crash-feature-extract`。`matched_crash` 为 false 则回到普通日志。
+4. 工作区里同时有 vmcore 和本地 vmlinux 时再派 vmcore 子会话，使用 `vmcore-analysis`。没有 vmlinux 不要下载符号。
+5. 需要对照上游 commit 或 issue 时再派上游对照子会话，使用 `gitcode`。没有 Token 就写「未核对上游」。
+6. `detection.json` 落地后，父会话根据其中的错误执行 `python3 .dsh/scripts/kb_search.py`，再读 `kb_context.md`。不要用用户原话检索，知识库不能代替日志原文。
+7. 还没有 `report.html` 时，前面的文件落地后派报告子会话，用 `log-report` 写出 `report.json`，并渲染 `report.html`。已经有报告就不要重做，除非用户明确要求重新出报告。
+
+## 3. 先看全局，再钻细节
+
+只有 `detection.json` 已经落盘，才允许补证。它覆盖过的范围不要再扫。只在它没覆盖的关键字或时间窗上按以下顺序补证，拿到足够证据就停止，不要为了"看全"而通读大文件：
 
 1. 列出 `uploads/` 下文件，确认大小与时间范围。
 2. 按错误级别和关键字检索：`error`、`fail`、`timeout`、`killed`、`oom`、
@@ -27,7 +41,7 @@ whenToUse: 用户要求分析日志、定位故障、解释报错、排查 CPU/�
 
 大文件优先用 `grep` / `rg` 定位行号，再读取局部，不要一次读入整个文件。
 
-## 3. 关联证据
+## 4. 关联证据
 
 对每条候选原因，至少找到两类互相独立的证据，例如：
 
@@ -37,7 +51,7 @@ whenToUse: 用户要求分析日志、定位故障、解释报错、排查 CPU/�
 
 只有一类证据时，标为「疑似」。
 
-## 4. 常见方向
+## 5. 常见方向
 
 - 内存：OOM killer、cgroup 限额、泄漏、缓存占用。
 - CPU：单进程打满、锁竞争、正则回溯、中断软中断分布。
@@ -49,9 +63,9 @@ whenToUse: 用户要求分析日志、定位故障、解释报错、排查 CPU/�
 
 需要更细的排查路径时加载 `linux-triage` 技能。
 
-## 5. 给出结论
+## 6. 给出结论
 
-严格按下面的结构回答：
+工作区还没有 `detection.json` 时，不要写下面这段。有了之后严格按这个结构回答：
 
 ```markdown
 结论：<一句话根因>

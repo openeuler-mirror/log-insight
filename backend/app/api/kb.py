@@ -6,7 +6,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
@@ -32,8 +32,7 @@ _MAX_BATCH_FILES = 20
 class KbCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = ""
-    vector_enabled: bool = False
-    embedding_config: dict[str, Any] = Field(default_factory=dict)
+    embed_model_id: int | None = None
     case_template: str = ""
 
 
@@ -42,9 +41,6 @@ class KbUpdate(BaseModel):
     description: str | None = None
     case_template: str | None = None
     status: str | None = None
-    # Embedding: 模型锁定不可改；Key / 接口地址可轮换
-    embedding_api_key: str | None = None
-    embedding_api_base: str | None = None
 
 
 class KbSearchBody(BaseModel):
@@ -67,33 +63,17 @@ def _public_embedding_config(cfg: dict | None) -> dict:
     }
 
 
-def _normalize_embedding_config(raw: dict | None) -> dict:
-    """建库时规范化并加密 Embedding Key（可与团队 LLM Key 不同）."""
-    from app.core.crypto import encrypt_secret
-    raw = dict(raw or {})
-    model = str(raw.get("model") or "").strip()
-    api_base = str(raw.get("api_base") or "").strip().rstrip("/")
-    provider = str(raw.get("provider") or "").strip()
-    api_key = str(raw.get("api_key") or "").strip()
-    if not model:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "启用向量时必须提供 Embedding 模型 ID")
-    if not api_key:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "启用向量时必须提供 Embedding API Key")
-    if len(api_key) > 512:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "API Key 过长")
-    if api_base and not api_base.startswith(("http://", "https://")):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Embedding 接口地址必须以 http:// 或 https:// 开头")
-    out: dict[str, Any] = {
-        "model": model,
-        "api_base": api_base,
-        "provider": provider,
-        "api_key_enc": encrypt_secret(api_key),
-        "key_hint": "****" + api_key[-4:],
-    }
-    return out
+async def _embed_display_name(db: AsyncSession, kb: KnowledgeBase) -> str:
+    if kb.embed_model_id:
+        from app.models.team import TeamEmbedModel
+        row = await db.get(TeamEmbedModel, kb.embed_model_id)
+        return row.display_name if row else ""
+    if kb.vector_enabled:
+        return str((kb.embedding_config or {}).get("model") or "")
+    return ""
 
 
-def _kb_info(kb: KnowledgeBase) -> dict:
+def _kb_info(kb: KnowledgeBase, display_name: str = "") -> dict:
     return {
         "id": kb.id,
         "team_id": kb.team_id,
@@ -101,14 +81,15 @@ def _kb_info(kb: KnowledgeBase) -> dict:
         "description": kb.description,
         "case_template": kb.case_template,
         "vector_enabled": kb.vector_enabled,
+        "embed_model_id": kb.embed_model_id,
+        "embed_display_name": display_name,
         "embedding_config": (
             _public_embedding_config(kb.embedding_config) if kb.vector_enabled else {}
         ),
         "status": kb.status,
         "created_at": kb.created_at,
         "updated_at": kb.updated_at,
-        # 明示: 无向量时前端展示徽章/说明
-        "vector_hint": None if kb.vector_enabled else "本库未启用向量，仅支持关键词与 Grep，不支持语义检索",
+        "vector_hint": None,
     }
 
 
@@ -149,7 +130,7 @@ async def list_kbs(
             KnowledgeBase.deleted_at.is_(None),
         ).order_by(KnowledgeBase.id.desc())
     )).scalars().all()
-    return [_kb_info(k) for k in rows]
+    return [_kb_info(k, await _embed_display_name(db, k)) for k in rows]
 
 
 @router.post("")
@@ -163,9 +144,28 @@ async def create_kb(
     name = body.name.strip()
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "名称不能为空")
-    embed_cfg: dict = {}
-    if body.vector_enabled:
-        embed_cfg = _normalize_embedding_config(body.embedding_config)
+    from app.models.team import TeamEmbedModel
+    from app.modules.kb.embed import probe_embedding
+    models = (await db.execute(
+        select(TeamEmbedModel).where(TeamEmbedModel.team_id == team_id)
+        .order_by(TeamEmbedModel.is_default.desc(), TeamEmbedModel.id)
+    )).scalars().all()
+    embed_id: int | None = None
+    vector = False
+    if models:
+        chosen = next((m for m in models if m.id == body.embed_model_id), None)
+        if body.embed_model_id is None:
+            chosen = next((m for m in models if m.is_default), models[0])
+        if chosen is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择本团队的语义模型")
+        from app.core.crypto import decrypt_secret
+        api_key = decrypt_secret(chosen.api_key_enc) if chosen.api_key_enc else ""
+        try:
+            await probe_embedding(chosen.api_base or "", api_key, chosen.model)
+        except RuntimeError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        embed_id = chosen.id
+        vector = True
     dup = (await db.execute(
         select(KnowledgeBase).where(
             KnowledgeBase.team_id == team_id,
@@ -179,14 +179,15 @@ async def create_kb(
     kb = KnowledgeBase(
         team_id=team_id, name=name, description=body.description.strip(),
         case_template=body.case_template,
-        vector_enabled=body.vector_enabled,
-        embedding_config=embed_cfg,
+        vector_enabled=vector,
+        embedding_config={},
+        embed_model_id=embed_id,
         created_by=user.id,
     )
     db.add(kb)
     await db.commit()
     await db.refresh(kb)
-    return _kb_info(kb)
+    return _kb_info(kb, await _embed_display_name(db, kb))
 
 
 @router.get("/{kb_id}")
@@ -196,7 +197,8 @@ async def get_kb(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     await ensure_team_perm(db, user, team_id, "kb:view")
-    return _kb_info(await _get_kb(db, team_id, kb_id))
+    kb = await _get_kb(db, team_id, kb_id)
+    return _kb_info(kb, await _embed_display_name(db, kb))
 
 
 @router.patch("/{kb_id}")
@@ -215,32 +217,9 @@ async def update_kb(
         kb.case_template = body.case_template
     if body.status is not None:
         kb.status = body.status
-    if body.embedding_api_key is not None or body.embedding_api_base is not None:
-        if not kb.vector_enabled:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅关键词库无 Embedding 凭据可改")
-        from app.core.crypto import encrypt_secret
-        cfg = dict(kb.embedding_config or {})
-        if body.embedding_api_base is not None:
-            api_base = body.embedding_api_base.strip().rstrip("/")
-            if api_base and not api_base.startswith(("http://", "https://")):
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    "Embedding 接口地址必须以 http:// 或 https:// 开头",
-                )
-            cfg["api_base"] = api_base
-        if body.embedding_api_key is not None:
-            raw_key = body.embedding_api_key.strip()
-            if raw_key:
-                if len(raw_key) > 512:
-                    raise HTTPException(status.HTTP_400_BAD_REQUEST, "API Key 过长")
-                cfg["api_key_enc"] = encrypt_secret(raw_key)
-                cfg["key_hint"] = "****" + raw_key[-4:]
-                cfg.pop("api_key", None)
-        # 禁止通过本接口改 model / provider / vector_enabled
-        kb.embedding_config = cfg
     await db.commit()
     await db.refresh(kb)
-    return _kb_info(kb)
+    return _kb_info(kb, await _embed_display_name(db, kb))
 
 
 @router.delete("/{kb_id}")

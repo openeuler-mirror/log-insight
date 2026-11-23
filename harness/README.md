@@ -14,6 +14,11 @@
 
 - `log-diagnosis`：日志诊断主流程（取证 → 关联 → 结论）
 - `linux-triage`：Linux 主机常见故障的排查清单
+- `witty-log-detection`：日志异常检测（stdio MCP，配置在 `src/common/config.toml`）
+- `crash-feature-extract`：内核崩溃特征提取，不访问知识库
+- `vmcore-analysis`：仅在本地已有 vmcore 与 vmlinux 时做转储分析
+- `gitcode`：对照上游仓库、commit 与 issue
+- `log-report`：把诊断结果渲染成通用日志报告
 
 ## 接入方式
 

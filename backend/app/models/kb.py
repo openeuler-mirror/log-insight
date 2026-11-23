@@ -17,7 +17,9 @@ class KnowledgeBase(Base):
     description: Mapped[str] = mapped_column(String(512), default="")
     case_template: Mapped[str] = mapped_column(Text, default="")  # 空=系统默认
     vector_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    embedding_config: Mapped[dict] = mapped_column(JSONB, default=dict)  # 锁定后禁止改
+    embedding_config: Mapped[dict] = mapped_column(JSONB, default=dict)  # 旧库自带配置；新库留空
+    embed_model_id: Mapped[int | None] = mapped_column(
+        ForeignKey("team_embed_models.id", ondelete="RESTRICT"), nullable=True, index=True)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="active")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

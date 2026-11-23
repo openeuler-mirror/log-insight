@@ -152,6 +152,46 @@ export interface TeamRerankConfig {
 export const getTeamRerank = (teamId: number | string) =>
   get<TeamRerankConfig>(`${base(teamId)}/rerank`)
 
+export interface TeamEmbedModel {
+  id: number
+  displayName: string
+  model: string
+  apiBase: string
+  keyHint: string
+  hasKey: boolean
+  isDefault: boolean
+  inUse: boolean
+}
+
+export const listEmbedModels = (teamId: number | string) =>
+  get<TeamEmbedModel[]>(`${base(teamId)}/embed-models`)
+
+export const createEmbedModel = (
+  teamId: number | string,
+  body: { displayName: string; model: string; apiBase?: string; apiKey: string; isDefault?: boolean },
+) => post<TeamEmbedModel>(`${base(teamId)}/embed-models`, {
+  display_name: body.displayName,
+  model: body.model,
+  api_base: body.apiBase ?? '',
+  api_key: body.apiKey,
+  is_default: !!body.isDefault,
+})
+
+export const updateEmbedModel = (
+  teamId: number | string,
+  id: number,
+  body: { displayName: string; model: string; apiBase?: string; apiKey?: string; isDefault?: boolean },
+) => patch<TeamEmbedModel>(`${base(teamId)}/embed-models/${id}`, {
+  display_name: body.displayName,
+  model: body.model,
+  api_base: body.apiBase ?? '',
+  api_key: body.apiKey,
+  is_default: !!body.isDefault,
+})
+
+export const deleteEmbedModel = (teamId: number | string, id: number) =>
+  del(`${base(teamId)}/embed-models/${id}`)
+
 export const saveTeamRerank = (
   teamId: number | string,
   body: { enabled: boolean; model: string; apiBase?: string; apiKey?: string },

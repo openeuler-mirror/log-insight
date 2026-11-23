@@ -17,6 +17,7 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy import delete as sa_delete, func, select, update as sa_update
@@ -39,7 +40,8 @@ from app.modules.agent.probe import reasoning_options
 from app.modules.agent.providers import (PROVIDERS, default_model, display_name,
                                          normalize_model, spec_of)
 from app.modules.agent.service import (Attachment, list_skills, normalize_usage,
-                                       runtime_ready, stream_prompt)
+                                       runtime_ready, stream_prompt, workspace_dir)
+from app.modules.agent.trace import read_tool_trace
 from app.modules.diagnosis.team_models import (default_model_row, resolve_team_model,
                                                team_models, user_teams)
 
@@ -912,6 +914,7 @@ async def list_messages(session_id: uuid.UUID,
     rows = (await db.execute(
         select(DiagnosisMessage).where(DiagnosisMessage.session_id == session_id)
         .order_by(DiagnosisMessage.id.asc()).limit(500))).scalars().all()
+    await _pin_existing_report(db, session_id, list(rows))
     return [_message_info(m) for m in rows]
 
 
@@ -1036,8 +1039,6 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
 
     # 快照知识库选择（generator 内不再依赖 ORM 会话对象）
     kb_ids = list(sess.selected_kb_ids or [])
-    kb_top_k = int(sess.kb_top_k or 10)
-    retrieve_team_id = int(team_id or sess.team_id or 0)
 
     async def generator():
         blocks: list[dict] = []
@@ -1050,64 +1051,22 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
         dsh_sid = initial_dsh_sid
         error = ""
         started = time.monotonic()
+        started_wall = time.time()
 
         yield {"event": "phase", "data": json.dumps(
             {"phase": "preparing", "userMessageId": user_msg.id}, ensure_ascii=False)}
 
-        # R1: 发消息前若已选库则自动检索并写入 kb_context.md
-        if kb_ids and retrieve_team_id:
-            try:
-                from app.modules.kb.retrieve import citations_as_dicts, retrieve_for_diagnosis
-                from app.modules.diagnosis.team_models import default_model_row
-                chat = None
-                async with AsyncSessionLocal() as kb_db:
-                    default = await default_model_row(kb_db, retrieve_team_id)
-                    if default is not None:
-                        mrow, prow = default
-                        ckey = decrypt_secret(prow.api_key_enc) if prow.api_key_enc else ""
-                        ckey = ckey or (_global_key() if prow.provider == "deepseek" else "")
-                        if ckey:
-                            chat = {
-                                "api_base": prow.api_base or "",
-                                "api_key": ckey,
-                                "model": mrow.model_id,
-                                "protocol": prow.protocol or "messages",
-                            }
-                    r = await retrieve_for_diagnosis(
-                        kb_db,
-                        team_id=retrieve_team_id,
-                        session_id=str(session_uuid),
-                        selected_kb_ids=kb_ids,
-                        user_text=text,
-                        top_k=kb_top_k,
-                        chat=chat,
-                    )
-                if r.citations:
-                    kb_block = {
-                        "kind": "kb",
-                        "citations": citations_as_dicts(r.citations),
-                        "queries": r.queries,
-                        "note": r.note,
-                    }
-                    blocks.append(kb_block)
-                    yield {"event": "kb", "data": json.dumps(kb_block, ensure_ascii=False)}
-                elif r.note:
-                    yield {"event": "kb", "data": json.dumps(
-                        {"kind": "kb", "citations": [], "queries": r.queries, "note": r.note},
-                        ensure_ascii=False)}
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("诊断知识库检索失败")
-                yield {"event": "kb", "data": json.dumps(
-                    {"kind": "kb", "citations": [], "queries": [],
-                     "note": f"知识库检索失败：{exc}"[:200]},
-                    ensure_ascii=False)}
+        # 知识库不在开场检索。清掉上一轮结果，等模型根据日志错误调用 kb_search.py。
+        from app.modules.kb.retrieve import _clear_kb_context, load_saved_citations
+        _clear_kb_context(str(session_uuid))
 
         async for ev in stream_prompt(session_id=str(session_uuid), dsh_session_id=dsh_sid,
                                       text=text, attachments=attachments,
                                       api_key=key, model=model, provider=provider,
                                       model_name=model_name,
                                       api_base=api_base, protocol=protocol,
-                                      reasoning=reasoning):
+                                      reasoning=reasoning,
+                                      kb_selected=bool(kb_ids)):
             etype = ev.get("type")
             if etype in ("text", "thought"):
                 target = text_block if etype == "text" else thought_block
@@ -1167,6 +1126,17 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                     {"message": error}, ensure_ascii=False)}
                 break
 
+        saved = load_saved_citations(str(session_uuid))
+        if saved and saved.get("citations"):
+            kb_block = {
+                "kind": "kb",
+                "citations": saved.get("citations") or [],
+                "queries": saved.get("queries") or [],
+                "note": "",
+            }
+            blocks.append(kb_block)
+            yield {"event": "kb", "data": json.dumps(kb_block, ensure_ascii=False)}
+
         am = DiagnosisMessage(session_id=session_uuid, role="assistant", blocks=blocks,
                               usage=final_usage, error=error)
         async with AsyncSessionLocal() as stream_db:
@@ -1182,6 +1152,13 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                 row.updated_at = datetime.now(timezone.utc)
                 # flush 分配 am.id, 让用量事件能携带消息外键
                 await stream_db.flush()
+                snaps = _snapshot_reports(str(session_uuid), am.id, started_wall)
+                if snaps:
+                    blocks.extend(snaps)
+                    am.blocks = blocks
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(am, "blocks")
+                    await stream_db.flush()
                 if resolved is not None and resolved.ok:
                     stream_db.add(LlmUsageEvent(
                         session_id=str(session_uuid), message_id=am.id,
@@ -1206,12 +1183,136 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                 {"dshSessionId": dsh_sid}, ensure_ascii=False)}
         yield {"event": "usage", "data": json.dumps({"usage": final_usage},
                                                     ensure_ascii=False)}
+        snaps = [b for b in blocks if b.get("kind") == "artifact"]
+        if snaps:
+            yield {"event": "artifact", "data": json.dumps(
+                {"items": snaps}, ensure_ascii=False)}
         yield {"event": "done", "data": json.dumps(
             {"messageId": am.id, "userMessageId": user_msg.id,
-             "usage": final_usage, "error": error},
+             "usage": final_usage, "error": error, "artifacts": snaps},
             ensure_ascii=False)}
 
     return EventSourceResponse(generator())
+
+
+_ARTIFACT_LIMIT = 2_000_000
+_ARTIFACT_NAME = re.compile(r"^(?:report\.(?:json|html)|reports/[0-9]+/report\.(?:json|html))$")
+
+
+def _artifact_path(session_id: uuid.UUID, name: str) -> Path:
+    if not _ARTIFACT_NAME.fullmatch(name or ""):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有这份报告")
+    ws = Path(workspace_dir(str(session_id))).resolve()
+    path = (ws / name).resolve()
+    if not path.is_relative_to(ws) or not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "报告尚未生成")
+    return path
+
+
+def _snapshot_reports(session_id: str, message_id: int, since: float) -> list[dict]:
+    """本轮改写过的报告复制到 reports/<消息id>/，避免下一轮覆盖后旧报告消失。"""
+    ws = Path(workspace_dir(session_id))
+    present = [ws / name for name in ("report.json", "report.html") if (ws / name).is_file()]
+    if not present or min(p.stat().st_mtime for p in present) + 2 < since:
+        return []
+    dest_dir = ws / "reports" / str(message_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    items = []
+    for src in present:
+        dest = dest_dir / src.name
+        shutil.copy2(src, dest)
+        items.append({
+            "kind": "artifact",
+            "name": src.name,
+            "path": f"reports/{message_id}/{src.name}",
+            "size": dest.stat().st_size,
+        })
+    return items
+
+
+async def _pin_existing_report(db: AsyncSession, session_id: uuid.UUID,
+                               rows: list[DiagnosisMessage]) -> None:
+    """已有报告还没挂到消息上时，挂到生成它的那条回复，并留下副本。"""
+    if any(any((b or {}).get("kind") == "artifact" for b in (m.blocks or [])) for m in rows):
+        return
+    ws = Path(workspace_dir(str(session_id)))
+    present = [ws / name for name in ("report.json", "report.html") if (ws / name).is_file()]
+    if not present:
+        return
+    mtime = min(p.stat().st_mtime for p in present)
+    target = next((
+        m for m in rows
+        if m.role == "assistant" and m.created_at is not None
+        and m.created_at.timestamp() + 5 >= mtime
+    ), None)
+    if target is None:
+        return
+    dest_dir = ws / "reports" / str(target.id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    blocks = list(target.blocks or [])
+    for src in present:
+        dest = dest_dir / src.name
+        if not dest.is_file():
+            shutil.copy2(src, dest)
+        blocks.append({
+            "kind": "artifact",
+            "name": src.name,
+            "path": f"reports/{target.id}/{src.name}",
+            "size": dest.stat().st_size,
+        })
+    target.blocks = blocks
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(target, "blocks")
+    await db.commit()
+
+
+@router.get("/sessions/{session_id}/artifacts")
+async def list_artifacts(session_id: uuid.UUID,
+                         db: Annotated[AsyncSession, Depends(get_db)],
+                         user: Annotated[User, Depends(get_current_user)]):
+    await _load_session(db, user, session_id)
+    ws = workspace_dir(str(session_id))
+    items = []
+    for name in ("report.json", "report.html"):
+        path = ws / name
+        if path.is_file():
+            items.append({"name": name, "size": path.stat().st_size})
+    return items
+
+
+@router.get("/sessions/{session_id}/artifacts/{name:path}")
+async def read_artifact(session_id: uuid.UUID, name: str,
+                        db: Annotated[AsyncSession, Depends(get_db)],
+                        user: Annotated[User, Depends(get_current_user)],
+                        download: bool = Query(False)):
+    await _load_session(db, user, session_id)
+    path = _artifact_path(session_id, name)
+    if download:
+        return FileResponse(path, filename=name, content_disposition_type="attachment")
+    size = path.stat().st_size
+    if size > _ARTIFACT_LIMIT:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "报告过大，请下载后查看")
+    return {
+        "name": name,
+        "kind": "html" if name.endswith(".html") else "json",
+        "size": size,
+        "content": path.read_text(encoding="utf-8", errors="replace"),
+    }
+
+
+@router.get("/sessions/{session_id}/tool-trace")
+async def tool_trace(session_id: uuid.UUID,
+                     db: Annotated[AsyncSession, Depends(get_db)],
+                     user: Annotated[User, Depends(get_current_user)],
+                     call_id: str = Query(..., alias="callId")):
+    await _load_session(db, user, session_id)
+    ws = workspace_dir(str(session_id))
+    found = read_tool_trace(ws, call_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "记录已不在")
+    if found.get("missing"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "这次工具调用没有留下记录")
+    return found
 
 
 # ---------- 文件 ----------

@@ -163,12 +163,20 @@ export type KbBlock = {
   note?: string
 }
 
+export type ArtifactBlock = {
+  kind: 'artifact'
+  name: string
+  path: string
+  size: number
+}
+
 export type MessageBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thought'; text: string }
   | { kind: 'file'; name: string; taskId?: string }
   | ToolBlock
   | KbBlock
+  | ArtifactBlock
 
 export interface ChatMessage {
   id: number | string
@@ -295,6 +303,55 @@ export const deleteMessage = (sessionId: string, messageId: number) =>
 export const listFiles = () => get<FileNode[]>('/diagnosis/files')
 export const readFile = (fileId: string) =>
   get<FileContent>('/diagnosis/files/content', { file_id: fileId })
+
+export interface ReportArtifact {
+  name: string
+  size: number
+}
+
+export interface ToolTraceStep {
+  kind: 'thought' | 'tool'
+  name: string
+  status: string
+  text: string
+}
+
+export interface ToolTrace {
+  callId: string
+  name: string
+  title: string
+  status: 'running' | 'done' | 'failed'
+  input: string
+  output: string
+  steps: ToolTraceStep[]
+}
+
+export const listArtifacts = (sessionId: string) =>
+  get<ReportArtifact[]>(`/diagnosis/sessions/${sessionId}/artifacts`)
+
+export const readArtifact = (sessionId: string, path: string) =>
+  get<{ name: string; kind: 'html' | 'json'; size: number; content: string }>(
+    `/diagnosis/sessions/${sessionId}/artifacts/${path}`,
+  )
+
+export const fetchToolTrace = (sessionId: string, callId: string) =>
+  get<ToolTrace>(`/diagnosis/sessions/${sessionId}/tool-trace`, { callId })
+
+export async function downloadArtifact(sessionId: string, path: string) {
+  const token = localStorage.getItem(TOKEN_KEY) ?? ''
+  const resp = await fetch(`/api/diagnosis/sessions/${sessionId}/artifacts/${path}?download=1`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!resp.ok) throw new Error('下载失败')
+  const blob = await resp.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const name = path.split('/').pop() || 'report'
+  link.href = url
+  link.download = name
+  link.click()
+  URL.revokeObjectURL(url)
+}
 
 /* ---------- 流式发送 ---------- */
 export interface StreamHandlers {

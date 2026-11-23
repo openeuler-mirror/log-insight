@@ -106,7 +106,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
               @change="toggleKb(k.id)"
             />
             <span class="name">{{ k.name }}</span>
-            <span v-if="!k.vectorEnabled" class="tag">关键词</span>
+            <span v-if="k.embedDisplayName" class="tag">{{ k.embedDisplayName }}</span>
           </label>
         </li>
       </ul>

@@ -62,6 +62,21 @@ _GUARDS: list[tuple[str, str]] = [
     ("ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS rel_path VARCHAR(512) DEFAULT ''", "kb_documents.rel_path"),
     ("ALTER TABLE kb_ingest_items ADD COLUMN IF NOT EXISTS rel_path VARCHAR(512) DEFAULT ''", "kb_ingest_items.rel_path"),
     ("CREATE INDEX IF NOT EXISTS ix_kb_documents_rel_path ON kb_documents (rel_path varchar_pattern_ops)", "kb_documents.rel_path 前缀索引"),
+    ("""CREATE TABLE IF NOT EXISTS team_embed_models (
+        id SERIAL PRIMARY KEY,
+        team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+        display_name VARCHAR(64) NOT NULL,
+        model VARCHAR(128) NOT NULL,
+        api_base VARCHAR(256) DEFAULT '',
+        api_key_enc TEXT DEFAULT '',
+        key_hint VARCHAR(16) DEFAULT '',
+        is_default BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )""", "team_embed_models"),
+    ("CREATE INDEX IF NOT EXISTS ix_team_embed_models_team_id ON team_embed_models (team_id)", "team_embed_models.team_id 索引"),
+    ("CREATE UNIQUE INDEX IF NOT EXISTS uq_team_embed_default ON team_embed_models (team_id) WHERE is_default", "团队默认语义模型唯一"),
+    ("ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS embed_model_id INTEGER REFERENCES team_embed_models(id) ON DELETE RESTRICT", "knowledge_bases.embed_model_id"),
+    ("CREATE INDEX IF NOT EXISTS ix_knowledge_bases_embed_model_id ON knowledge_bases (embed_model_id)", "knowledge_bases.embed_model_id 索引"),
 ]
 
 

@@ -578,3 +578,189 @@ async def _usage_by_day(db: AsyncSession, team_id: int, start: str, end: str) ->
      .group_by(day).order_by(day))
     rows = [{"day": str(r.day), **_usage_totals(r)} for r in (await db.execute(q)).all()]
     return {"group_by": "day", "rows": rows}
+
+
+class EmbedModelIn(BaseModel):
+    display_name: str
+    model: str
+    api_base: str = ""
+    api_key: str | None = None
+    is_default: bool = False
+
+
+def _embed_public(row, in_use: bool) -> dict:
+    return {
+        "id": row.id,
+        "display_name": row.display_name,
+        "model": row.model,
+        "api_base": row.api_base or "",
+        "key_hint": row.key_hint or "",
+        "has_key": bool(row.api_key_enc),
+        "is_default": bool(row.is_default),
+        "in_use": in_use,
+    }
+
+
+async def _embed_in_use(db: AsyncSession, model_id: int) -> bool:
+    from app.models.kb import KnowledgeBase
+    n = (await db.execute(
+        select(func.count()).select_from(KnowledgeBase).where(
+            KnowledgeBase.embed_model_id == model_id,
+            KnowledgeBase.deleted_at.is_(None),
+        )
+    )).scalar_one()
+    return int(n or 0) > 0
+
+
+async def _clear_other_defaults(db: AsyncSession, team_id: int, keep_id: int | None) -> None:
+    from app.models.team import TeamEmbedModel
+    stmt = sa_update(TeamEmbedModel).where(
+        TeamEmbedModel.team_id == team_id,
+        TeamEmbedModel.is_default.is_(True),
+    )
+    if keep_id is not None:
+        stmt = stmt.where(TeamEmbedModel.id != keep_id)
+    await db.execute(stmt.values(is_default=False))
+
+
+@router.get("/embed-models")
+async def list_embed_models(
+    trio: Annotated[tuple, Depends(require_team_perm("llm:use"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from app.models.team import TeamEmbedModel
+    _, team, _role = trio
+    rows = (await db.execute(
+        select(TeamEmbedModel).where(TeamEmbedModel.team_id == team.id)
+        .order_by(TeamEmbedModel.is_default.desc(), TeamEmbedModel.id)
+    )).scalars().all()
+    return [_embed_public(r, await _embed_in_use(db, r.id)) for r in rows]
+
+
+@router.post("/embed-models")
+async def create_embed_model(
+    body: EmbedModelIn,
+    trio: Annotated[tuple, Depends(require_team_perm("llm:manage"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from app.models.team import TeamEmbedModel
+    from app.modules.kb.embed import probe_embedding
+    _, team, _role = trio
+    name = body.display_name.strip()
+    model = body.model.strip()
+    api_base = _valid_base(body.api_base)
+    api_key = (body.api_key or "").strip()
+    if not name or not model:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "显示名和模型 ID 不能为空")
+    if not api_key:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请填写 API Key")
+    if len(api_key) > 512:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "API Key 过长")
+    try:
+        await probe_embedding(api_base, api_key, model)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    has_any = (await db.execute(
+        select(func.count()).select_from(TeamEmbedModel).where(TeamEmbedModel.team_id == team.id)
+    )).scalar_one()
+    make_default = body.is_default or int(has_any or 0) == 0
+    if make_default:
+        await _clear_other_defaults(db, team.id, None)
+    row = TeamEmbedModel(
+        team_id=team.id,
+        display_name=name[:64],
+        model=model[:128],
+        api_base=api_base,
+        api_key_enc=encrypt_secret(api_key),
+        key_hint="****" + api_key[-4:],
+        is_default=make_default,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return _embed_public(row, False)
+
+
+@router.patch("/embed-models/{model_id}")
+async def update_embed_model(
+    model_id: int,
+    body: EmbedModelIn,
+    trio: Annotated[tuple, Depends(require_team_perm("llm:manage"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from app.models.team import TeamEmbedModel
+    from app.modules.kb.embed import probe_embedding
+    _, team, _role = trio
+    row = await db.get(TeamEmbedModel, model_id)
+    if row is None or row.team_id != team.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "语义模型不存在")
+    name = body.display_name.strip()
+    model = body.model.strip()
+    if not name or not model:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "显示名和模型 ID 不能为空")
+    in_use = await _embed_in_use(db, row.id)
+    if in_use and model != row.model:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "已有知识库使用该模型，不能修改模型 ID")
+    api_base = _valid_base(body.api_base)
+    api_key = (body.api_key or "").strip()
+    if api_key and len(api_key) > 512:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "API Key 过长")
+    stored_key = decrypt_secret(row.api_key_enc) if row.api_key_enc else ""
+    probe_key = api_key or stored_key
+    if not probe_key:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请填写 API Key")
+    try:
+        await probe_embedding(api_base, probe_key, model)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    row.display_name = name[:64]
+    row.model = model[:128]
+    row.api_base = api_base
+    if api_key:
+        row.api_key_enc = encrypt_secret(api_key)
+        row.key_hint = "****" + api_key[-4:]
+    if body.is_default and not row.is_default:
+        await _clear_other_defaults(db, team.id, row.id)
+        row.is_default = True
+    elif not body.is_default and row.is_default:
+        nxt = (await db.execute(
+            select(TeamEmbedModel).where(
+                TeamEmbedModel.team_id == team.id,
+                TeamEmbedModel.id != row.id,
+            ).order_by(TeamEmbedModel.id).limit(1)
+        )).scalar_one_or_none()
+        if nxt is None:
+            row.is_default = True
+        else:
+            row.is_default = False
+            nxt.is_default = True
+    await db.commit()
+    await db.refresh(row)
+    return _embed_public(row, in_use)
+
+
+@router.delete("/embed-models/{model_id}")
+async def delete_embed_model(
+    model_id: int,
+    trio: Annotated[tuple, Depends(require_team_perm("llm:manage"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from app.models.team import TeamEmbedModel
+    _, team, _role = trio
+    row = await db.get(TeamEmbedModel, model_id)
+    if row is None or row.team_id != team.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "语义模型不存在")
+    if await _embed_in_use(db, row.id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "已有知识库使用该模型，不能删除")
+    was_default = row.is_default
+    await db.delete(row)
+    await db.commit()
+    if was_default:
+        nxt = (await db.execute(
+            select(TeamEmbedModel).where(TeamEmbedModel.team_id == team.id)
+            .order_by(TeamEmbedModel.id).limit(1)
+        )).scalar_one_or_none()
+        if nxt is not None:
+            nxt.is_default = True
+            await db.commit()
+    return {"ok": True}

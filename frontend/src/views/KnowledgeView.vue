@@ -8,6 +8,7 @@ import { apiError } from '@/api/http'
 import {
   createKb, deleteKb, listKbs, updateKb, type KnowledgeBase,
 } from '@/api/kb'
+import { listEmbedModels, type TeamEmbedModel } from '@/api/teamLlm'
 import Icon from '@/components/Icon.vue'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 
@@ -30,18 +31,14 @@ const showCreate = ref(false)
 const createErr = ref('')
 const formName = ref('')
 const formDesc = ref('')
-const formVector = ref(false)
-const formEmbedModel = ref('')
-const formEmbedBase = ref('')
-const formEmbedKey = ref('')
+const embedModels = ref<TeamEmbedModel[]>([])
+const formEmbedId = ref<number | null>(null)
 const creating = ref(false)
 
 const settingsKb = ref<KnowledgeBase | null>(null)
 const setName = ref('')
 const setDesc = ref('')
 const setTemplate = ref('')
-const setEmbedBase = ref('')
-const setEmbedKey = ref('')
 const saving = ref(false)
 
 async function reload() {
@@ -71,26 +68,28 @@ function openSettings(e: Event, kb: KnowledgeBase) {
   setName.value = kb.name
   setDesc.value = kb.description || ''
   setTemplate.value = kb.caseTemplate || ''
-  setEmbedBase.value = kb.embeddingConfig?.apiBase || ''
-  setEmbedKey.value = ''
 }
 
-function openCreate() {
+async function openCreate() {
   createErr.value = ''
   showCreate.value = true
+  formEmbedId.value = null
+  if (!teamId.value) return
+  try {
+    embedModels.value = await listEmbedModels(teamId.value)
+    const def = embedModels.value.find((m) => m.isDefault) || embedModels.value[0]
+    formEmbedId.value = def ? def.id : null
+  } catch (e) {
+    embedModels.value = []
+    createErr.value = apiError(e)
+  }
 }
 
 async function onCreate() {
   if (!teamId.value || !formName.value.trim()) return
-  if (formVector.value) {
-    if (!formEmbedModel.value.trim()) {
-      createErr.value = '启用向量时请填写 Embedding 模型 ID'
-      return
-    }
-    if (!formEmbedKey.value.trim()) {
-      createErr.value = '启用向量时请填写 Embedding API Key（可与团队 Chat 密钥不同）'
-      return
-    }
+  if (embedModels.value.length && formEmbedId.value == null) {
+    createErr.value = '请选择语义模型'
+    return
   }
   creating.value = true
   createErr.value = ''
@@ -98,22 +97,12 @@ async function onCreate() {
     const kb = await createKb(teamId.value, {
       name: formName.value.trim(),
       description: formDesc.value.trim(),
-      vectorEnabled: formVector.value,
-      embeddingConfig: formVector.value
-        ? {
-            model: formEmbedModel.value.trim(),
-            api_base: formEmbedBase.value.trim(),
-            api_key: formEmbedKey.value.trim(),
-          }
-        : {},
+      embedModelId: formEmbedId.value,
     })
     showCreate.value = false
     formName.value = ''
     formDesc.value = ''
-    formVector.value = false
-    formEmbedModel.value = ''
-    formEmbedBase.value = ''
-    formEmbedKey.value = ''
+    formEmbedId.value = null
     await reload()
     openKb(kb.id)
   } catch (e) {
@@ -133,14 +122,8 @@ async function onSaveSettings() {
       description: setDesc.value,
       caseTemplate: setTemplate.value,
     }
-    if (settingsKb.value.vectorEnabled) {
-      body.embeddingApiBase = setEmbedBase.value.trim()
-      const key = setEmbedKey.value.trim()
-      if (key) body.embeddingApiKey = key
-    }
     await updateKb(teamId.value, settingsKb.value.id, body)
     settingsKb.value = null
-    setEmbedKey.value = ''
     await reload()
   } catch (e) {
     err.value = apiError(e)
@@ -217,9 +200,8 @@ onMounted(async () => {
         <div class="card-ico"><Icon name="folder" :size="22" /></div>
         <h3 class="card-name">{{ k.name }}</h3>
         <p class="card-desc">{{ k.description || '暂无描述' }}</p>
-        <div class="card-foot">
-          <span v-if="!k.vectorEnabled" class="badge">仅关键词</span>
-          <span v-else class="badge ok">向量检索</span>
+        <div class="card-foot" v-if="k.embedDisplayName">
+          <span class="badge ok">{{ k.embedDisplayName }}</span>
         </div>
       </article>
     </div>
@@ -230,34 +212,17 @@ onMounted(async () => {
         <h3>新建知识库</h3>
         <label>名称<input v-model="formName" maxlength="128" /></label>
         <label>描述<input v-model="formDesc" maxlength="512" /></label>
-        <div class="mode">
-          <label class="radio">
-            <input v-model="formVector" type="radio" :value="false" />
-            <span><b>仅关键词 / Grep</b> — 不启用向量，不支持语义检索</span>
-          </label>
-          <label class="radio">
-            <input v-model="formVector" type="radio" :value="true" />
-            <span><b>启用向量检索</b> — 建库后 Embedding 不可更改</span>
-          </label>
-        </div>
-        <template v-if="formVector">
-          <label>Embedding 模型 ID
-            <input v-model="formEmbedModel" placeholder="如 text-embedding-v3" />
-          </label>
-          <label>Embedding 接口地址（可选）
-            <input v-model="formEmbedBase" placeholder="https://api.example.com/v1，留空用默认" />
-          </label>
-          <label>Embedding API Key
-            <input v-model="formEmbedKey" type="password" autocomplete="off" placeholder="与团队 Chat 密钥可不同" />
-          </label>
-          <div class="hint">密钥按库加密保存并锁定；仅用于本库向量化，不会回传明文。</div>
-        </template>
+        <label v-if="embedModels.length">语义模型
+          <select v-model="formEmbedId">
+            <option v-for="m in embedModels" :key="m.id" :value="m.id">{{ m.displayName }}</option>
+          </select>
+        </label>
         <ErrorAlert v-if="createErr" :text="createErr" style="margin-bottom: 12px" @close="createErr = ''" />
         <div class="dialog-actions">
           <button class="btn" @click="showCreate = false">取消</button>
           <button
             class="btn primary"
-            :disabled="creating || !formName.trim() || (formVector && (!formEmbedModel.trim() || !formEmbedKey.trim()))"
+            :disabled="creating || !formName.trim() || (embedModels.length > 0 && formEmbedId == null)"
             @click="onCreate"
           >
             {{ creating ? '创建中…' : '创建' }}
@@ -272,23 +237,7 @@ onMounted(async () => {
         <h3>知识库设置 · {{ settingsKb.name }}</h3>
         <label>名称<input v-model="setName" maxlength="128" /></label>
         <label>描述<input v-model="setDesc" maxlength="512" /></label>
-        <div class="hint" v-if="settingsKb.vectorHint">{{ settingsKb.vectorHint }}</div>
-        <template v-else>
-          <div class="hint">
-            Embedding 模型已锁定：{{ settingsKb.embeddingConfig?.model || '—' }}（建库后不可更改）
-          </div>
-          <label>Embedding 接口地址
-            <input v-model="setEmbedBase" placeholder="https://api.example.com/v1，可留空" />
-          </label>
-          <label>Embedding API Key
-            <input
-              v-model="setEmbedKey"
-              type="password"
-              autocomplete="off"
-              :placeholder="`留空保持 ${settingsKb.embeddingConfig?.keyHint || '原密钥'}；填写则轮换`"
-            />
-          </label>
-        </template>
+        <div class="hint" v-if="settingsKb.embedDisplayName">语义检索 · {{ settingsKb.embedDisplayName }}</div>
         <label>案例模板（空=系统默认）
           <textarea v-model="setTemplate" rows="10" class="ta" />
         </label>
