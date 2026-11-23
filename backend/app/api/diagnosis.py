@@ -914,6 +914,7 @@ async def list_messages(session_id: uuid.UUID,
     rows = (await db.execute(
         select(DiagnosisMessage).where(DiagnosisMessage.session_id == session_id)
         .order_by(DiagnosisMessage.id.asc()).limit(500))).scalars().all()
+    await _pin_existing_report(db, session_id, list(rows))
     return [_message_info(m) for m in rows]
 
 
@@ -1050,6 +1051,7 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
         dsh_sid = initial_dsh_sid
         error = ""
         started = time.monotonic()
+        started_wall = time.time()
 
         yield {"event": "phase", "data": json.dumps(
             {"phase": "preparing", "userMessageId": user_msg.id}, ensure_ascii=False)}
@@ -1150,6 +1152,13 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                 row.updated_at = datetime.now(timezone.utc)
                 # flush 分配 am.id, 让用量事件能携带消息外键
                 await stream_db.flush()
+                snaps = _snapshot_reports(str(session_uuid), am.id, started_wall)
+                if snaps:
+                    blocks.extend(snaps)
+                    am.blocks = blocks
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(am, "blocks")
+                    await stream_db.flush()
                 if resolved is not None and resolved.ok:
                     stream_db.add(LlmUsageEvent(
                         session_id=str(session_uuid), message_id=am.id,
@@ -1174,25 +1183,87 @@ async def send_message(session_id: uuid.UUID, body: SendMessage,
                 {"dshSessionId": dsh_sid}, ensure_ascii=False)}
         yield {"event": "usage", "data": json.dumps({"usage": final_usage},
                                                     ensure_ascii=False)}
+        snaps = [b for b in blocks if b.get("kind") == "artifact"]
+        if snaps:
+            yield {"event": "artifact", "data": json.dumps(
+                {"items": snaps}, ensure_ascii=False)}
         yield {"event": "done", "data": json.dumps(
             {"messageId": am.id, "userMessageId": user_msg.id,
-             "usage": final_usage, "error": error},
+             "usage": final_usage, "error": error, "artifacts": snaps},
             ensure_ascii=False)}
 
     return EventSourceResponse(generator())
 
 
-_ARTIFACTS = {"report.json", "report.html"}
 _ARTIFACT_LIMIT = 2_000_000
+_ARTIFACT_NAME = re.compile(r"^(?:report\.(?:json|html)|reports/[0-9]+/report\.(?:json|html))$")
 
 
 def _artifact_path(session_id: uuid.UUID, name: str) -> Path:
-    if name not in _ARTIFACTS or "/" in name or "\\" in name:
+    if not _ARTIFACT_NAME.fullmatch(name or ""):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "没有这份报告")
-    path = workspace_dir(str(session_id)) / name
-    if not path.is_file():
+    ws = Path(workspace_dir(str(session_id))).resolve()
+    path = (ws / name).resolve()
+    if not path.is_relative_to(ws) or not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "报告尚未生成")
     return path
+
+
+def _snapshot_reports(session_id: str, message_id: int, since: float) -> list[dict]:
+    """本轮改写过的报告复制到 reports/<消息id>/，避免下一轮覆盖后旧报告消失。"""
+    ws = Path(workspace_dir(session_id))
+    present = [ws / name for name in ("report.json", "report.html") if (ws / name).is_file()]
+    if not present or min(p.stat().st_mtime for p in present) + 2 < since:
+        return []
+    dest_dir = ws / "reports" / str(message_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    items = []
+    for src in present:
+        dest = dest_dir / src.name
+        shutil.copy2(src, dest)
+        items.append({
+            "kind": "artifact",
+            "name": src.name,
+            "path": f"reports/{message_id}/{src.name}",
+            "size": dest.stat().st_size,
+        })
+    return items
+
+
+async def _pin_existing_report(db: AsyncSession, session_id: uuid.UUID,
+                               rows: list[DiagnosisMessage]) -> None:
+    """已有报告还没挂到消息上时，挂到生成它的那条回复，并留下副本。"""
+    if any(any((b or {}).get("kind") == "artifact" for b in (m.blocks or [])) for m in rows):
+        return
+    ws = Path(workspace_dir(str(session_id)))
+    present = [ws / name for name in ("report.json", "report.html") if (ws / name).is_file()]
+    if not present:
+        return
+    mtime = min(p.stat().st_mtime for p in present)
+    target = next((
+        m for m in rows
+        if m.role == "assistant" and m.created_at is not None
+        and m.created_at.timestamp() + 5 >= mtime
+    ), None)
+    if target is None:
+        return
+    dest_dir = ws / "reports" / str(target.id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    blocks = list(target.blocks or [])
+    for src in present:
+        dest = dest_dir / src.name
+        if not dest.is_file():
+            shutil.copy2(src, dest)
+        blocks.append({
+            "kind": "artifact",
+            "name": src.name,
+            "path": f"reports/{target.id}/{src.name}",
+            "size": dest.stat().st_size,
+        })
+    target.blocks = blocks
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(target, "blocks")
+    await db.commit()
 
 
 @router.get("/sessions/{session_id}/artifacts")
@@ -1209,7 +1280,7 @@ async def list_artifacts(session_id: uuid.UUID,
     return items
 
 
-@router.get("/sessions/{session_id}/artifacts/{name}")
+@router.get("/sessions/{session_id}/artifacts/{name:path}")
 async def read_artifact(session_id: uuid.UUID, name: str,
                         db: Annotated[AsyncSession, Depends(get_db)],
                         user: Annotated[User, Depends(get_current_user)],

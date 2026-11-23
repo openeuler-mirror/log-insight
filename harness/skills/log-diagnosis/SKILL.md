@@ -27,7 +27,7 @@ whenToUse: 用户要求分析日志、定位故障、解释报错、排查 CPU/�
 4. 工作区里同时有 vmcore 和本地 vmlinux 时再派 vmcore 子会话，使用 `vmcore-analysis`。没有 vmlinux 不要下载符号。
 5. 需要对照上游 commit 或 issue 时再派上游对照子会话，使用 `gitcode`。没有 Token 就写「未核对上游」。
 6. `detection.json` 落地后，父会话根据其中的错误执行 `python3 .dsh/scripts/kb_search.py`，再读 `kb_context.md`。不要用用户原话检索，知识库不能代替日志原文。
-7. 前面的文件落地后，派报告子会话，用 `log-report` 写出 `report.json`，并渲染 `report.html`。这是日志分析的最后一步。
+7. 还没有 `report.html` 时，前面的文件落地后派报告子会话，用 `log-report` 写出 `report.json`，并渲染 `report.html`。已经有报告就不要重做，除非用户明确要求重新出报告。
 
 ## 3. 先看全局，再钻细节
 

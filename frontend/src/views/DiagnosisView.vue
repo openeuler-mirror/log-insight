@@ -27,7 +27,6 @@ import {
   fetchCatalog,
   downloadArtifact,
   fetchToolTrace,
-  listArtifacts,
   listFiles,
   listMessages,
   listSessions,
@@ -38,13 +37,13 @@ import {
   sendMessage,
   uploadClientDir,
   type AgentStatus,
+  type ArtifactBlock,
   type CatalogTeam,
   type ChatMessage,
   type FileNode,
   type FileRef,
   type KbBlock,
   type MessageBlock,
-  type ReportArtifact,
   type SessionInfo,
   type ToolBlock,
   type ToolTrace,
@@ -550,7 +549,6 @@ async function openFile(f: Attach, payload?: FilePayload) {
   }
 }
 
-const artifacts = ref<ReportArtifact[]>([])
 const traceOpen = ref(false)
 const trace = ref<ToolTrace | null>(null)
 const traceError = ref('')
@@ -566,26 +564,14 @@ const drawerTitle = computed(() => {
   if (tab?.id.startsWith('artifact:')) return '诊断报告'
   return '日志原文'
 })
-const lastAssistantId = computed(() => {
-  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
-    if (messages.value[i].role === 'assistant') return messages.value[i].id
-  }
-  return ''
-})
+function artifactBlocks(m: ChatMessage) {
+  return m.blocks.filter((b): b is Extract<MessageBlock, { kind: 'artifact' }> => b.kind === 'artifact')
+}
 
 function stopTracePoll() {
   if (traceTimer !== null) {
     window.clearInterval(traceTimer)
     traceTimer = null
-  }
-}
-
-async function refreshArtifacts(id: string) {
-  try {
-    const rows = await listArtifacts(id)
-    if (activeSessionId.value === id) artifacts.value = rows
-  } catch {
-    if (activeSessionId.value === id) artifacts.value = []
   }
 }
 
@@ -617,13 +603,13 @@ function openToolTrace(tool: ToolBlock) {
   }
 }
 
-async function openArtifact(item: ReportArtifact) {
+async function openArtifact(item: ArtifactBlock) {
   const sid = activeSessionId.value
   if (!sid) return
   try {
-    const body = await readArtifact(sid, item.name)
+    const body = await readArtifact(sid, item.path)
     await openFile(
-      { id: `artifact:${item.name}`, name: item.name, path: item.name, size: fmtSize(item.size) },
+      { id: `artifact:${item.path}`, name: item.name, path: item.name, size: fmtSize(item.size) },
       { kind: body.kind === 'html' ? 'html' : 'text', content: body.content, lang: body.kind },
     )
   } catch (e) {
@@ -631,11 +617,11 @@ async function openArtifact(item: ReportArtifact) {
   }
 }
 
-async function saveArtifact(item: ReportArtifact) {
+async function saveArtifact(item: ArtifactBlock) {
   const sid = activeSessionId.value
   if (!sid) return
   try {
-    await downloadArtifact(sid, item.name)
+    await downloadArtifact(sid, item.path)
   } catch (e) {
     errorText.value = apiError(e)
   }
@@ -806,7 +792,6 @@ async function loadMessageList(id: string) {
     /* 该会话正在后台跑: live 消息尚未落库, 重新挂回列表末尾继续接收事件 */
     if (run?.running && run.live) rows.push(run.live)
     messages.value = rows
-    void refreshArtifacts(id)
     applySessionRoot(sessions.value.find((s) => s.id === id))
     if (!run?.running) resetRun(id)
   } catch (e) {
@@ -1140,8 +1125,19 @@ function applyStreamEvent(live: ChatMessage, run: RunState, event: string, data:
     addUsage(run, data.usage)
   } else if (event === 'error') {
     live.error = data.message ?? '诊断失败'
+  } else if (event === 'artifact') {
+    const items = (data.items as { name: string; path: string; size: number }[] | undefined) || []
+    for (const item of items) {
+      if (live.blocks.some((b) => b.kind === 'artifact' && b.path === item.path)) continue
+      live.blocks.push({ kind: 'artifact', name: item.name, path: item.path, size: item.size })
+    }
   } else if (event === 'done') {
     if (data.messageId) live.id = data.messageId
+    const items = (data.artifacts as { name: string; path: string; size: number }[] | undefined) || []
+    for (const item of items) {
+      if (live.blocks.some((b) => b.kind === 'artifact' && b.path === item.path)) continue
+      live.blocks.push({ kind: 'artifact', name: item.name, path: item.path, size: item.size })
+    }
     mergeUsage(live, run, data.usage)
   }
 }
@@ -1208,7 +1204,6 @@ async function runTurn(
     run.phase = ''
     run.ctl = null
     run.live = null
-    if (activeSessionId.value === sid) void refreshArtifacts(sid)
     if (!live.blocks.length && !live.error) {
       live.error = stopped ? '已停止本轮诊断' : '智能体没有返回内容'
     }
@@ -1627,8 +1622,8 @@ const phaseText = computed(() => {
                   :running="running && m.id === 'live'"
                   @open-tool="openToolTrace"
                 />
-                <div v-if="m.role === 'assistant' && m.id === lastAssistantId && artifacts.length && !(running && m.id === 'live')" class="artifacts">
-                  <div v-for="item in artifacts" :key="item.name" class="artifact">
+                <div v-if="m.role === 'assistant' && artifactBlocks(m).length" class="artifacts">
+                  <div v-for="item in artifactBlocks(m)" :key="item.path" class="artifact">
                     <Icon name="file" :size="12" />
                     <span>{{ item.name }}</span>
                     <button class="o-btn o-btn--sm" type="button" @click="openArtifact(item)">查看</button>

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import multiprocessing
+import src.worker  # noqa: F401  注册关键词、聚类、LLM、embedding 检测器
 from src.worker.base import BaseWorker
 from src.service.process import ProcessHandler
 from src.enum.task import TaskStatusEnum
