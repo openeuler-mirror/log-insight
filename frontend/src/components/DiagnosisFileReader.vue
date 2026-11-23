@@ -50,7 +50,11 @@ const copyPath = async () => {
       <span v-if="active.size" class="o-mono o-text-3 rd-size">{{ active.size }}</span>
       <div class="o-row" style="gap: 6px">
         <button class="o-btn o-btn--sm" title="复制文件路径" @click="copyPath">复制路径</button>
-        <button class="o-btn o-btn--sm o-btn--primary" @click="emit('attach', active)">加入本次提问</button>
+        <button
+          v-if="!active.id.startsWith('artifact:')"
+          class="o-btn o-btn--sm o-btn--primary"
+          @click="emit('attach', active)"
+        >加入本次提问</button>
       </div>
     </div>
 
@@ -65,6 +69,14 @@ const copyPath = async () => {
         <img :src="active.content" :alt="active.name" />
       </div>
 
+      <iframe
+        v-else-if="active.kind === 'html'"
+        class="rd-html"
+        sandbox
+        :srcdoc="active.content"
+        :title="active.name"
+      ></iframe>
+
       <div v-else-if="active.kind === 'notice'" class="rd-blank">
         <div class="rd-blank-ico"><Icon name="archive" :size="30" /></div>
         <p class="rd-blank-t">{{ active.name }}</p>
@@ -78,7 +90,7 @@ const copyPath = async () => {
     </div>
 
     <div v-if="active" class="rd-foot o-mono o-text-3">
-      <span>{{ active.kind === 'text' ? lines.length + ' 行' : active.kind === 'image' ? '图片' : '文件说明' }}</span>
+      <span>{{ active.kind === 'text' ? lines.length + ' 行' : active.kind === 'html' ? '报告预览' : active.kind === 'image' ? '图片' : '文件说明' }}</span>
       <span v-if="active.lang">{{ active.lang }}</span>
       <span class="rd-grow"></span>
       <span>只读</span>
@@ -216,6 +228,13 @@ const copyPath = async () => {
   max-height: 100%;
   border-radius: var(--radius);
   box-shadow: var(--shadow-1);
+}
+.rd-html {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
 }
 .rd-code {
   display: flex;

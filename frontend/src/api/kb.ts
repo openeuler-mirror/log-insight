@@ -8,6 +8,8 @@ export interface KnowledgeBase {
   description: string
   caseTemplate: string
   vectorEnabled: boolean
+  embedModelId?: number | null
+  embedDisplayName?: string
   embeddingConfig: {
     model?: string
     apiBase?: string
@@ -54,15 +56,13 @@ export function listKbs(teamId: number) {
 export function createKb(teamId: number, body: {
   name: string
   description?: string
-  vectorEnabled?: boolean
-  embeddingConfig?: Record<string, unknown>
+  embedModelId?: number | null
   caseTemplate?: string
 }) {
   return post<KnowledgeBase>(`/teams/${teamId}/knowledge-bases`, {
     name: body.name,
     description: body.description ?? '',
-    vector_enabled: body.vectorEnabled ?? false,
-    embedding_config: body.embeddingConfig ?? {},
+    embed_model_id: body.embedModelId ?? null,
     case_template: body.caseTemplate ?? '',
   })
 }
@@ -72,16 +72,12 @@ export function updateKb(teamId: number, kbId: number, body: {
   description?: string
   caseTemplate?: string
   status?: string
-  embeddingApiKey?: string
-  embeddingApiBase?: string
 }) {
   const payload: Record<string, unknown> = {}
   if (body.name !== undefined) payload.name = body.name
   if (body.description !== undefined) payload.description = body.description
   if (body.caseTemplate !== undefined) payload.case_template = body.caseTemplate
   if (body.status !== undefined) payload.status = body.status
-  if (body.embeddingApiKey !== undefined) payload.embedding_api_key = body.embeddingApiKey
-  if (body.embeddingApiBase !== undefined) payload.embedding_api_base = body.embeddingApiBase
   return patch<KnowledgeBase>(`/teams/${teamId}/knowledge-bases/${kbId}`, payload)
 }
 

@@ -1,6 +1,7 @@
 """诊断侧检索编排: query → search → 写 kb_context.md → 返回引用."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -162,11 +163,99 @@ def write_kb_context(
 
 def _clear_kb_context(session_id: str) -> None:
     try:
-        p = Path(workspace_dir(session_id)) / "kb_context.md"
-        if p.exists():
-            p.unlink()
+        ws = Path(workspace_dir(session_id))
+        for name in ("kb_context.md", "kb_citations.json"):
+            p = ws / name
+            if p.exists():
+                p.unlink()
     except OSError:
         pass
+
+
+async def search_with_queries(
+    db: AsyncSession,
+    *,
+    team_id: int,
+    session_id: str,
+    kb_ids: list[int],
+    queries: list[str],
+    top_k: int = 10,
+) -> RetrieveResult:
+    """用调用方给出的检索词查已选知识库，并写入 kb_context.md。"""
+    cleaned: list[str] = []
+    for raw in queries:
+        text = " ".join((raw or "").split())
+        if text and text not in cleaned:
+            cleaned.append(text[:200])
+        if len(cleaned) >= 8:
+            break
+    if not kb_ids:
+        _clear_kb_context(session_id)
+        return RetrieveResult(citations=[], queries=cleaned, note="未选择知识库")
+    if not cleaned:
+        return RetrieveResult(citations=[], queries=[], note="没有检索词")
+
+    settings = get_settings()
+    if not settings.KB_ENABLED:
+        return RetrieveResult(citations=[], queries=cleaned, note="知识库未启用")
+
+    hits = await search_kbs(
+        db,
+        team_id=team_id,
+        kb_ids=kb_ids,
+        queries=cleaned,
+        top_k=top_k or settings.KB_DEFAULT_TOP_K,
+        mode="auto",
+    )
+    if hits:
+        from sqlalchemy import select
+        from app.models.kb import KbDocument
+        doc_ids = {h.document_id for h in hits}
+        titles = {
+            d.id: d.title
+            for d in (await db.execute(
+                select(KbDocument).where(KbDocument.id.in_(doc_ids))
+            )).scalars().all()
+        }
+        for h in hits:
+            if not h.title:
+                h.title = titles.get(h.document_id, "")
+
+    citations = [
+        Citation(
+            index=i + 1,
+            chunk_id=h.chunk_id,
+            document_id=h.document_id,
+            kb_id=h.kb_id,
+            kb_name=h.kb_name,
+            title=h.title or f"chunk-{h.chunk_id}",
+            content=h.content,
+            score=round(float(h.score), 4),
+        )
+        for i, h in enumerate(hits)
+    ]
+    if citations:
+        write_kb_context(session_id, citations, queries=cleaned)
+        dest = Path(workspace_dir(session_id)) / "kb_citations.json"
+        dest.write_text(
+            json.dumps({"queries": cleaned, "citations": citations_as_dicts(citations)},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    else:
+        _clear_kb_context(session_id)
+    return RetrieveResult(citations=citations, queries=cleaned, note="" if citations else "知识库未覆盖")
+
+
+def load_saved_citations(session_id: str) -> dict | None:
+    path = Path(workspace_dir(session_id)) / "kb_citations.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def citations_as_dicts(citations: list[Citation]) -> list[dict]:

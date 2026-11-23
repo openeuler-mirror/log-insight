@@ -16,6 +16,8 @@ const TOOL_LABELS: Record<string, string> = {
   webfetch: '抓取网页',
   websearch: '搜索网页',
   task: '子任务',
+  subagent: '子会话',
+  skill: '技能',
   todowrite: '更新任务',
   todo: '任务清单',
   delete: '删除文件',

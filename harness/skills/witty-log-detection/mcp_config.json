@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "witty_log_detection": {
+      "command": "python3",
+      "args": ["server.py"],
+      "cwd": "./src"
+    }
+  }
+}

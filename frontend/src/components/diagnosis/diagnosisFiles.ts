@@ -7,7 +7,7 @@ export interface Attach {
   size?: string
 }
 
-export type FileKind = 'text' | 'image' | 'notice'
+export type FileKind = 'text' | 'image' | 'notice' | 'html'
 
 /* 阅读器标签页 */
 export interface ReaderTab extends Attach {

@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,29 @@ class Team(Base):
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     # 团队级知识库 Rerank (各库共用); 空=检索时降级融合分
     kb_rerank_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeamEmbedModel(Base):
+    """团队语义检索模型。知识库只存编号，密钥与显示名以这一行为准。"""
+    __tablename__ = "team_embed_models"
+    __table_args__ = (
+        Index(
+            "uq_team_embed_default",
+            "team_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    display_name: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    api_base: Mapped[str] = mapped_column(String(256), default="")
+    api_key_enc: Mapped[str] = mapped_column(Text, default="")
+    key_hint: Mapped[str] = mapped_column(String(16), default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LogReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["report_id", "summary", "timeline", "analysis", "actions"],
+  "properties": {
+    "report_id": { "type": "string", "minLength": 1 },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phenomenon", "scope"],
+      "properties": {
+        "phenomenon": { "type": "string" },
+        "scope": { "type": "string" },
+        "time_range": { "type": "string" }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "text"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "time": { "type": "string" },
+          "text": { "type": "string" }
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "conclusion", "evidence"],
+      "properties": {
+        "status": { "enum": ["confirmed", "suspected", "insufficient"] },
+        "conclusion": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "quote", "reasoning"],
+            "properties": {
+              "title": { "type": "string" },
+              "quote": { "type": "string" },
+              "reasoning": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["steps"],
+      "properties": {
+        "steps": { "type": "array", "items": { "type": "string" } },
+        "verification": { "type": "array", "items": { "type": "string" } },
+        "missing": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "summary", "relation"],
+        "properties": {
+          "id": { "type": "string" },
+          "summary": { "type": "string" },
+          "relation": { "enum": ["independent", "causes", "correlated"] }
+        }
+      }
+    },
+    "kernel_crash": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "bug_type": { "type": "string" },
+        "rip": { "type": "string" },
+        "rip_function": { "type": "string" },
+        "call_trace_text": { "type": "string" },
+        "signature": { "type": "string" }
+      }
+    },
+    "vmcore": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "confidence": { "enum": ["高", "中", "低", "疑似硬件"] },
+        "conclusion": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

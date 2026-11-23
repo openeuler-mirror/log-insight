@@ -565,9 +565,8 @@ onUnmounted(() => document.removeEventListener('click', closePickMenu))
       <div class="top-main" v-if="kb">
         <h1>{{ kb.name }}</h1>
         <p class="sub">
-          <span v-if="!kb.vectorEnabled" class="badge">仅关键词</span>
-          <span v-else class="badge ok">向量检索</span>
-          {{ kb.description || kb.vectorHint || '' }}
+          <span v-if="kb.embedDisplayName" class="badge ok">{{ kb.embedDisplayName }}</span>
+          {{ kb.description || '' }}
         </p>
       </div>
       <div class="actions" v-if="kb && canManage">
